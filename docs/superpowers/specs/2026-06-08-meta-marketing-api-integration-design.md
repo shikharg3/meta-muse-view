@@ -32,7 +32,7 @@ local Postgres database that a scheduled worker keeps in sync with the Meta Mark
 **Goals**
 - Server-side sync of Meta structure + insights into Postgres, rate-limit aware.
 - Dashboard reads exclusively from Postgres (never calls Meta on a page load).
-- Token-health visibility on the Settings page.
+- Credential management on the Settings page (enter/update Meta app id/secret, system user token, BM id, account ids) plus token-health; secrets encrypted at rest.
 - nginx HTTP Basic Auth in front of the deployed app.
 - Match the data shapes the components already consume so the UI barely changes.
 
@@ -58,18 +58,18 @@ local Postgres database that a scheduled worker keeps in sync with the Meta Mark
 
 - **Sync worker** is a separate long-running process from the web server: decoupled failure
   domains, independent restarts, no contention with SSR. It owns all Meta API calls.
-- **Web app** only ever reads Postgres via `createServerFn` handlers (server-only; token never
-  reaches the browser, but the web app does not even need the token — only the worker does).
+- **Web app** reads Postgres via `createServerFn` handlers and hosts the Settings page that writes credentials (encrypted) to Postgres. Secrets stay server-only and are never returned to the browser; the worker reads credentials from Postgres.
 
 ## 5. Tech choices & rationale
 
 | Decision | Choice | Why |
 |---|---|---|
-| Datastore | **Postgres** (Docker on the droplet) | Relational facts + JSONB for nested `actions`; concurrent worker-write / app-read; strong aggregation. |
+| Datastore | **Postgres 16** (native apt, on the droplet) | Relational facts + JSONB for nested `actions`; concurrent worker-write / app-read; strong aggregation. |
 | DB access | **Drizzle ORM** | TS-native, SQL-first, type-safe, first-class Bun + Postgres, real migrations. Lighter than Prisma. |
 | Meta client | **Thin typed `fetch` wrapper** (not `facebook-nodejs-business-sdk`) | SDK is heavy, lags versions, and hides the rate-limit headers we must read. ~200 LOC: version pin, `appsecret_proof`, header parsing, backoff, async-job polling, cursor pagination. |
 | Scheduler | **node-cron inside the standalone worker** | One process to manage under systemd/pm2; no external queue needed at this scale. |
 | Dashboard auth | **nginx HTTP Basic Auth** | Real protection, zero app code; standard nginx + Let's Encrypt on the droplet. |
+| Secrets at rest | **AES-256-GCM in Postgres**, key in `APP_ENCRYPTION_KEY` (env) | Credentials entered via the Settings UI; a DB dump alone can't leak the token. |
 | API version | **`v25.0`**, pinned | Current (Feb 2026). Meta auto-upgrades versions after ~2 years; pin to avoid surprise breaks. |
 
 ## 6. Meta Marketing API reference (grounded against v25.0 docs)
@@ -159,7 +159,8 @@ Fact tables (daily, idempotent upsert on the composite key):
 
 Operational tables:
 - `sync_state(account_id PK, last_structure_sync, last_insights_sync, cursor, status, last_error)`
-- `token_health(id PK=1, checked_at, is_valid, scopes text[], data_access_expires_at, note)`
+- `meta_credentials(id PK='singleton', app_id, app_secret_enc, system_user_token_enc, business_id, account_ids text[], api_version, updated_at)` — secrets AES-256-GCM encrypted; managed via the Settings page.
+- `token_health(id PK='singleton', checked_at, is_valid, scopes jsonb, note)`
 
 Rationale: raw `actions`/`action_values` JSONB preserved so new conversion metrics can be derived
 later without re-fetching; daily grain supports trends + arbitrary date-range aggregation in SQL.
@@ -196,16 +197,16 @@ Standalone worker (`bun run sync`) with node-cron:
   done in SQL / server fn, mirroring `aggregate()` in `mock-data.ts`.
 - Delete `src/lib/mock-data.ts` at the end (the SWAP POINT).
 - Fix `/accounts/$id` routing (rename to `accounts.index.tsx`) and the `useLoaderData` type error.
-- Settings page reads `token_health` + BM id + sync cadence (replacing the static placeholder).
+- Settings page **manages credentials** (form to enter/update app id/secret, system user token, BM id, account ids — secrets write-only & masked) with a "Test connection" action (`debug_token`), and shows token health + sync cadence.
 
 ## 11. Ops / deploy (DigitalOcean droplet)
 
-- Postgres via Docker; DB URL in worker env only.
+- Postgres 16 native (apt) on the droplet, localhost-only; reached in dev via SSH tunnel.
 - Web: `bun run build` → Node/Nitro server under systemd/pm2.
 - Worker: `bun run sync` under systemd/pm2 (separate unit).
 - nginx subdomain + Let's Encrypt on the droplet, with **HTTP Basic Auth**
   (`auth_basic` + htpasswd).
-- Secrets (system user token, app secret, DB URL) in env / systemd `EnvironmentFile`, never client-side.
+- Only `DATABASE_URL` + `APP_ENCRYPTION_KEY` live in env / systemd `EnvironmentFile`. Meta credentials are stored encrypted in Postgres (managed via Settings), with optional env bootstrap. Secrets never reach the client.
 
 ## 12. Testing strategy
 

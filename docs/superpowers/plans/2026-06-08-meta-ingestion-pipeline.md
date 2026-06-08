@@ -1643,3 +1643,370 @@ git commit --allow-empty -m "test: verified one-account live sync end-to-end"
 - **Placeholders:** none; every code step is complete.
 - **Type consistency:** `InsightsClient` (Task 5) is implemented by `MetaClient` and consumed by all jobs; `normalizeInsightRow`/`pickAction`/`DEFAULT_CONVERSION_TYPE` (Task 6) reused in Tasks 8–9; `trailingRange` (Task 8) reused in Task 9; `markSync`/`recordTokenHealth` (Task 10) used in Task 11; `runOnce`/`Jobs` (Task 11) used by the worker.
 - **Deferred to Plan B:** async report-job fallback for heavy/historical backfill is stubbed by the synchronous path here; add it in Plan B (or a Task 13) once one-account sync is proven and Standard Access lands. Flagged in §14 of the spec.
+
+---
+
+## Addendum (2026-06-08): Credential management + droplet infrastructure
+
+Adds UI-managed Meta credentials (entered on the Settings page, stored **encrypted** in Postgres, read by the worker), and records the actual droplet-based infra. Execute these **in order relative to the base tasks**: the Task 1 / Task 2 / Task 7 / Task 11 deltas replace the corresponding pieces; Tasks C-1 and C-2 slot in **after Task 2, before Task 7**.
+
+### Task 0 — SUPERSEDED (already done)
+
+Local Docker Postgres is **not** used. Provisioning was performed on the DigitalOcean droplet `meta-dashboard` (`159.65.110.111`, sfo2, Ubuntu 24.04): 2 GB swap, ufw (22/80/443), **Postgres 16.14** (`meta` db + role, localhost-only), **Bun 1.3.14**, git, `deploy` user. Local dev reaches the droplet DB via an SSH tunnel:
+`ssh -i C:/Users/shikh/.ssh/id_ed25519 -N -L 127.0.0.1:5432:127.0.0.1:5432 root@159.65.110.111`.
+`.env` (gitignored) and `.env.example` are committed/created with `DATABASE_URL` (tunneled) and a generated `APP_ENCRYPTION_KEY`. Meta `META_*` vars are blank (credentials come from the Settings UI / DB; env is bootstrap fallback only).
+
+### Task 1 DELTA — env schema (replace Steps 3 & 5)
+
+Meta vars become **optional** (creds live in the DB), and `APP_ENCRYPTION_KEY` is **required**. Replace `src/lib/env.ts`'s schema and `src/lib/env.test.ts` with:
+
+`src/lib/env.ts`:
+```ts
+import { z } from "zod";
+
+const schema = z.object({
+  META_APP_ID: z.string().optional(),
+  META_APP_SECRET: z.string().optional(),
+  META_SYSTEM_USER_TOKEN: z.string().optional(),
+  META_BUSINESS_ID: z.string().optional(),
+  META_API_VERSION: z.string().default("v25.0"),
+  META_AD_ACCOUNT_IDS: z
+    .string()
+    .default("")
+    .transform((s) => s.split(",").map((x) => x.trim()).filter(Boolean)),
+  APP_ENCRYPTION_KEY: z.string().length(64, "APP_ENCRYPTION_KEY must be 64 hex chars (32 bytes)"),
+  DATABASE_URL: z.string().min(1),
+});
+
+export type Env = z.infer<typeof schema>;
+
+export function parseEnv(source: Record<string, string | undefined> = process.env): Env {
+  return schema.parse(source);
+}
+
+let cached: Env | undefined;
+export function env(): Env {
+  if (!cached) cached = parseEnv();
+  return cached;
+}
+```
+
+`src/lib/env.test.ts`:
+```ts
+import { test, expect } from "bun:test";
+import { parseEnv } from "./env";
+
+const KEY = "a".repeat(64);
+const base = { APP_ENCRYPTION_KEY: KEY, DATABASE_URL: "postgres://localhost/meta" };
+
+test("parses minimal env and defaults the API version", () => {
+  const env = parseEnv(base);
+  expect(env.META_API_VERSION).toBe("v25.0");
+  expect(env.META_AD_ACCOUNT_IDS).toEqual([]);
+});
+
+test("splits ad account ids", () => {
+  expect(parseEnv({ ...base, META_AD_ACCOUNT_IDS: "act_1, act_2" }).META_AD_ACCOUNT_IDS).toEqual(["act_1", "act_2"]);
+});
+
+test("throws when APP_ENCRYPTION_KEY is missing or wrong length", () => {
+  expect(() => parseEnv({ DATABASE_URL: "x" })).toThrow();
+  expect(() => parseEnv({ ...base, APP_ENCRYPTION_KEY: "short" })).toThrow();
+});
+```
+
+### Task 2 DELTA — add the `metaCredentials` table
+
+Append to `src/db/schema.ts` (the `tokenHealth` `scopes` column also becomes `jsonb` to match the spec):
+```ts
+export const metaCredentials = pgTable("meta_credentials", {
+  id: text("id").primaryKey().default("singleton"),
+  appId: text("app_id"),
+  appSecretEnc: text("app_secret_enc"),
+  systemUserTokenEnc: text("system_user_token_enc"),
+  businessId: text("business_id"),
+  accountIds: jsonb("account_ids"),
+  apiVersion: text("api_version").default("v25.0"),
+  updatedAt: timestamp("updated_at", { withTimezone: true }),
+});
+```
+Re-run `bun run db:push` after editing the schema.
+
+### Task C-1: Credential encryption util (AES-256-GCM)
+
+**Files:** Create `src/lib/crypto.ts`; Test `src/lib/crypto.test.ts`
+
+- [ ] **Step 1: Write the failing test**
+
+`src/lib/crypto.test.ts`:
+```ts
+import { test, expect } from "bun:test";
+import { encryptSecret, decryptSecret } from "./crypto";
+
+const KEY = "f3c2238d7f1860c1ba7f91813575b5ce63d79a9827692d8c127e093d2c97e9f0";
+
+test("round-trips a secret", () => {
+  const blob = encryptSecret("EAAB-super-secret-token", KEY);
+  expect(decryptSecret(blob, KEY)).toBe("EAAB-super-secret-token");
+});
+
+test("uses a random IV so two encryptions differ", () => {
+  expect(encryptSecret("x", KEY)).not.toBe(encryptSecret("x", KEY));
+});
+
+test("decryption fails with the wrong key (GCM auth)", () => {
+  const blob = encryptSecret("x", KEY);
+  expect(() => decryptSecret(blob, "b".repeat(64))).toThrow();
+});
+
+test("rejects a key that is not 32 bytes", () => {
+  expect(() => encryptSecret("x", "short")).toThrow();
+});
+```
+
+- [ ] **Step 2: Run test to verify it fails** — `bun test src/lib/crypto.test.ts` → FAIL (module not found).
+
+- [ ] **Step 3: Write the implementation**
+
+`src/lib/crypto.ts`:
+```ts
+import { randomBytes, createCipheriv, createDecipheriv } from "node:crypto";
+
+function keyBuf(keyHex: string): Buffer {
+  const buf = Buffer.from(keyHex, "hex");
+  if (buf.length !== 32) throw new Error("APP_ENCRYPTION_KEY must be 32 bytes (64 hex chars)");
+  return buf;
+}
+
+/** Returns base64(iv).base64(tag).base64(ciphertext). */
+export function encryptSecret(plaintext: string, keyHex: string): string {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", keyBuf(keyHex), iv);
+  const ct = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return [iv.toString("base64"), tag.toString("base64"), ct.toString("base64")].join(".");
+}
+
+export function decryptSecret(blob: string, keyHex: string): string {
+  const [ivB64, tagB64, ctB64] = blob.split(".");
+  if (!ivB64 || !tagB64 || !ctB64) throw new Error("malformed ciphertext");
+  const decipher = createDecipheriv("aes-256-gcm", keyBuf(keyHex), Buffer.from(ivB64, "base64"));
+  decipher.setAuthTag(Buffer.from(tagB64, "base64"));
+  return Buffer.concat([decipher.update(Buffer.from(ctB64, "base64")), decipher.final()]).toString("utf8");
+}
+```
+
+- [ ] **Step 4: Run test to verify it passes** — `bun test src/lib/crypto.test.ts` → PASS (4 tests).
+- [ ] **Step 5: Commit** — `git commit -m "feat: AES-256-GCM secret encryption util"`
+
+### Task C-2: Credentials resolver (DB-first, env fallback)
+
+**Files:** Create `src/lib/credentials.ts`; Test `src/lib/credentials.test.ts` (uses the test DB)
+
+- [ ] **Step 1: Write the failing test**
+
+`src/lib/credentials.test.ts`:
+```ts
+import { test, expect, beforeEach } from "bun:test";
+import { sql } from "drizzle-orm";
+import { db, schema } from "@/db/client";
+import { saveCredentials, getCredentials } from "./credentials";
+
+beforeEach(async () => {
+  await db.execute(sql`truncate table meta_credentials cascade`);
+});
+
+test("saveCredentials encrypts and getCredentials decrypts (DB takes precedence)", async () => {
+  await saveCredentials({
+    appId: "111", appSecret: "the-secret", token: "the-token",
+    businessId: "999", accountIds: ["act_1", "act_2"], apiVersion: "v25.0",
+  });
+  const [row] = await db.select().from(schema.metaCredentials);
+  expect(row.appSecretEnc).not.toContain("the-secret"); // stored encrypted
+
+  const creds = await getCredentials();
+  expect(creds?.appSecret).toBe("the-secret");
+  expect(creds?.token).toBe("the-token");
+  expect(creds?.accountIds).toEqual(["act_1", "act_2"]);
+});
+test("getCredentials returns null when neither DB nor env provide a token", async () => {
+  // env in this test run has blank META_* (see .env), so no fallback token
+  expect(await getCredentials()).toBeNull();
+});
+```
+
+- [ ] **Step 2: Run test to verify it fails** — `bun test src/lib/credentials.test.ts` → FAIL (module not found).
+
+- [ ] **Step 3: Write the implementation**
+
+`src/lib/credentials.ts`:
+```ts
+import { eq } from "drizzle-orm";
+import { db, schema } from "@/db/client";
+import { env } from "@/lib/env";
+import { encryptSecret, decryptSecret } from "@/lib/crypto";
+
+export interface Credentials {
+  appId: string;
+  appSecret: string;
+  token: string;
+  businessId: string;
+  accountIds: string[];
+  apiVersion: string;
+}
+
+export interface CredentialsInput {
+  appId: string;
+  appSecret: string;
+  token: string;
+  businessId: string;
+  accountIds: string[];
+  apiVersion?: string;
+}
+
+export async function saveCredentials(input: CredentialsInput): Promise<void> {
+  const key = env().APP_ENCRYPTION_KEY;
+  const row = {
+    id: "singleton",
+    appId: input.appId,
+    appSecretEnc: encryptSecret(input.appSecret, key),
+    systemUserTokenEnc: encryptSecret(input.token, key),
+    businessId: input.businessId,
+    accountIds: input.accountIds,
+    apiVersion: input.apiVersion ?? "v25.0",
+    updatedAt: new Date(),
+  };
+  await db
+    .insert(schema.metaCredentials)
+    .values(row)
+    .onConflictDoUpdate({ target: schema.metaCredentials.id, set: row });
+}
+
+export async function getCredentials(): Promise<Credentials | null> {
+  const key = env().APP_ENCRYPTION_KEY;
+  const [row] = await db
+    .select()
+    .from(schema.metaCredentials)
+    .where(eq(schema.metaCredentials.id, "singleton"));
+
+  if (row?.appSecretEnc && row?.systemUserTokenEnc) {
+    return {
+      appId: row.appId ?? "",
+      appSecret: decryptSecret(row.appSecretEnc, key),
+      token: decryptSecret(row.systemUserTokenEnc, key),
+      businessId: row.businessId ?? "",
+      accountIds: (row.accountIds as string[] | null) ?? [],
+      apiVersion: row.apiVersion ?? "v25.0",
+    };
+  }
+
+  const e = env();
+  if (e.META_SYSTEM_USER_TOKEN && e.META_APP_SECRET) {
+    return {
+      appId: e.META_APP_ID ?? "",
+      appSecret: e.META_APP_SECRET,
+      token: e.META_SYSTEM_USER_TOKEN,
+      businessId: e.META_BUSINESS_ID ?? "",
+      accountIds: e.META_AD_ACCOUNT_IDS ?? [],
+      apiVersion: e.META_API_VERSION,
+    };
+  }
+  return null;
+}
+```
+
+- [ ] **Step 4: Run test to verify it passes** — `bun test src/lib/credentials.test.ts` → PASS (2 tests).
+- [ ] **Step 5: Commit** — `git commit -m "feat: credentials resolver (encrypted DB-first, env fallback)"`
+
+### Task 7 DELTA — add `syncAccounts` (populate the accounts table)
+
+Add to `src/sync/jobs/structure.ts` (the worker calls this once per cycle to enumerate + upsert ad accounts owned by the BM):
+```ts
+export async function syncAccounts(client: InsightsClient, businessId: string): Promise<string[]> {
+  const accts = await client.getAccounts(businessId);
+  const ids: string[] = [];
+  for (const a of accts) {
+    const id = String(a.id);
+    ids.push(id);
+    const base = {
+      name: str(a.name) ?? id,
+      currency: str(a.currency) ?? "USD",
+      status: str(a.account_status),
+    };
+    await db
+      .insert(schema.accounts)
+      .values({ id, ...base, raw: a, syncedAt: now() })
+      .onConflictDoUpdate({ target: schema.accounts.id, set: { ...base, raw: a, syncedAt: now() } });
+  }
+  return ids;
+}
+```
+Add a test in `src/sync/jobs/structure.test.ts` asserting `syncAccounts` upserts the accounts table from a fake `getAccounts` returning `[{ id: "act_1", name: "Acc", currency: "USD", account_status: 1 }]` and returns `["act_1"]`.
+
+### Task 11 DELTA — worker sources credentials from the resolver
+
+Replace `makeClient`/`cycle`/the `--once` wiring in `src/sync/worker.ts` with:
+```ts
+import cron from "node-cron";
+import { MetaClient } from "@/meta/client";
+import { getCredentials } from "@/lib/credentials";
+import { syncStructure, syncAccounts } from "./jobs/structure";
+import { syncInsights } from "./jobs/insights";
+import { syncBreakdowns, BREAKDOWNS } from "./jobs/breakdowns";
+import { markSync, recordTokenHealth } from "./state";
+import { runOnce, type Jobs } from "./run";
+
+function buildJobs(): Jobs {
+  return {
+    structure: async (client, id) => {
+      try {
+        await syncStructure(client, id);
+        await markSync(id, "structure", null);
+      } catch (e) {
+        await markSync(id, "structure", e instanceof Error ? e.message : String(e));
+        throw e;
+      }
+    },
+    insights: async (client, id) => {
+      for (const level of ["account", "campaign", "adset", "ad"] as const) {
+        await syncInsights(client, id, { level, days: 3 });
+      }
+      await markSync(id, "insights", null);
+    },
+    breakdowns: async (client, id) => {
+      await syncBreakdowns(client, id, { breakdowns: [...BREAKDOWNS], days: 7 });
+    },
+    tokenHealth: async (client) => recordTokenHealth(client),
+  };
+}
+
+async function cycle() {
+  const creds = await getCredentials();
+  if (!creds) {
+    console.warn("[sync] no credentials configured — set them on the Settings page; skipping cycle");
+    return;
+  }
+  const client = new MetaClient({
+    appId: creds.appId, appSecret: creds.appSecret, token: creds.token, version: creds.apiVersion,
+  });
+  const owned = await syncAccounts(client, creds.businessId);
+  const ids = creds.accountIds.length ? owned.filter((a) => creds.accountIds.includes(a)) : owned;
+  console.log(`[sync] cycle: ${ids.length} accounts`);
+  await runOnce({ client, accountIds: ids, jobs: buildJobs() });
+  console.log("[sync] cycle done");
+}
+
+const runNow = process.argv.includes("--once");
+if (runNow) {
+  cycle().then(() => process.exit(0)).catch((e) => { console.error(e); process.exit(1); });
+} else {
+  console.log("[sync] scheduler started (hourly)");
+  cron.schedule("0 * * * *", () => { void cycle(); });
+  void cycle();
+}
+```
+The Task 12 live smoke then requires credentials present **either** in `.env` (bootstrap) **or** saved via the Settings page (Plan B). If neither is set, the cycle logs and no-ops (not an error).
+
+### Out of scope here (Plan B)
+
+The Settings **UI** to enter/update credentials (masked inputs, "Test connection" calling `debug_token`, token-health display) is built in Plan B, on top of `saveCredentials`/`getCredentials`.
