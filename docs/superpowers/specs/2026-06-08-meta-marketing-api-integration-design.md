@@ -41,7 +41,7 @@ local Postgres database that a scheduled worker keeps in sync with the Meta Mark
 - No multi-BM support (1 BM).
 - No per-user accounts/RBAC in the app (single shared Basic Auth credential).
 - No real-time streaming; scheduled batch sync is sufficient (Meta insights are not real-time).
-- No data warehouse / external analytics stack; single Postgres on the existing VPS.
+- No data warehouse / external analytics stack; single Postgres on the droplet.
 
 ## 4. Architecture
 
@@ -65,11 +65,11 @@ local Postgres database that a scheduled worker keeps in sync with the Meta Mark
 
 | Decision | Choice | Why |
 |---|---|---|
-| Datastore | **Postgres** (Docker on VPS) | Relational facts + JSONB for nested `actions`; concurrent worker-write / app-read; strong aggregation. |
+| Datastore | **Postgres** (Docker on the droplet) | Relational facts + JSONB for nested `actions`; concurrent worker-write / app-read; strong aggregation. |
 | DB access | **Drizzle ORM** | TS-native, SQL-first, type-safe, first-class Bun + Postgres, real migrations. Lighter than Prisma. |
 | Meta client | **Thin typed `fetch` wrapper** (not `facebook-nodejs-business-sdk`) | SDK is heavy, lags versions, and hides the rate-limit headers we must read. ~200 LOC: version pin, `appsecret_proof`, header parsing, backoff, async-job polling, cursor pagination. |
 | Scheduler | **node-cron inside the standalone worker** | One process to manage under systemd/pm2; no external queue needed at this scale. |
-| Dashboard auth | **nginx HTTP Basic Auth** | Real protection, zero app code, fits the existing `tg.`/`threads.` nginx pattern. |
+| Dashboard auth | **nginx HTTP Basic Auth** | Real protection, zero app code; standard nginx + Let's Encrypt on the droplet. |
 | API version | **`v25.0`**, pinned | Current (Feb 2026). Meta auto-upgrades versions after ~2 years; pin to avoid surprise breaks. |
 
 ## 6. Meta Marketing API reference (grounded against v25.0 docs)
@@ -198,12 +198,12 @@ Standalone worker (`bun run sync`) with node-cron:
 - Fix `/accounts/$id` routing (rename to `accounts.index.tsx`) and the `useLoaderData` type error.
 - Settings page reads `token_health` + BM id + sync cadence (replacing the static placeholder).
 
-## 11. Ops / deploy (Hetzner VPS)
+## 11. Ops / deploy (DigitalOcean droplet)
 
 - Postgres via Docker; DB URL in worker env only.
 - Web: `bun run build` → Node/Nitro server under systemd/pm2.
 - Worker: `bun run sync` under systemd/pm2 (separate unit).
-- nginx subdomain + Let's Encrypt (same pattern as `tg.`/`threads.`), with **HTTP Basic Auth**
+- nginx subdomain + Let's Encrypt on the droplet, with **HTTP Basic Auth**
   (`auth_basic` + htpasswd).
 - Secrets (system user token, app secret, DB URL) in env / systemd `EnvironmentFile`, never client-side.
 
