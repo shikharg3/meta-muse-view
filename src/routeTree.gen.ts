@@ -9,38 +9,154 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as SettingsRouteImport } from './routes/settings'
+import { Route as CreativesRouteImport } from './routes/creatives'
+import { Route as CampaignsRouteImport } from './routes/campaigns'
+import { Route as AudiencesRouteImport } from './routes/audiences'
+import { Route as AccountsRouteImport } from './routes/accounts'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as AccountsIdRouteImport } from './routes/accounts.$id'
 
+const SettingsRoute = SettingsRouteImport.update({
+  id: '/settings',
+  path: '/settings',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const CreativesRoute = CreativesRouteImport.update({
+  id: '/creatives',
+  path: '/creatives',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const CampaignsRoute = CampaignsRouteImport.update({
+  id: '/campaigns',
+  path: '/campaigns',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AudiencesRoute = AudiencesRouteImport.update({
+  id: '/audiences',
+  path: '/audiences',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AccountsRoute = AccountsRouteImport.update({
+  id: '/accounts',
+  path: '/accounts',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AccountsIdRoute = AccountsIdRouteImport.update({
+  id: '/$id',
+  path: '/$id',
+  getParentRoute: () => AccountsRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/accounts': typeof AccountsRouteWithChildren
+  '/audiences': typeof AudiencesRoute
+  '/campaigns': typeof CampaignsRoute
+  '/creatives': typeof CreativesRoute
+  '/settings': typeof SettingsRoute
+  '/accounts/$id': typeof AccountsIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/accounts': typeof AccountsRouteWithChildren
+  '/audiences': typeof AudiencesRoute
+  '/campaigns': typeof CampaignsRoute
+  '/creatives': typeof CreativesRoute
+  '/settings': typeof SettingsRoute
+  '/accounts/$id': typeof AccountsIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/accounts': typeof AccountsRouteWithChildren
+  '/audiences': typeof AudiencesRoute
+  '/campaigns': typeof CampaignsRoute
+  '/creatives': typeof CreativesRoute
+  '/settings': typeof SettingsRoute
+  '/accounts/$id': typeof AccountsIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/'
+  fullPaths:
+    | '/'
+    | '/accounts'
+    | '/audiences'
+    | '/campaigns'
+    | '/creatives'
+    | '/settings'
+    | '/accounts/$id'
   fileRoutesByTo: FileRoutesByTo
-  to: '/'
-  id: '__root__' | '/'
+  to:
+    | '/'
+    | '/accounts'
+    | '/audiences'
+    | '/campaigns'
+    | '/creatives'
+    | '/settings'
+    | '/accounts/$id'
+  id:
+    | '__root__'
+    | '/'
+    | '/accounts'
+    | '/audiences'
+    | '/campaigns'
+    | '/creatives'
+    | '/settings'
+    | '/accounts/$id'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AccountsRoute: typeof AccountsRouteWithChildren
+  AudiencesRoute: typeof AudiencesRoute
+  CampaignsRoute: typeof CampaignsRoute
+  CreativesRoute: typeof CreativesRoute
+  SettingsRoute: typeof SettingsRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/settings': {
+      id: '/settings'
+      path: '/settings'
+      fullPath: '/settings'
+      preLoaderRoute: typeof SettingsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/creatives': {
+      id: '/creatives'
+      path: '/creatives'
+      fullPath: '/creatives'
+      preLoaderRoute: typeof CreativesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/campaigns': {
+      id: '/campaigns'
+      path: '/campaigns'
+      fullPath: '/campaigns'
+      preLoaderRoute: typeof CampaignsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/audiences': {
+      id: '/audiences'
+      path: '/audiences'
+      fullPath: '/audiences'
+      preLoaderRoute: typeof AudiencesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/accounts': {
+      id: '/accounts'
+      path: '/accounts'
+      fullPath: '/accounts'
+      preLoaderRoute: typeof AccountsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
@@ -48,22 +164,36 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/accounts/$id': {
+      id: '/accounts/$id'
+      path: '/$id'
+      fullPath: '/accounts/$id'
+      preLoaderRoute: typeof AccountsIdRouteImport
+      parentRoute: typeof AccountsRoute
+    }
   }
 }
 
+interface AccountsRouteChildren {
+  AccountsIdRoute: typeof AccountsIdRoute
+}
+
+const AccountsRouteChildren: AccountsRouteChildren = {
+  AccountsIdRoute: AccountsIdRoute,
+}
+
+const AccountsRouteWithChildren = AccountsRoute._addFileChildren(
+  AccountsRouteChildren,
+)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AccountsRoute: AccountsRouteWithChildren,
+  AudiencesRoute: AudiencesRoute,
+  CampaignsRoute: CampaignsRoute,
+  CreativesRoute: CreativesRoute,
+  SettingsRoute: SettingsRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
   ._addFileTypes<FileRouteTypes>()
-
-import type { getRouter } from './router.tsx'
-import type { startInstance } from './start.ts'
-declare module '@tanstack/react-start' {
-  interface Register {
-    ssr: true
-    router: Awaited<ReturnType<typeof getRouter>>
-    config: Awaited<ReturnType<typeof startInstance.getOptions>>
-  }
-}
