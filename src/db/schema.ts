@@ -1,0 +1,131 @@
+import {
+  pgTable, text, bigint, doublePrecision, timestamp, jsonb, date, boolean, primaryKey,
+} from "drizzle-orm/pg-core";
+
+export const accounts = pgTable("accounts", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  currency: text("currency").notNull().default("USD"),
+  status: text("status"),
+  effectiveStatus: text("effective_status"),
+  raw: jsonb("raw"),
+  syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const campaigns = pgTable("campaigns", {
+  id: text("id").primaryKey(),
+  accountId: text("account_id").notNull(),
+  name: text("name").notNull(),
+  status: text("status"),
+  effectiveStatus: text("effective_status"),
+  objective: text("objective"),
+  dailyBudget: bigint("daily_budget", { mode: "number" }),
+  raw: jsonb("raw"),
+  syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const adSets = pgTable("ad_sets", {
+  id: text("id").primaryKey(),
+  campaignId: text("campaign_id").notNull(),
+  accountId: text("account_id").notNull(),
+  name: text("name").notNull(),
+  status: text("status"),
+  effectiveStatus: text("effective_status"),
+  raw: jsonb("raw"),
+  syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const ads = pgTable("ads", {
+  id: text("id").primaryKey(),
+  adSetId: text("ad_set_id").notNull(),
+  accountId: text("account_id").notNull(),
+  name: text("name").notNull(),
+  status: text("status"),
+  effectiveStatus: text("effective_status"),
+  creativeId: text("creative_id"),
+  raw: jsonb("raw"),
+  syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const adCreatives = pgTable("ad_creatives", {
+  id: text("id").primaryKey(),
+  name: text("name"),
+  thumbnailUrl: text("thumbnail_url"),
+  raw: jsonb("raw"),
+  syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const insightsDaily = pgTable(
+  "insights_daily",
+  {
+    level: text("level").notNull(),
+    entityId: text("entity_id").notNull(),
+    date: date("date").notNull(),
+    accountId: text("account_id").notNull(),
+    spend: doublePrecision("spend").notNull().default(0),
+    impressions: bigint("impressions", { mode: "number" }).notNull().default(0),
+    reach: bigint("reach", { mode: "number" }).notNull().default(0),
+    clicks: bigint("clicks", { mode: "number" }).notNull().default(0),
+    inlineLinkClicks: bigint("inline_link_clicks", { mode: "number" }).notNull().default(0),
+    ctr: doublePrecision("ctr").notNull().default(0),
+    cpc: doublePrecision("cpc").notNull().default(0),
+    cpm: doublePrecision("cpm").notNull().default(0),
+    conversions: doublePrecision("conversions").notNull().default(0),
+    conversionValues: doublePrecision("conversion_values").notNull().default(0),
+    purchaseRoas: doublePrecision("purchase_roas").notNull().default(0),
+    actions: jsonb("actions"),
+    actionValues: jsonb("action_values"),
+    syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.level, t.entityId, t.date] })],
+);
+
+export const insightsBreakdownDaily = pgTable(
+  "insights_breakdown_daily",
+  {
+    level: text("level").notNull(),
+    entityId: text("entity_id").notNull(),
+    date: date("date").notNull(),
+    accountId: text("account_id").notNull(),
+    breakdownType: text("breakdown_type").notNull(),
+    breakdownValue: text("breakdown_value").notNull(),
+    spend: doublePrecision("spend").notNull().default(0),
+    impressions: bigint("impressions", { mode: "number" }).notNull().default(0),
+    clicks: bigint("clicks", { mode: "number" }).notNull().default(0),
+    conversions: doublePrecision("conversions").notNull().default(0),
+    conversionValues: doublePrecision("conversion_values").notNull().default(0),
+    syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({
+      columns: [t.level, t.entityId, t.date, t.breakdownType, t.breakdownValue],
+    }),
+  ],
+);
+
+export const syncState = pgTable("sync_state", {
+  accountId: text("account_id").primaryKey(),
+  lastStructureSync: timestamp("last_structure_sync", { withTimezone: true }),
+  lastInsightsSync: timestamp("last_insights_sync", { withTimezone: true }),
+  status: text("status").notNull().default("idle"),
+  lastError: text("last_error"),
+});
+
+export const tokenHealth = pgTable("token_health", {
+  id: text("id").primaryKey().default("singleton"),
+  checkedAt: timestamp("checked_at", { withTimezone: true }),
+  isValid: boolean("is_valid").notNull().default(false),
+  scopes: jsonb("scopes"),
+  note: text("note"),
+});
+
+export const metaCredentials = pgTable("meta_credentials", {
+  id: text("id").primaryKey().default("singleton"),
+  appId: text("app_id"),
+  appSecretEnc: text("app_secret_enc"),
+  systemUserTokenEnc: text("system_user_token_enc"),
+  businessId: text("business_id"),
+  accountIds: jsonb("account_ids"),
+  apiVersion: text("api_version").default("v25.0"),
+  updatedAt: timestamp("updated_at", { withTimezone: true }),
+});
