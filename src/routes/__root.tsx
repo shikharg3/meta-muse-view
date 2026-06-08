@@ -62,8 +62,16 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     meta: [
       { charSet: "utf-8" },
       { name: "viewport", content: "width=device-width, initial-scale=1" },
-      { title: "MetaConsole — Meta Ads Analytics" },
-      { name: "description", content: "Internal analytics dashboard for Meta Ads across 50+ ad accounts." },
+      { title: "DOT — Meta Ads Analytics" },
+      { name: "description", content: "Internal analytics dashboard for Meta Ads." },
+      { property: "og:title", content: "DOT — Meta Ads Analytics" },
+      { name: "twitter:title", content: "DOT — Meta Ads Analytics" },
+      { property: "og:description", content: "Internal analytics dashboard for Meta Ads." },
+      { name: "twitter:description", content: "Internal analytics dashboard for Meta Ads." },
+      { property: "og:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/dd0428a6-3e83-4a35-918e-e3a23cefc008/id-preview-2b73375a--74063724-e362-4cd5-8273-08ce7112ab98.lovable.app-1780933254786.png" },
+      { name: "twitter:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/dd0428a6-3e83-4a35-918e-e3a23cefc008/id-preview-2b73375a--74063724-e362-4cd5-8273-08ce7112ab98.lovable.app-1780933254786.png" },
+      { name: "twitter:card", content: "summary_large_image" },
+      { property: "og:type", content: "website" },
     ],
     links: [
       { rel: "stylesheet", href: appCss },
