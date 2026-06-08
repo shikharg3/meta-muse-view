@@ -19,32 +19,53 @@ function buildJobs(): Jobs {
       }
     },
     insights: async (client, id) => {
-      for (const level of ["account", "campaign", "adset", "ad"] as const) {
-        await syncInsights(client, id, { level, days: 3 });
+      try {
+        for (const level of ["account", "campaign", "adset", "ad"] as const) {
+          await syncInsights(client, id, { level, days: 3 });
+        }
+        await markSync(id, "insights", null);
+      } catch (e) {
+        await markSync(id, "insights", e instanceof Error ? e.message : String(e));
+        throw e;
       }
-      await markSync(id, "insights", null);
     },
     breakdowns: async (client, id) => {
-      await syncBreakdowns(client, id, { breakdowns: [...BREAKDOWNS], days: 7 });
+      try {
+        await syncBreakdowns(client, id, { breakdowns: [...BREAKDOWNS], days: 7 });
+      } catch (e) {
+        await markSync(id, "insights", e instanceof Error ? e.message : String(e));
+        throw e;
+      }
     },
     tokenHealth: async (client) => recordTokenHealth(client),
   };
 }
 
+let running = false;
+
 async function cycle() {
-  const creds = await getCredentials();
-  if (!creds) {
-    console.warn("[sync] no credentials configured — set them on the Settings page; skipping cycle");
+  if (running) {
+    console.warn("[sync] previous cycle still running; skipping this tick");
     return;
   }
-  const client = new MetaClient({
-    appId: creds.appId, appSecret: creds.appSecret, token: creds.token, version: creds.apiVersion,
-  });
-  const owned = await syncAccounts(client, creds.businessId);
-  const ids = creds.accountIds.length ? owned.filter((a) => creds.accountIds.includes(a)) : owned;
-  console.log(`[sync] cycle: ${ids.length} accounts`);
-  await runOnce({ client, accountIds: ids, jobs: buildJobs() });
-  console.log("[sync] cycle done");
+  running = true;
+  try {
+    const creds = await getCredentials();
+    if (!creds) {
+      console.warn("[sync] no credentials configured — set them on the Settings page; skipping cycle");
+      return;
+    }
+    const client = new MetaClient({
+      appId: creds.appId, appSecret: creds.appSecret, token: creds.token, version: creds.apiVersion,
+    });
+    const owned = await syncAccounts(client, creds.businessId);
+    const ids = creds.accountIds.length ? owned.filter((a) => creds.accountIds.includes(a)) : owned;
+    console.log(`[sync] cycle: ${ids.length} accounts`);
+    await runOnce({ client, accountIds: ids, jobs: buildJobs() });
+    console.log("[sync] cycle done");
+  } finally {
+    running = false;
+  }
 }
 
 const runNow = process.argv.includes("--once");

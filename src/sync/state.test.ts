@@ -8,14 +8,14 @@ beforeEach(async () => {
   await db.execute(sql`truncate table sync_state, token_health cascade`);
 });
 
-test("markSync upserts per-account status", async () => {
+test("markSync advances a phase timestamp only on success", async () => {
   await markSync("act_1", "structure", null);
   await markSync("act_1", "insights", "boom");
-  const rows = await db.select().from(schema.syncState);
-  expect(rows).toHaveLength(1);
-  expect(rows[0].lastError).toBe("boom");
-  expect(rows[0].lastStructureSync).not.toBeNull();
-  expect(rows[0].lastInsightsSync).not.toBeNull();
+  const [row] = await db.select().from(schema.syncState);
+  expect(row.status).toBe("error");
+  expect(row.lastError).toBe("boom");
+  expect(row.lastStructureSync).not.toBeNull();
+  expect(row.lastInsightsSync).toBeNull();
 });
 
 test("recordTokenHealth stores debug_token result", async () => {

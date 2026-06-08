@@ -88,15 +88,20 @@ export class MetaClient implements InsightsClient {
     return out;
   }
 
-  getAccounts(businessId: string): Promise<GraphNode[]> {
-    return this.getPaged(`${businessId}/owned_ad_accounts`, {
-      fields: ["account_id", "name", "currency", "account_status"],
-      limit: 200,
-    });
+  async getAccounts(businessId: string): Promise<GraphNode[]> {
+    const fields = ["account_id", "name", "currency", "account_status"];
+    const [owned, managed] = await Promise.all([
+      this.getPaged(`${businessId}/owned_ad_accounts`, { fields, limit: 200 }),
+      this.getPaged(`${businessId}/client_ad_accounts`, { fields, limit: 200 }),
+    ]);
+    const byId = new Map<string, GraphNode>();
+    for (const a of [...owned, ...managed]) byId.set(String(a.id), a);
+    return [...byId.values()];
   }
 
   getChildren(parentId: string, edge: string, fields: string[]): Promise<GraphNode[]> {
-    return this.getPaged(`${parentId}/${edge}`, { fields, limit: 200 });
+    const accountId = parentId.startsWith("act_") ? parentId : "";
+    return this.getPaged(`${parentId}/${edge}`, { fields, limit: 200 }, accountId);
   }
 
   async getInsights(objectId: string, params: Record<string, unknown>): Promise<InsightRow[]> {

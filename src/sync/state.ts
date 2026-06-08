@@ -4,24 +4,27 @@ import type { InsightsClient } from "@/meta/types";
 type Phase = "structure" | "insights";
 
 export async function markSync(accountId: string, phase: Phase, error: string | null): Promise<void> {
+  const ok = error === null;
   const stamp = new Date();
-  const ins = {
+  const advanceStructure = ok && phase === "structure";
+  const advanceInsights = ok && phase === "insights";
+  const insertVals = {
     accountId,
-    status: error ? "error" : "ok",
+    status: ok ? "ok" : "error",
     lastError: error,
-    lastStructureSync: phase === "structure" ? stamp : null,
-    lastInsightsSync: phase === "insights" ? stamp : null,
+    lastStructureSync: advanceStructure ? stamp : null,
+    lastInsightsSync: advanceInsights ? stamp : null,
   };
   await db
     .insert(schema.syncState)
-    .values(ins)
+    .values(insertVals)
     .onConflictDoUpdate({
       target: schema.syncState.accountId,
       set: {
-        status: ins.status,
-        lastError: ins.lastError,
-        ...(phase === "structure" ? { lastStructureSync: stamp } : {}),
-        ...(phase === "insights" ? { lastInsightsSync: stamp } : {}),
+        status: insertVals.status,
+        lastError: insertVals.lastError,
+        ...(advanceStructure ? { lastStructureSync: stamp } : {}),
+        ...(advanceInsights ? { lastInsightsSync: stamp } : {}),
       },
     });
 }
