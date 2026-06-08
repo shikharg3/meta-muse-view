@@ -1,0 +1,84 @@
+import { Link, useRouterState } from "@tanstack/react-router";
+import {
+  LayoutDashboard, Building2, Megaphone, Images, Users, Settings, Activity,
+} from "lucide-react";
+import {
+  Sidebar, SidebarContent, SidebarGroup, SidebarGroupContent, SidebarGroupLabel,
+  SidebarHeader, SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarFooter,
+} from "@/components/ui/sidebar";
+
+const main = [
+  { title: "Overview", url: "/", icon: LayoutDashboard },
+  { title: "Ad Accounts", url: "/accounts", icon: Building2 },
+  { title: "Campaigns", url: "/campaigns", icon: Megaphone },
+  { title: "Creatives", url: "/creatives", icon: Images },
+  { title: "Audiences", url: "/audiences", icon: Users },
+];
+const system = [{ title: "Settings", url: "/settings", icon: Settings }];
+
+export function AppSidebar() {
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const isActive = (url: string) =>
+    url === "/" ? pathname === "/" : pathname.startsWith(url);
+
+  return (
+    <Sidebar collapsible="icon">
+      <SidebarHeader>
+        <div className="flex items-center gap-2.5 px-2 py-1.5">
+          <div className="size-8 rounded-md bg-primary grid place-items-center">
+            <Activity className="size-4 text-primary-foreground" />
+          </div>
+          <div className="group-data-[collapsible=icon]:hidden">
+            <div className="text-sm font-semibold tracking-tight leading-none">MetaConsole</div>
+            <div className="text-[10px] text-muted-foreground mt-0.5 font-mono">v1.0.0 · internal</div>
+          </div>
+        </div>
+      </SidebarHeader>
+      <SidebarContent>
+        <SidebarGroup>
+          <SidebarGroupLabel>Intelligence</SidebarGroupLabel>
+          <SidebarGroupContent>
+            <SidebarMenu>
+              {main.map((item) => (
+                <SidebarMenuItem key={item.url}>
+                  <SidebarMenuButton asChild isActive={isActive(item.url)} tooltip={item.title}>
+                    <Link to={item.url}>
+                      <item.icon />
+                      <span>{item.title}</span>
+                    </Link>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              ))}
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+        <SidebarGroup>
+          <SidebarGroupLabel>System</SidebarGroupLabel>
+          <SidebarGroupContent>
+            <SidebarMenu>
+              {system.map((item) => (
+                <SidebarMenuItem key={item.url}>
+                  <SidebarMenuButton asChild isActive={isActive(item.url)} tooltip={item.title}>
+                    <Link to={item.url}>
+                      <item.icon />
+                      <span>{item.title}</span>
+                    </Link>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              ))}
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+      </SidebarContent>
+      <SidebarFooter>
+        <div className="flex items-center gap-2.5 rounded-md bg-sidebar-accent/40 p-2 group-data-[collapsible=icon]:bg-transparent group-data-[collapsible=icon]:p-0">
+          <div className="size-8 rounded-full bg-muted grid place-items-center text-[10px] font-semibold shrink-0">JD</div>
+          <div className="text-xs leading-tight overflow-hidden group-data-[collapsible=icon]:hidden">
+            <div className="font-semibold truncate">Jordan Dash</div>
+            <div className="text-muted-foreground truncate text-[10px]">Ad Ops · Admin</div>
+          </div>
+        </div>
+      </SidebarFooter>
+    </Sidebar>
+  );
+}
