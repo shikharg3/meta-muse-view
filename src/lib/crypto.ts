@@ -16,8 +16,9 @@ export function encryptSecret(plaintext: string, keyHex: string): string {
 }
 
 export function decryptSecret(blob: string, keyHex: string): string {
-  const [ivB64, tagB64, ctB64] = blob.split(".");
-  if (!ivB64 || !tagB64 || !ctB64) throw new Error("malformed ciphertext");
+  const parts = blob.split(".");
+  if (parts.length !== 3) throw new Error("malformed ciphertext");
+  const [ivB64, tagB64, ctB64] = parts;
   const decipher = createDecipheriv("aes-256-gcm", keyBuf(keyHex), Buffer.from(ivB64, "base64"));
   decipher.setAuthTag(Buffer.from(tagB64, "base64"));
   return Buffer.concat([decipher.update(Buffer.from(ctB64, "base64")), decipher.final()]).toString("utf8");

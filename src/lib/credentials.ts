@@ -26,8 +26,8 @@ export async function saveCredentials(input: CredentialsInput): Promise<void> {
   const row = {
     id: "singleton",
     appId: input.appId,
-    appSecretEnc: encryptSecret(input.appSecret, key),
-    systemUserTokenEnc: encryptSecret(input.token, key),
+    appSecretEnc: input.appSecret ? encryptSecret(input.appSecret, key) : null,
+    systemUserTokenEnc: input.token ? encryptSecret(input.token, key) : null,
     businessId: input.businessId,
     accountIds: input.accountIds,
     apiVersion: input.apiVersion ?? "v25.0",
@@ -46,10 +46,10 @@ export async function getCredentials(): Promise<Credentials | null> {
     .from(schema.metaCredentials)
     .where(eq(schema.metaCredentials.id, "singleton"));
 
-  if (row?.appSecretEnc && row?.systemUserTokenEnc) {
+  if (row?.systemUserTokenEnc) {
     return {
       appId: row.appId ?? "",
-      appSecret: decryptSecret(row.appSecretEnc, key),
+      appSecret: row.appSecretEnc ? decryptSecret(row.appSecretEnc, key) : "",
       token: decryptSecret(row.systemUserTokenEnc, key),
       businessId: row.businessId ?? "",
       accountIds: (row.accountIds as string[] | null) ?? [],
@@ -58,10 +58,10 @@ export async function getCredentials(): Promise<Credentials | null> {
   }
 
   const e = env();
-  if (e.META_SYSTEM_USER_TOKEN && e.META_APP_SECRET) {
+  if (e.META_SYSTEM_USER_TOKEN) {
     return {
       appId: e.META_APP_ID ?? "",
-      appSecret: e.META_APP_SECRET,
+      appSecret: e.META_APP_SECRET ?? "",
       token: e.META_SYSTEM_USER_TOKEN,
       businessId: e.META_BUSINESS_ID ?? "",
       accountIds: e.META_AD_ACCOUNT_IDS ?? [],

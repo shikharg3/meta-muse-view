@@ -36,11 +36,11 @@ export class MetaClient implements InsightsClient {
   }
 
   private url(path: string, params: Record<string, unknown>): string {
-    const qs = buildQuery({
-      ...params,
-      access_token: this.creds.token,
-      appsecret_proof: appsecretProof(this.creds.token, this.creds.appSecret),
-    });
+    const auth: Record<string, unknown> = { access_token: this.creds.token };
+    if (this.creds.appSecret) {
+      auth.appsecret_proof = appsecretProof(this.creds.token, this.creds.appSecret);
+    }
+    const qs = buildQuery({ ...params, ...auth });
     return `${BASE}/${this.creds.version}/${path}?${qs}`;
   }
 
@@ -90,6 +90,10 @@ export class MetaClient implements InsightsClient {
 
   async getAccounts(businessId: string): Promise<GraphNode[]> {
     const fields = ["account_id", "name", "currency", "account_status"];
+    // System-user tokens without a business id enumerate via /me/adaccounts.
+    if (!businessId) {
+      return this.getPaged("me/adaccounts", { fields, limit: 200 });
+    }
     const [owned, managed] = await Promise.all([
       this.getPaged(`${businessId}/owned_ad_accounts`, { fields, limit: 200 }),
       this.getPaged(`${businessId}/client_ad_accounts`, { fields, limit: 200 }),
