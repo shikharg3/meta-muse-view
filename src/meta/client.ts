@@ -63,7 +63,7 @@ export class MetaClient implements InsightsClient {
       if (error) throw new Error(`Meta error ${error.code}: ${error.message}`);
       if (accountId) {
         const usage = parseUsage(res.headers, accountId);
-        if (shouldBackoff(usage)) await this.sleep(Math.max(1000, usage.estimatedTimeToRegainAccess * 60_000));
+        if (shouldBackoff(usage)) await this.sleep(Math.min(60_000, Math.max(1000, usage.estimatedTimeToRegainAccess * 60_000)));
       }
       return body;
     }
