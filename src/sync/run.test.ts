@@ -4,7 +4,7 @@ import type { InsightsClient } from "@/meta/types";
 
 test("runOnce calls each job for each account and records token health", async () => {
   const order: string[] = [];
-  const fakeClient = { debugToken: async () => ({ is_valid: true, scopes: [] }) } as InsightsClient;
+  const fakeClient = { debugToken: async () => ({ is_valid: true, scopes: [] }) } as unknown as InsightsClient;
 
   await runOnce({
     client: fakeClient,
@@ -26,7 +26,7 @@ test("runOnce calls each job for each account and records token health", async (
 
 test("runOnce continues to the next account when one account throws", async () => {
   const seen: string[] = [];
-  const fakeClient = { debugToken: async () => ({ is_valid: true, scopes: [] }) } as InsightsClient;
+  const fakeClient = { debugToken: async () => ({ is_valid: true, scopes: [] }) } as unknown as InsightsClient;
   await runOnce({
     client: fakeClient,
     accountIds: ["act_1", "act_2"],

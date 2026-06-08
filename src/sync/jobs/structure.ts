@@ -2,78 +2,96 @@ import { db, schema } from "@/db/client";
 import type { GraphNode, InsightsClient } from "@/meta/types";
 
 const now = () => new Date();
+const str = (v: unknown): string | null => (v == null ? null : String(v));
+const reqStr = (v: unknown, fallback: string): string => (v == null ? fallback : String(v));
+const int = (v: unknown): number | null => (v == null ? null : Number(v) || null);
+const creativeId = (a: GraphNode): string | null =>
+  a.creative && typeof a.creative === "object" ? str((a.creative as GraphNode).id) : null;
+
+/** Common columns shared by structure tables (status/effective_status/raw/synced_at). */
+function meta(node: GraphNode) {
+  return {
+    status: str(node.status),
+    effectiveStatus: str(node.effective_status),
+    raw: node,
+    syncedAt: now(),
+  };
+}
 
 export async function syncStructure(client: InsightsClient, accountId: string): Promise<void> {
   const campaigns = await client.getChildren(accountId, "campaigns", [
     "id", "name", "status", "effective_status", "objective", "daily_budget",
   ]);
   for (const c of campaigns) {
-    await db
-      .insert(schema.campaigns)
-      .values(row(c, { accountId, name: str(c.name), objective: str(c.objective), dailyBudget: int(c.daily_budget) }))
-      .onConflictDoUpdate({ target: schema.campaigns.id, set: setCols(c, { accountId, name: str(c.name), objective: str(c.objective), dailyBudget: int(c.daily_budget) }) });
+    const vals = {
+      id: String(c.id),
+      accountId,
+      name: reqStr(c.name, String(c.id)),
+      objective: str(c.objective),
+      dailyBudget: int(c.daily_budget),
+      ...meta(c),
+    };
+    await db.insert(schema.campaigns).values(vals).onConflictDoUpdate({ target: schema.campaigns.id, set: vals });
   }
 
   const adsets = await client.getChildren(accountId, "adsets", [
     "id", "name", "status", "effective_status", "campaign_id",
   ]);
   for (const s of adsets) {
-    const base = { accountId, campaignId: str(s.campaign_id), name: str(s.name) };
-    await db
-      .insert(schema.adSets)
-      .values(row(s, base))
-      .onConflictDoUpdate({ target: schema.adSets.id, set: setCols(s, base) });
+    const vals = {
+      id: String(s.id),
+      accountId,
+      campaignId: reqStr(s.campaign_id, ""),
+      name: reqStr(s.name, String(s.id)),
+      ...meta(s),
+    };
+    await db.insert(schema.adSets).values(vals).onConflictDoUpdate({ target: schema.adSets.id, set: vals });
   }
 
   const ads = await client.getChildren(accountId, "ads", [
     "id", "name", "status", "effective_status", "adset_id", "creative{id}",
   ]);
   for (const a of ads) {
-    const base = { accountId, adSetId: str(a.adset_id), name: str(a.name), creativeId: creativeId(a) };
-    await db
-      .insert(schema.ads)
-      .values(row(a, base))
-      .onConflictDoUpdate({ target: schema.ads.id, set: setCols(a, base) });
+    const vals = {
+      id: String(a.id),
+      accountId,
+      adSetId: reqStr(a.adset_id, ""),
+      name: reqStr(a.name, String(a.id)),
+      creativeId: creativeId(a),
+      ...meta(a),
+    };
+    await db.insert(schema.ads).values(vals).onConflictDoUpdate({ target: schema.ads.id, set: vals });
   }
 
   const creatives = await client.getChildren(accountId, "adcreatives", ["id", "name", "thumbnail_url"]);
   for (const cr of creatives) {
-    const base = { name: str(cr.name), thumbnailUrl: str(cr.thumbnail_url) };
-    await db
-      .insert(schema.adCreatives)
-      .values({ id: cr.id, ...base, raw: cr, syncedAt: now() })
-      .onConflictDoUpdate({ target: schema.adCreatives.id, set: { ...base, raw: cr, syncedAt: now() } });
+    const vals = {
+      id: String(cr.id),
+      name: str(cr.name),
+      thumbnailUrl: str(cr.thumbnail_url),
+      raw: cr,
+      syncedAt: now(),
+    };
+    await db.insert(schema.adCreatives).values(vals).onConflictDoUpdate({ target: schema.adCreatives.id, set: vals });
   }
 }
 
+/** Enumerate the BM's owned ad accounts and upsert them; returns the account ids. */
 export async function syncAccounts(client: InsightsClient, businessId: string): Promise<string[]> {
   const accts = await client.getAccounts(businessId);
   const ids: string[] = [];
   for (const a of accts) {
     const id = String(a.id);
     ids.push(id);
-    const base = {
-      name: str(a.name) ?? id,
-      currency: str(a.currency) ?? "USD",
+    const vals = {
+      id,
+      name: reqStr(a.name, id),
+      currency: reqStr(a.currency, "USD"),
       status: str(a.account_status),
+      raw: a,
+      syncedAt: now(),
     };
-    await db
-      .insert(schema.accounts)
-      .values({ id, ...base, raw: a, syncedAt: now() })
-      .onConflictDoUpdate({ target: schema.accounts.id, set: { ...base, raw: a, syncedAt: now() } });
+    await db.insert(schema.accounts).values(vals).onConflictDoUpdate({ target: schema.accounts.id, set: vals });
   }
   return ids;
-}
-
-// helpers
-const str = (v: unknown) => (v == null ? null : String(v));
-const int = (v: unknown) => (v == null ? null : Number(v) || null);
-const creativeId = (a: GraphNode) =>
-  a.creative && typeof a.creative === "object" ? str((a.creative as GraphNode).id) : null;
-
-function row(node: GraphNode, extra: Record<string, unknown>) {
-  return { id: node.id, status: str(node.status), effectiveStatus: str(node.effective_status), raw: node, syncedAt: now(), ...extra };
-}
-function setCols(node: GraphNode, extra: Record<string, unknown>) {
-  return { status: str(node.status), effectiveStatus: str(node.effective_status), raw: node, syncedAt: now(), ...extra };
 }
