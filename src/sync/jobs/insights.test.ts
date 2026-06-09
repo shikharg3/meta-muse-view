@@ -33,6 +33,16 @@ test("upserts one row per (level, entity, date) and is idempotent on re-pull", a
   expect(all[0].level).toBe("campaign");
 });
 
+test("account-level rows are keyed by the act_-prefixed account id, not the bare account_id", async () => {
+  const rows: InsightRow[] = [
+    { date_start: "2026-06-01", date_stop: "2026-06-01", account_id: "123", spend: "50" },
+  ];
+  await syncInsights(makeClient(rows), "act_123", { level: "account", days: 1 });
+  const all = await db.select().from(schema.insightsDaily);
+  expect(all).toHaveLength(1);
+  expect(all[0].entityId).toBe("act_123");
+});
+
 test("trailingRange covers `days` inclusive of today", () => {
   const { since, until } = trailingRange(3, new Date("2026-06-08T12:00:00Z"));
   expect(until).toBe("2026-06-08");

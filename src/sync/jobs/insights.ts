@@ -38,7 +38,8 @@ export async function syncInsights(
 
   let written = 0;
   for (const r of rows) {
-    const entityId = String(r[ID_FIELD[opts.level]] ?? accountId);
+    const entityId =
+      opts.level === "account" ? accountId : String(r[ID_FIELD[opts.level]] ?? accountId);
     const v = normalizeInsightRow(r, opts.level, entityId, accountId);
     await db
       .insert(schema.insightsDaily)
