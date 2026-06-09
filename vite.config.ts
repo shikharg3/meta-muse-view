@@ -12,4 +12,8 @@ export default defineConfig({
     // nitro/vite builds from this
     server: { entry: "server" },
   },
+  // Self-hosted deploy target: emit a Node/Bun server bundle (.output/server/index.mjs).
+  // Lovable's sandbox build force-overrides this to cloudflare-module, and dev (serve) ignores
+  // nitro entirely, so this only affects off-sandbox production builds (the droplet).
+  nitro: { preset: "node-server" },
 });
