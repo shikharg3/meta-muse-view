@@ -330,7 +330,7 @@ export const listCampaigns = createServerFn({ method: "GET" }).handler(async ():
 });
 
 export const getAccount = createServerFn({ method: "GET" })
-  .validator((id: string) => id)
+  .inputValidator((id: string) => id)
   .handler(async ({ data: id }): Promise<{ account: AdAccount; campaigns: Campaign[]; trend: TrendPoint[] } | null> => {
     const accounts = await listAccounts();
     const account = accounts.find((a) => a.id === id);
@@ -502,7 +502,7 @@ export const getSettings = createServerFn({ method: "GET" }).handler(async (): P
 interface CredsForm { appId: string; appSecret?: string; token?: string; businessId: string; accountIds: string; }
 
 export const saveCredentialsForm = createServerFn({ method: "POST" })
-  .validator((d: CredsForm) => d)
+  .inputValidator((d: CredsForm) => d)
   .handler(async ({ data }): Promise<{ ok: true }> => {
     const existing = await getCredentials();
     // Secrets are write-only from the UI: keep the stored secret if the field is left blank.
