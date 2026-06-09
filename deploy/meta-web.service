@@ -13,6 +13,8 @@ Environment=PORT=8787
 ExecStart=/usr/local/bin/bun /opt/meta-dashboard/.output/server/index.mjs
 Restart=always
 RestartSec=3
+# Nitro drains connections on SIGTERM; cap the wait so redeploys/restarts are fast.
+TimeoutStopSec=20
 
 [Install]
 WantedBy=multi-user.target
