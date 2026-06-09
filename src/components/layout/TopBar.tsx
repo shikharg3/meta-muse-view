@@ -1,9 +1,8 @@
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
 import { Calendar, ChevronDown, Download, RefreshCw, Search } from "lucide-react";
-import { businessManager } from "@/lib/mock-data";
 
-export function TopBar() {
+export function TopBar({ business }: { business: { businessId: string; accountCount: number } }) {
   return (
     <header className="h-14 border-b border-border bg-background/80 backdrop-blur-md sticky top-0 z-20 flex items-center gap-3 px-4 md:px-6">
       <SidebarTrigger className="-ml-1" />
@@ -11,8 +10,8 @@ export function TopBar() {
 
       <button className="hidden md:flex items-center gap-2 rounded-md border border-border bg-card hover:bg-accent px-3 h-9 text-xs transition-colors">
         <span className="text-muted-foreground">BM</span>
-        <span className="font-medium">{businessManager.name}</span>
-        <span className="text-muted-foreground font-mono">· {businessManager.accountCount} accts</span>
+        <span className="font-medium">{business.businessId || "Not configured"}</span>
+        <span className="text-muted-foreground font-mono">· {business.accountCount} accts</span>
         <ChevronDown className="size-3.5 text-muted-foreground" />
       </button>
 

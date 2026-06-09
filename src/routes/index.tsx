@@ -5,10 +5,8 @@ import { StatusPill } from "@/components/dashboard/StatusPill";
 import { Sparkline } from "@/components/dashboard/Sparkline";
 import { BreakdownBar } from "@/components/dashboard/BreakdownBar";
 import { PageHeader } from "@/components/dashboard/PageHeader";
-import {
-  accounts, aggregate, timeSeries, campaigns, placementBreakdown,
-  fmtCurrency, fmtCompact, fmtPct,
-} from "@/lib/mock-data";
+import { getOverview, getBreakdowns } from "@/lib/api/dashboard";
+import { fmtCurrency, fmtCompact, fmtPct } from "@/lib/format";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -17,30 +15,32 @@ export const Route = createFileRoute("/")({
       { name: "description", content: "Aggregate Meta Ads performance across all accounts." },
     ],
   }),
+  loader: async () => {
+    const [overview, breakdowns] = await Promise.all([getOverview(), getBreakdowns()]);
+    return { ...overview, placements: breakdowns.publisher_platform };
+  },
   component: Overview,
 });
 
 function Overview() {
-  const agg = aggregate(accounts);
-  const topAccounts = [...accounts].sort((a, b) => b.spend - a.spend).slice(0, 6);
-  const topCampaigns = [...campaigns].sort((a, b) => b.roas - a.roas).slice(0, 5);
+  const { kpis, topAccounts, topCampaigns, trend, placements } = Route.useLoaderData();
 
   return (
     <div className="p-6 md:p-8 space-y-8 max-w-[1600px]">
       <PageHeader
         title="Performance Overview"
-        description={`Consolidated metrics across ${accounts.length} ad accounts under Vantage Media Group.`}
+        description="Consolidated metrics across all connected ad accounts."
       />
 
       <section className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <KpiCard label="Total Spend" value={fmtCurrency(agg.spend)} delta={12.4} spark={[42, 50, 38, 55, 60, 72, 65, 80, 85, 92, 88, 95]} />
-        <KpiCard label="Avg. ROAS" value={`${agg.roas.toFixed(2)}x`} delta={-2.1} spark={[70, 72, 68, 75, 71, 65, 62, 68, 64, 60, 58, 62]} />
-        <KpiCard label="CTR" value={fmtPct(agg.ctr)} delta={0.4} spark={[30, 35, 40, 38, 45, 42, 50, 48, 52, 55, 53, 58]} />
-        <KpiCard label="Conversions" value={fmtCompact(agg.conversions)} delta={18.2} spark={[50, 55, 60, 58, 65, 70, 68, 75, 78, 82, 88, 94]} />
-        <KpiCard label="Impressions" value={fmtCompact(agg.impressions)} delta={9.6} spark={[55, 60, 58, 65, 70, 68, 72, 75, 80, 78, 84, 88]} />
-        <KpiCard label="Avg. CPC" value={fmtCurrency(agg.cpc)} delta={-5.2} spark={[80, 75, 78, 72, 70, 68, 65, 62, 60, 58, 55, 52]} />
-        <KpiCard label="Avg. CPM" value={fmtCurrency(agg.cpm)} delta={4.1} spark={[60, 62, 65, 64, 68, 70, 72, 74, 76, 75, 78, 80]} />
-        <KpiCard label="Reach" value={fmtCompact(agg.reach)} delta={7.8} spark={[40, 45, 50, 48, 55, 58, 62, 65, 70, 72, 76, 80]} />
+        <KpiCard label="Total Spend" value={fmtCurrency(kpis.spend)} delta={12.4} spark={[42, 50, 38, 55, 60, 72, 65, 80, 85, 92, 88, 95]} />
+        <KpiCard label="Avg. ROAS" value={`${kpis.roas.toFixed(2)}x`} delta={-2.1} spark={[70, 72, 68, 75, 71, 65, 62, 68, 64, 60, 58, 62]} />
+        <KpiCard label="CTR" value={fmtPct(kpis.ctr)} delta={0.4} spark={[30, 35, 40, 38, 45, 42, 50, 48, 52, 55, 53, 58]} />
+        <KpiCard label="Conversions" value={fmtCompact(kpis.conversions)} delta={18.2} spark={[50, 55, 60, 58, 65, 70, 68, 75, 78, 82, 88, 94]} />
+        <KpiCard label="Impressions" value={fmtCompact(kpis.impressions)} delta={9.6} spark={[55, 60, 58, 65, 70, 68, 72, 75, 80, 78, 84, 88]} />
+        <KpiCard label="Avg. CPC" value={fmtCurrency(kpis.cpc)} delta={-5.2} spark={[80, 75, 78, 72, 70, 68, 65, 62, 60, 58, 55, 52]} />
+        <KpiCard label="Avg. CPM" value={fmtCurrency(kpis.cpm)} delta={4.1} spark={[60, 62, 65, 64, 68, 70, 72, 74, 76, 75, 78, 80]} />
+        <KpiCard label="Reach" value={fmtCompact(kpis.reach)} delta={7.8} spark={[40, 45, 50, 48, 55, 58, 62, 65, 70, 72, 76, 80]} />
       </section>
 
       <section className="grid grid-cols-1 xl:grid-cols-3 gap-4">
@@ -51,14 +51,14 @@ function Overview() {
               <p className="text-xs text-muted-foreground">Daily aggregate · last 30 days</p>
             </div>
           </div>
-          <TrendChart data={timeSeries} />
+          <TrendChart data={trend} />
         </div>
         <div className="rounded-xl border border-border bg-card p-5">
           <div className="mb-4">
             <h3 className="text-sm font-semibold">Placement Breakdown</h3>
             <p className="text-xs text-muted-foreground">Spend share by placement</p>
           </div>
-          <BreakdownBar rows={placementBreakdown} valueKey="spend" format={(n) => fmtCurrency(n)} />
+          <BreakdownBar rows={placements} valueKey="spend" format={(n) => fmtCurrency(n)} />
         </div>
       </section>
 

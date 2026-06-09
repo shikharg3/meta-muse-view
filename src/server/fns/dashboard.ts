@@ -1,4 +1,3 @@
-import { createServerFn } from "@tanstack/react-start";
 import { and, eq, gte, sql } from "drizzle-orm";
 import { db, schema } from "@/db/client";
 import { deriveKpis, windowStart, type Totals } from "@/server/agg";
@@ -66,8 +65,6 @@ export async function fetchAccounts(): Promise<AdAccount[]> {
   });
 }
 
-export const listAccounts = createServerFn({ method: "GET" }).handler(fetchAccounts);
-
 export async function fetchOverview(): Promise<{ kpis: Kpis; topAccounts: AdAccount[]; topCampaigns: Campaign[]; trend: TrendPoint[] }> {
   const since = windowStart(WINDOW_DAYS);
   const accounts = await fetchAccounts();
@@ -97,8 +94,6 @@ export async function fetchOverview(): Promise<{ kpis: Kpis; topAccounts: AdAcco
     trend: trendRows.map((r) => ({ date: r.date, spend: num(r.spend), conversions: num(r.conversions), revenue: num(r.revenue) })),
   };
 }
-
-export const getOverview = createServerFn({ method: "GET" }).handler(fetchOverview);
 
 export async function fetchCampaigns(): Promise<Campaign[]> {
   const since = windowStart(WINDOW_DAYS);
@@ -162,8 +157,6 @@ export async function fetchCampaigns(): Promise<Campaign[]> {
   });
 }
 
-export const listCampaigns = createServerFn({ method: "GET" }).handler(fetchCampaigns);
-
 export async function fetchAccount(id: string): Promise<{ account: AdAccount; campaigns: Campaign[]; trend: TrendPoint[] } | null> {
   const accounts = await fetchAccounts();
   const account = accounts.find((a) => a.id === id);
@@ -188,10 +181,6 @@ export async function fetchAccount(id: string): Promise<{ account: AdAccount; ca
   };
 }
 
-export const getAccount = createServerFn({ method: "GET" })
-  .inputValidator((id: string) => id)
-  .handler(({ data }) => fetchAccount(data));
-
 export async function fetchCreatives(): Promise<CreativeCard[]> {
   const campaigns = await fetchCampaigns();
   const out: CreativeCard[] = [];
@@ -202,8 +191,6 @@ export async function fetchCreatives(): Promise<CreativeCard[]> {
   }
   return out.sort((a, b) => b.spend - a.spend).slice(0, 36);
 }
-
-export const listCreatives = createServerFn({ method: "GET" }).handler(fetchCreatives);
 
 export async function fetchBreakdowns(): Promise<Record<"age" | "gender" | "publisher_platform" | "device_platform" | "country", BreakdownRow[]>> {
   const since = windowStart(WINDOW_DAYS);
@@ -229,4 +216,11 @@ export async function fetchBreakdowns(): Promise<Record<"age" | "gender" | "publ
   return empty as Record<"age" | "gender" | "publisher_platform" | "device_platform" | "country", BreakdownRow[]>;
 }
 
-export const getBreakdowns = createServerFn({ method: "GET" }).handler(fetchBreakdowns);
+export async function fetchBusinessSummary(): Promise<{ businessId: string; accountCount: number }> {
+  const [cred] = await db
+    .select({ businessId: schema.metaCredentials.businessId })
+    .from(schema.metaCredentials)
+    .where(eq(schema.metaCredentials.id, "singleton"));
+  const [counted] = await db.select({ count: sql<number>`count(*)` }).from(schema.accounts);
+  return { businessId: cred?.businessId ?? "", accountCount: num(counted?.count) };
+}

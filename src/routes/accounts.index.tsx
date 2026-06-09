@@ -3,23 +3,26 @@ import { useMemo, useState } from "react";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { StatusPill } from "@/components/dashboard/StatusPill";
 import { Sparkline } from "@/components/dashboard/Sparkline";
-import { accounts, fmtCurrency, fmtCompact, fmtPct } from "@/lib/mock-data";
+import { listAccounts } from "@/lib/api/dashboard";
+import { fmtCurrency, fmtCompact, fmtPct } from "@/lib/format";
 import { ArrowUpDown, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-export const Route = createFileRoute("/accounts")({
+export const Route = createFileRoute("/accounts/")({
   head: () => ({
     meta: [
       { title: "Ad Accounts — MetaConsole" },
       { name: "description", content: "All ad accounts under the Business Manager with key performance metrics." },
     ],
   }),
+  loader: async () => ({ accounts: await listAccounts() }),
   component: Accounts,
 });
 
 type SortKey = "name" | "spend" | "roas" | "ctr" | "cpm" | "conversions";
 
 function Accounts() {
+  const { accounts } = Route.useLoaderData();
   const [q, setQ] = useState("");
   const [sort, setSort] = useState<SortKey>("spend");
   const [dir, setDir] = useState<"asc" | "desc">("desc");
@@ -36,7 +39,7 @@ function Accounts() {
       const cmp = typeof av === "string" ? av.localeCompare(bv as string) : (av as number) - (bv as number);
       return dir === "asc" ? cmp : -cmp;
     });
-  }, [q, sort, dir, status]);
+  }, [accounts, q, sort, dir, status]);
 
   const toggle = (k: SortKey) => {
     if (sort === k) setDir(dir === "asc" ? "desc" : "asc");

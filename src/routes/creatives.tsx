@@ -2,7 +2,8 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { StatusPill } from "@/components/dashboard/StatusPill";
-import { creatives, fmtCurrency, fmtPct, fmtCompact } from "@/lib/mock-data";
+import { listCreatives } from "@/lib/api/dashboard";
+import { fmtCurrency, fmtPct, fmtCompact } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { Play } from "lucide-react";
 
@@ -13,15 +14,17 @@ export const Route = createFileRoute("/creatives")({
       { name: "description", content: "Creative gallery with performance overlays across the BM." },
     ],
   }),
+  loader: async () => ({ creatives: await listCreatives() }),
   component: Creatives,
 });
 
 function Creatives() {
+  const { creatives } = Route.useLoaderData();
   const [format, setFormat] = useState("ALL");
   const formats = ["ALL", "Image", "Video", "Carousel", "Collection"];
   const filtered = useMemo(
     () => creatives.filter((c) => format === "ALL" || c.format === format),
-    [format]
+    [creatives, format]
   );
 
   return (
@@ -50,6 +53,9 @@ function Creatives() {
                 background: `linear-gradient(135deg, hsl(${c.thumbHue} 70% 35%), hsl(${(c.thumbHue + 60) % 360} 55% 22%))`,
               }}
             >
+              {c.thumbnailUrl && (
+                <img src={c.thumbnailUrl} alt={c.name} className="absolute inset-0 size-full object-cover" />
+              )}
               <div className="absolute top-2 left-2 flex items-center gap-1.5">
                 <span className="rounded bg-background/70 backdrop-blur px-1.5 py-0.5 text-[9px] font-mono uppercase tracking-wider">{c.format}</span>
                 <StatusPill status={c.status} />

@@ -2,7 +2,7 @@ import { test, expect, beforeEach } from "bun:test";
 import { sql as dsql } from "drizzle-orm";
 import { deriveKpis, deriveRoas } from "@/server/agg";
 import { db, schema } from "@/db/client";
-import { fetchAccounts } from "./dashboard";
+import { fetchAccounts, fetchBusinessSummary } from "./dashboard";
 
 test("deriveKpis computes ratios from summed totals", () => {
   const k = deriveKpis({ spend: 100, impressions: 1000, clicks: 50, conversions: 10, revenue: 300, reach: 800 });
@@ -34,4 +34,23 @@ test("fetchAccounts aggregates insights_daily into KPIs", async () => {
   expect(a.roas).toBeCloseTo(3);     // 300/100
   expect(a.ctr).toBeCloseTo(5);      // 50/1000*100
   expect(a.spark.length).toBeGreaterThan(0);
+});
+
+test("fetchBusinessSummary returns live account count and configured business id", async () => {
+  await db.execute(dsql`truncate table accounts, meta_credentials cascade`);
+  await db.insert(schema.accounts).values([
+    { id: "act_1", name: "A", currency: "USD", status: "ACTIVE" },
+    { id: "act_2", name: "B", currency: "USD", status: "ACTIVE" },
+  ]);
+  await db.insert(schema.metaCredentials).values({ id: "singleton", businessId: "biz_42" });
+  const s = await fetchBusinessSummary();
+  expect(s.accountCount).toBe(2);
+  expect(s.businessId).toBe("biz_42");
+});
+
+test("fetchBusinessSummary falls back to empty id and zero count when unconfigured", async () => {
+  await db.execute(dsql`truncate table accounts, meta_credentials cascade`);
+  const s = await fetchBusinessSummary();
+  expect(s.accountCount).toBe(0);
+  expect(s.businessId).toBe("");
 });

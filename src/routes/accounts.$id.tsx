@@ -3,26 +3,22 @@ import { PageHeader } from "@/components/dashboard/PageHeader";
 import { KpiCard } from "@/components/dashboard/KpiCard";
 import { TrendChart } from "@/components/dashboard/TrendChart";
 import { StatusPill } from "@/components/dashboard/StatusPill";
-import {
-  accounts, campaigns, timeSeries, fmtCurrency, fmtCompact, fmtPct,
-} from "@/lib/mock-data";
+import { getAccount } from "@/lib/api/dashboard";
+import { fmtCurrency, fmtCompact, fmtPct } from "@/lib/format";
 import { ChevronLeft } from "lucide-react";
 
 export const Route = createFileRoute("/accounts/$id")({
-  head: ({ params }) => {
-    const a = accounts.find((x) => x.id === params.id);
-    return {
-      meta: [
-        { title: `${a?.name ?? "Account"} — MetaConsole` },
-        { name: "description", content: `Performance detail for ${a?.name ?? "ad account"}.` },
-      ],
-    };
+  loader: async ({ params }) => {
+    const data = await getAccount({ data: params.id });
+    if (!data) throw notFound();
+    return data;
   },
-  loader: ({ params }) => {
-    const account = accounts.find((a) => a.id === params.id);
-    if (!account) throw notFound();
-    return { account };
-  },
+  head: ({ loaderData }) => ({
+    meta: [
+      { title: `${loaderData?.account.name ?? "Account"} — MetaConsole` },
+      { name: "description", content: `Performance detail for ${loaderData?.account.name ?? "ad account"}.` },
+    ],
+  }),
   component: AccountDetail,
   notFoundComponent: () => (
     <div className="p-8">
@@ -33,8 +29,7 @@ export const Route = createFileRoute("/accounts/$id")({
 });
 
 function AccountDetail() {
-  const { account } = Route.useLoaderData();
-  const accountCampaigns = campaigns.filter((c) => c.accountId === account.id);
+  const { account, campaigns: accountCampaigns, trend } = Route.useLoaderData();
 
   return (
     <div className="p-6 md:p-8 space-y-8 max-w-[1600px]">
@@ -62,7 +57,7 @@ function AccountDetail() {
       <section className="rounded-xl border border-border bg-card p-5">
         <h3 className="text-sm font-semibold mb-1">Performance Trend</h3>
         <p className="text-xs text-muted-foreground mb-2">Last 30 days · spend &amp; conversions</p>
-        <TrendChart data={timeSeries} />
+        <TrendChart data={trend} />
       </section>
 
       <section className="rounded-xl border border-border bg-card overflow-hidden">

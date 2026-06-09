@@ -2,7 +2,8 @@ import { createFileRoute } from "@tanstack/react-router";
 import { Fragment, useMemo, useState } from "react";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { StatusPill } from "@/components/dashboard/StatusPill";
-import { campaigns, fmtCurrency, fmtPct, fmtCompact } from "@/lib/mock-data";
+import { listCampaigns } from "@/lib/api/dashboard";
+import { fmtCurrency, fmtPct, fmtCompact } from "@/lib/format";
 import { ChevronDown, ChevronRight, Search, SlidersHorizontal } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -13,24 +14,26 @@ export const Route = createFileRoute("/campaigns")({
       { name: "description", content: "Explore campaigns, ad sets, and ads across all accounts." },
     ],
   }),
+  loader: async () => ({ campaigns: await listCampaigns() }),
   component: CampaignsExplorer,
 });
 
 function CampaignsExplorer() {
+  const { campaigns } = Route.useLoaderData();
   const [q, setQ] = useState("");
   const [objective, setObjective] = useState("ALL");
   const [open, setOpen] = useState<Record<string, boolean>>({});
 
   const objectives = useMemo(
     () => ["ALL", ...Array.from(new Set(campaigns.map((c) => c.objective)))],
-    []
+    [campaigns]
   );
   const filtered = useMemo(
     () => campaigns.filter((c) =>
       (objective === "ALL" || c.objective === objective) &&
       (q.trim() === "" || c.name.toLowerCase().includes(q.toLowerCase()) || c.accountName.toLowerCase().includes(q.toLowerCase()))
     ),
-    [q, objective]
+    [campaigns, q, objective]
   );
 
   const toggle = (id: string, fullOpen?: boolean) =>

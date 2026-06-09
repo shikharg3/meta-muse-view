@@ -1,4 +1,3 @@
-import { createServerFn } from "@tanstack/react-start";
 import { eq } from "drizzle-orm";
 import { db, schema } from "@/db/client";
 import { getCredentials, saveCredentials } from "@/lib/credentials";
@@ -37,8 +36,6 @@ export async function fetchSettings(): Promise<SettingsView> {
   };
 }
 
-export const getSettings = createServerFn({ method: "GET" }).handler(fetchSettings);
-
 export async function saveCredentialsFormData(data: CredsForm): Promise<{ ok: true }> {
   const existing = await getCredentials();
   // Secrets are write-only from the UI: keep the stored secret if the field is left blank.
@@ -53,10 +50,6 @@ export async function saveCredentialsFormData(data: CredsForm): Promise<{ ok: tr
   });
   return { ok: true };
 }
-
-export const saveCredentialsForm = createServerFn({ method: "POST" })
-  .inputValidator((d: CredsForm) => d)
-  .handler(({ data }) => saveCredentialsFormData(data));
 
 export async function runTestConnection(): Promise<{ isValid: boolean; scopes: string[]; error?: string }> {
   const creds = await getCredentials();
@@ -73,4 +66,3 @@ export async function runTestConnection(): Promise<{ isValid: boolean; scopes: s
   }
 }
 
-export const testConnection = createServerFn({ method: "POST" }).handler(runTestConnection);

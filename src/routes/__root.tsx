@@ -9,6 +9,7 @@ import { reportLovableError } from "../lib/lovable-error-reporting";
 import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/layout/AppSidebar";
 import { TopBar } from "@/components/layout/TopBar";
+import { getBusinessSummary } from "@/lib/api/dashboard";
 
 function NotFoundComponent() {
   return (
@@ -83,6 +84,7 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       },
     ],
   }),
+  loader: async () => ({ business: await getBusinessSummary() }),
   shellComponent: RootShell,
   component: RootComponent,
   notFoundComponent: NotFoundComponent,
@@ -105,13 +107,14 @@ function RootShell({ children }: { children: ReactNode }) {
 
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
+  const { business } = Route.useLoaderData();
 
   return (
     <QueryClientProvider client={queryClient}>
       <SidebarProvider>
         <AppSidebar />
         <SidebarInset>
-          <TopBar />
+          <TopBar business={business} />
           <main className="flex-1 overflow-x-hidden">
             <Outlet />
           </main>
