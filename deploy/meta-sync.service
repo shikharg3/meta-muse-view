@@ -1,0 +1,16 @@
+[Unit]
+Description=Meta dashboard sync worker (hourly Meta Marketing API ingestion)
+After=network.target postgresql.service
+Wants=postgresql.service
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/meta-dashboard
+EnvironmentFile=/opt/meta-dashboard/.env
+Environment=NODE_ENV=production
+ExecStart=/usr/local/bin/bun run src/sync/worker.ts
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
