@@ -1,4 +1,4 @@
-import type { Kpis } from "@/lib/types";
+import type { AccountStatus, Kpis } from "@/lib/types";
 
 export interface Totals {
   spend: number; impressions: number; clicks: number;
@@ -24,4 +24,26 @@ export function windowStart(days: number, today = new Date()): string {
   const d = new Date(today);
   d.setUTCDate(d.getUTCDate() - (days - 1));
   return d.toISOString().slice(0, 10);
+}
+
+// Meta's numeric account_status codes -> our AccountStatus union.
+const ACCOUNT_STATUS_CODES: Record<string, AccountStatus> = {
+  "1": "ACTIVE",
+  "2": "DISABLED",
+  "3": "PENDING",
+  "7": "PENDING",
+  "8": "PENDING",
+  "9": "PENDING",
+  "100": "DISABLED",
+  "101": "DISABLED",
+};
+
+/** Normalize a stored account status (Meta numeric code or already-mapped label). */
+export function accountStatus(raw: string | null | undefined): AccountStatus {
+  if (!raw) return "ACTIVE";
+  const up = raw.toUpperCase();
+  if (up === "ACTIVE" || up === "PAUSED" || up === "DISABLED" || up === "PENDING") {
+    return up as AccountStatus;
+  }
+  return ACCOUNT_STATUS_CODES[raw] ?? "PENDING";
 }

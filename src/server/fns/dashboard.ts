@@ -1,10 +1,8 @@
-import { and, eq, gte, sql } from "drizzle-orm";
+import { and, eq, gte, ilike, or, sql } from "drizzle-orm";
 import { db, schema } from "@/db/client";
-import { deriveKpis, windowStart, type Totals } from "@/server/agg";
+import { accountStatus, deriveKpis, windowStart, type Totals } from "@/server/agg";
 import type { AdAccount, BreakdownRow, Campaign, CreativeCard, Kpis, TrendPoint } from "@/lib/types";
 
-const WINDOW_DAYS = 30;
-const SPARK_DAYS = 14;
 
 const num = (v: unknown): number => Number(v ?? 0);
 
@@ -25,14 +23,14 @@ function totalsByEntity(level: string, since: string) {
     .groupBy(schema.insightsDaily.entityId);
 }
 
-export async function fetchAccounts(): Promise<AdAccount[]> {
-  const since = windowStart(WINDOW_DAYS);
+export async function fetchAccounts(days: number): Promise<AdAccount[]> {
+  const since = windowStart(days);
   const accounts = await db.select().from(schema.accounts);
   const totals = await totalsByEntity("account", since);
   const totalsById = new Map(totals.map((t) => [t.entityId, t]));
 
   // daily spend per account for sparklines
-  const sparkSince = windowStart(SPARK_DAYS);
+  const sparkSince = windowStart(days);
   const sparkRows = await db
     .select({
       entityId: schema.insightsDaily.entityId,
@@ -59,15 +57,15 @@ export async function fetchAccounts(): Promise<AdAccount[]> {
     const k = deriveKpis(totals);
     return {
       id: a.id, name: a.name, currency: a.currency,
-      status: (a.status ?? "ACTIVE") as AdAccount["status"],
+      status: accountStatus(a.status),
       ...k, spark: sparkById.get(a.id) ?? [],
     };
   });
 }
 
-export async function fetchOverview(): Promise<{ kpis: Kpis; topAccounts: AdAccount[]; topCampaigns: Campaign[]; trend: TrendPoint[] }> {
-  const since = windowStart(WINDOW_DAYS);
-  const accounts = await fetchAccounts();
+export async function fetchOverview(days: number): Promise<{ kpis: Kpis; topAccounts: AdAccount[]; topCampaigns: Campaign[]; trend: TrendPoint[] }> {
+  const since = windowStart(days);
+  const accounts = await fetchAccounts(days);
   const totals: Totals = accounts.reduce(
     (s, a) => ({
       spend: s.spend + a.spend, impressions: s.impressions + a.impressions, clicks: s.clicks + a.clicks,
@@ -86,7 +84,7 @@ export async function fetchOverview(): Promise<{ kpis: Kpis; topAccounts: AdAcco
     .where(and(eq(schema.insightsDaily.level, "account"), gte(schema.insightsDaily.date, since)))
     .groupBy(schema.insightsDaily.date)
     .orderBy(schema.insightsDaily.date);
-  const campaigns = await fetchCampaigns();
+  const campaigns = await fetchCampaigns(days);
   return {
     kpis: deriveKpis(totals),
     topAccounts: [...accounts].sort((a, b) => b.spend - a.spend).slice(0, 6),
@@ -95,8 +93,8 @@ export async function fetchOverview(): Promise<{ kpis: Kpis; topAccounts: AdAcco
   };
 }
 
-export async function fetchCampaigns(): Promise<Campaign[]> {
-  const since = windowStart(WINDOW_DAYS);
+export async function fetchCampaigns(days: number): Promise<Campaign[]> {
+  const since = windowStart(days);
   const [campaignRows, adsetRows, adRows, accountRows, campTotals, adTotals] = await Promise.all([
     db.select().from(schema.campaigns),
     db.select().from(schema.adSets),
@@ -157,12 +155,12 @@ export async function fetchCampaigns(): Promise<Campaign[]> {
   });
 }
 
-export async function fetchAccount(id: string): Promise<{ account: AdAccount; campaigns: Campaign[]; trend: TrendPoint[] } | null> {
-  const accounts = await fetchAccounts();
+export async function fetchAccount(id: string, days: number): Promise<{ account: AdAccount; campaigns: Campaign[]; trend: TrendPoint[] } | null> {
+  const accounts = await fetchAccounts(days);
   const account = accounts.find((a) => a.id === id);
   if (!account) return null;
-  const since = windowStart(WINDOW_DAYS);
-  const allCampaigns = await fetchCampaigns();
+  const since = windowStart(days);
+  const allCampaigns = await fetchCampaigns(days);
   const trendRows = await db
     .select({
       date: schema.insightsDaily.date,
@@ -181,8 +179,8 @@ export async function fetchAccount(id: string): Promise<{ account: AdAccount; ca
   };
 }
 
-export async function fetchCreatives(): Promise<CreativeCard[]> {
-  const campaigns = await fetchCampaigns();
+export async function fetchCreatives(days: number): Promise<CreativeCard[]> {
+  const campaigns = await fetchCampaigns(days);
   const out: CreativeCard[] = [];
   for (const c of campaigns) {
     for (const s of c.adSets) {
@@ -192,8 +190,8 @@ export async function fetchCreatives(): Promise<CreativeCard[]> {
   return out.sort((a, b) => b.spend - a.spend).slice(0, 36);
 }
 
-export async function fetchBreakdowns(): Promise<Record<"age" | "gender" | "publisher_platform" | "device_platform" | "country", BreakdownRow[]>> {
-  const since = windowStart(WINDOW_DAYS);
+export async function fetchBreakdowns(days: number): Promise<Record<"age" | "gender" | "publisher_platform" | "device_platform" | "country", BreakdownRow[]>> {
+  const since = windowStart(days);
   const rows = await db
     .select({
       breakdownType: schema.insightsBreakdownDaily.breakdownType,
@@ -223,4 +221,74 @@ export async function fetchBusinessSummary(): Promise<{ businessId: string; acco
     .where(eq(schema.metaCredentials.id, "singleton"));
   const [counted] = await db.select({ count: sql<number>`count(*)` }).from(schema.accounts);
   return { businessId: cred?.businessId ?? "", accountCount: num(counted?.count) };
+}
+
+export async function fetchAccountOptions(): Promise<{ id: string; name: string }[]> {
+  return db
+    .select({ id: schema.accounts.id, name: schema.accounts.name })
+    .from(schema.accounts)
+    .orderBy(schema.accounts.name);
+}
+
+export async function searchEntities(q: string): Promise<{
+  accounts: { id: string; name: string }[];
+  campaigns: { id: string; name: string; accountId: string }[];
+}> {
+  const term = q.trim();
+  if (!term) return { accounts: [], campaigns: [] };
+  const like = `%${term}%`;
+  const [accounts, campaigns] = await Promise.all([
+    db
+      .select({ id: schema.accounts.id, name: schema.accounts.name })
+      .from(schema.accounts)
+      .where(or(ilike(schema.accounts.name, like), ilike(schema.accounts.id, like)))
+      .limit(8),
+    db
+      .select({ id: schema.campaigns.id, name: schema.campaigns.name, accountId: schema.campaigns.accountId })
+      .from(schema.campaigns)
+      .where(ilike(schema.campaigns.name, like))
+      .limit(8),
+  ]);
+  return { accounts, campaigns };
+}
+
+export const CSV_KINDS = ["accounts", "campaigns", "creatives", "breakdowns"] as const;
+export type CsvKind = (typeof CSV_KINDS)[number];
+
+function toCsv(headers: string[], rows: (string | number)[][]): string {
+  const esc = (v: string | number) => {
+    const s = String(v ?? "");
+    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  return [headers, ...rows].map((r) => r.map(esc).join(",")).join("\n");
+}
+
+export async function exportCsv(kind: CsvKind, days: number): Promise<string> {
+  if (kind === "campaigns") {
+    const rows = await fetchCampaigns(days);
+    return toCsv(
+      ["id", "name", "account", "status", "objective", "spend", "impressions", "conversions", "ctr", "cpc", "roas"],
+      rows.map((x) => [x.id, x.name, x.accountName, x.status, x.objective, x.spend, x.impressions, x.conversions, x.ctr.toFixed(2), x.cpc.toFixed(2), x.roas.toFixed(2)]),
+    );
+  }
+  if (kind === "creatives") {
+    const rows = await fetchCreatives(days);
+    return toCsv(
+      ["id", "name", "account", "campaign", "format", "spend", "impressions", "ctr", "cpc", "roas"],
+      rows.map((x) => [x.id, x.name, x.account, x.campaign, x.format, x.spend, x.impressions, x.ctr.toFixed(2), x.cpc.toFixed(2), x.roas.toFixed(2)]),
+    );
+  }
+  if (kind === "breakdowns") {
+    const b = await fetchBreakdowns(days);
+    const rows: (string | number)[][] = [];
+    for (const [dim, items] of Object.entries(b)) {
+      for (const it of items) rows.push([dim, it.label, it.spend, it.conversions, it.roas.toFixed(2)]);
+    }
+    return toCsv(["dimension", "value", "spend", "conversions", "roas"], rows);
+  }
+  const rows = await fetchAccounts(days);
+  return toCsv(
+    ["id", "name", "status", "spend", "impressions", "clicks", "conversions", "ctr", "cpc", "roas"],
+    rows.map((x) => [x.id, x.name, x.status, x.spend, x.impressions, x.clicks, x.conversions, x.ctr.toFixed(2), x.cpc.toFixed(2), x.roas.toFixed(2)]),
+  );
 }

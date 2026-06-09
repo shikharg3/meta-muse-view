@@ -7,6 +7,7 @@ import { BreakdownBar } from "@/components/dashboard/BreakdownBar";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { getOverview, getBreakdowns } from "@/lib/api/dashboard";
 import { fmtCurrency, fmtCompact, fmtPct } from "@/lib/format";
+import { rangeSearch, toRange } from "@/lib/range";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -15,8 +16,10 @@ export const Route = createFileRoute("/")({
       { name: "description", content: "Aggregate Meta Ads performance across all accounts." },
     ],
   }),
-  loader: async () => {
-    const [overview, breakdowns] = await Promise.all([getOverview(), getBreakdowns()]);
+  validateSearch: rangeSearch,
+  loaderDeps: ({ search }) => ({ range: toRange(search.range) }),
+  loader: async ({ deps: { range } }) => {
+    const [overview, breakdowns] = await Promise.all([getOverview({ data: range }), getBreakdowns({ data: range })]);
     return { ...overview, placements: breakdowns.publisher_platform };
   },
   component: Overview,

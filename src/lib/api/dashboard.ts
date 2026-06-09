@@ -1,20 +1,50 @@
 import { createServerFn } from "@tanstack/react-start";
 import {
-  fetchAccount, fetchAccounts, fetchBreakdowns, fetchBusinessSummary, fetchCampaigns, fetchCreatives, fetchOverview,
+  exportCsv,
+  fetchAccount,
+  fetchAccountOptions,
+  fetchAccounts,
+  fetchBreakdowns,
+  fetchBusinessSummary,
+  fetchCampaigns,
+  fetchCreatives,
+  fetchOverview,
+  searchEntities,
+  type CsvKind,
 } from "@/server/fns/dashboard";
 
-export const listAccounts = createServerFn({ method: "GET" }).handler(() => fetchAccounts());
+export const listAccounts = createServerFn({ method: "GET" })
+  .inputValidator((days: number) => days)
+  .handler(({ data }) => fetchAccounts(data));
 
-export const getOverview = createServerFn({ method: "GET" }).handler(() => fetchOverview());
+export const getOverview = createServerFn({ method: "GET" })
+  .inputValidator((days: number) => days)
+  .handler(({ data }) => fetchOverview(data));
 
-export const listCampaigns = createServerFn({ method: "GET" }).handler(() => fetchCampaigns());
+export const listCampaigns = createServerFn({ method: "GET" })
+  .inputValidator((days: number) => days)
+  .handler(({ data }) => fetchCampaigns(data));
 
 export const getAccount = createServerFn({ method: "GET" })
-  .inputValidator((id: string) => id)
-  .handler(({ data }) => fetchAccount(data));
+  .inputValidator((input: { id: string; days: number }) => input)
+  .handler(({ data }) => fetchAccount(data.id, data.days));
 
-export const listCreatives = createServerFn({ method: "GET" }).handler(() => fetchCreatives());
+export const listCreatives = createServerFn({ method: "GET" })
+  .inputValidator((days: number) => days)
+  .handler(({ data }) => fetchCreatives(data));
 
-export const getBreakdowns = createServerFn({ method: "GET" }).handler(() => fetchBreakdowns());
+export const getBreakdowns = createServerFn({ method: "GET" })
+  .inputValidator((days: number) => days)
+  .handler(({ data }) => fetchBreakdowns(data));
 
 export const getBusinessSummary = createServerFn({ method: "GET" }).handler(() => fetchBusinessSummary());
+
+export const getAccountOptions = createServerFn({ method: "GET" }).handler(() => fetchAccountOptions());
+
+export const runSearch = createServerFn({ method: "GET" })
+  .inputValidator((q: string) => q)
+  .handler(({ data }) => searchEntities(data));
+
+export const getExportCsv = createServerFn({ method: "GET" })
+  .inputValidator((input: { kind: CsvKind; days: number }) => input)
+  .handler(({ data }) => exportCsv(data.kind, data.days));

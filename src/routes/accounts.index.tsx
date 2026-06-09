@@ -7,6 +7,7 @@ import { listAccounts } from "@/lib/api/dashboard";
 import { fmtCurrency, fmtCompact, fmtPct } from "@/lib/format";
 import { ArrowUpDown, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { rangeSearch, toRange } from "@/lib/range";
 
 export const Route = createFileRoute("/accounts/")({
   head: () => ({
@@ -15,7 +16,9 @@ export const Route = createFileRoute("/accounts/")({
       { name: "description", content: "All ad accounts under the Business Manager with key performance metrics." },
     ],
   }),
-  loader: async () => ({ accounts: await listAccounts() }),
+  validateSearch: rangeSearch,
+  loaderDeps: ({ search }) => ({ range: toRange(search.range) }),
+  loader: async ({ deps: { range } }) => ({ accounts: await listAccounts({ data: range }) }),
   component: Accounts,
 });
 

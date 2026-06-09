@@ -6,10 +6,13 @@ import { StatusPill } from "@/components/dashboard/StatusPill";
 import { getAccount } from "@/lib/api/dashboard";
 import { fmtCurrency, fmtCompact, fmtPct } from "@/lib/format";
 import { ChevronLeft } from "lucide-react";
+import { rangeSearch, toRange } from "@/lib/range";
 
 export const Route = createFileRoute("/accounts/$id")({
-  loader: async ({ params }) => {
-    const data = await getAccount({ data: params.id });
+  validateSearch: rangeSearch,
+  loaderDeps: ({ search }) => ({ range: toRange(search.range) }),
+  loader: async ({ params, deps: { range } }) => {
+    const data = await getAccount({ data: { id: params.id, days: range } });
     if (!data) throw notFound();
     return data;
   },

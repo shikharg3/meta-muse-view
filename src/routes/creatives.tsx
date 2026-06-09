@@ -6,6 +6,7 @@ import { listCreatives } from "@/lib/api/dashboard";
 import { fmtCurrency, fmtPct, fmtCompact } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { Play } from "lucide-react";
+import { rangeSearch, toRange } from "@/lib/range";
 
 export const Route = createFileRoute("/creatives")({
   head: () => ({
@@ -14,7 +15,9 @@ export const Route = createFileRoute("/creatives")({
       { name: "description", content: "Creative gallery with performance overlays across the BM." },
     ],
   }),
-  loader: async () => ({ creatives: await listCreatives() }),
+  validateSearch: rangeSearch,
+  loaderDeps: ({ search }) => ({ range: toRange(search.range) }),
+  loader: async ({ deps: { range } }) => ({ creatives: await listCreatives({ data: range }) }),
   component: Creatives,
 });
 

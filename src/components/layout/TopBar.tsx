@@ -1,40 +1,70 @@
+import { useRouter, useRouterState, useSearch } from "@tanstack/react-router";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
-import { Calendar, ChevronDown, Download, RefreshCw, Search } from "lucide-react";
+import { Download, RefreshCw } from "lucide-react";
+import { AccountSwitcher } from "./AccountSwitcher";
+import { GlobalSearch } from "./GlobalSearch";
+import { RangePicker } from "./RangePicker";
+import { getExportCsv } from "@/lib/api/dashboard";
+import { toRange } from "@/lib/range";
+import type { CsvKind } from "@/server/fns/dashboard";
 
-export function TopBar({ business }: { business: { businessId: string; accountCount: number } }) {
+function csvKindForPath(path: string): CsvKind | null {
+  if (path.startsWith("/campaigns")) return "campaigns";
+  if (path.startsWith("/creatives")) return "creatives";
+  if (path.startsWith("/audiences")) return "breakdowns";
+  if (path === "/" || path.startsWith("/accounts")) return "accounts";
+  return null;
+}
+
+export function TopBar({
+  business,
+  accounts,
+}: {
+  business: { businessId: string; accountCount: number };
+  accounts: { id: string; name: string }[];
+}) {
+  const router = useRouter();
+  const path = useRouterState({ select: (s) => s.location.pathname });
+  const search = useSearch({ strict: false }) as { range?: number };
+  const range = toRange(search.range);
+  const kind = csvKindForPath(path);
+
+  async function onExport() {
+    if (!kind) return;
+    const csv = await getExportCsv({ data: { kind, days: range } });
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${kind}-${range}d.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
   return (
     <header className="h-14 border-b border-border bg-background/80 backdrop-blur-md sticky top-0 z-20 flex items-center gap-3 px-4 md:px-6">
       <SidebarTrigger className="-ml-1" />
       <div className="h-6 w-px bg-border mx-1" />
 
-      <button className="hidden md:flex items-center gap-2 rounded-md border border-border bg-card hover:bg-accent px-3 h-9 text-xs transition-colors">
-        <span className="text-muted-foreground">BM</span>
-        <span className="font-medium">{business.businessId || "Not configured"}</span>
-        <span className="text-muted-foreground font-mono">· {business.accountCount} accts</span>
-        <ChevronDown className="size-3.5 text-muted-foreground" />
-      </button>
-
-      <div className="relative hidden lg:block flex-1 max-w-xs ml-2">
-        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
-        <input
-          placeholder="Search accounts, campaigns, ads…"
-          className="w-full h-9 rounded-md border border-border bg-card pl-8 pr-3 text-xs placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
-        />
-      </div>
+      <AccountSwitcher business={business} accounts={accounts} />
+      <GlobalSearch />
 
       <div className="flex-1 lg:hidden" />
 
-      <button className="flex items-center gap-2 rounded-md border border-border bg-card hover:bg-accent px-3 h-9 text-xs transition-colors">
-        <Calendar className="size-3.5 text-muted-foreground" />
-        <span className="font-medium">Last 30 days</span>
-        <ChevronDown className="size-3.5 text-muted-foreground" />
-      </button>
+      <RangePicker />
 
-      <Button variant="outline" size="sm" className="hidden sm:inline-flex h-9 text-xs">
+      <Button
+        variant="outline"
+        size="sm"
+        className="hidden sm:inline-flex h-9 text-xs"
+        onClick={() => router.invalidate()}
+      >
         <RefreshCw className="size-3.5" /> Refresh
       </Button>
-      <Button size="sm" className="h-9 text-xs">
+      <Button size="sm" className="h-9 text-xs" onClick={onExport} disabled={!kind}>
         <Download className="size-3.5" /> Export
       </Button>
     </header>

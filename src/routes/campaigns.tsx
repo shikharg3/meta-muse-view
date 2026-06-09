@@ -6,6 +6,7 @@ import { listCampaigns } from "@/lib/api/dashboard";
 import { fmtCurrency, fmtPct, fmtCompact } from "@/lib/format";
 import { ChevronDown, ChevronRight, Search, SlidersHorizontal } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { rangeSearch, toRange } from "@/lib/range";
 
 export const Route = createFileRoute("/campaigns")({
   head: () => ({
@@ -14,7 +15,9 @@ export const Route = createFileRoute("/campaigns")({
       { name: "description", content: "Explore campaigns, ad sets, and ads across all accounts." },
     ],
   }),
-  loader: async () => ({ campaigns: await listCampaigns() }),
+  validateSearch: rangeSearch,
+  loaderDeps: ({ search }) => ({ range: toRange(search.range) }),
+  loader: async ({ deps: { range } }) => ({ campaigns: await listCampaigns({ data: range }) }),
   component: CampaignsExplorer,
 });
 

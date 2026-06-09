@@ -3,6 +3,7 @@ import { PageHeader } from "@/components/dashboard/PageHeader";
 import { BreakdownBar } from "@/components/dashboard/BreakdownBar";
 import { getBreakdowns } from "@/lib/api/dashboard";
 import { fmtCurrency, fmtCompact } from "@/lib/format";
+import { rangeSearch, toRange } from "@/lib/range";
 
 export const Route = createFileRoute("/audiences")({
   head: () => ({
@@ -11,7 +12,9 @@ export const Route = createFileRoute("/audiences")({
       { name: "description", content: "Audience and placement breakdowns across the Business Manager." },
     ],
   }),
-  loader: async () => await getBreakdowns(),
+  validateSearch: rangeSearch,
+  loaderDeps: ({ search }) => ({ range: toRange(search.range) }),
+  loader: async ({ deps: { range } }) => await getBreakdowns({ data: range }),
   component: Audiences,
 });
 
