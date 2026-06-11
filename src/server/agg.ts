@@ -1,8 +1,12 @@
 import type { AccountStatus, Kpis } from "@/lib/types";
 
 export interface Totals {
-  spend: number; impressions: number; clicks: number;
-  conversions: number; revenue: number; reach: number;
+  spend: number;
+  impressions: number;
+  clicks: number;
+  conversions: number;
+  revenue: number;
+  reach: number;
 }
 
 const div = (a: number, b: number): number => (b > 0 ? a / b : 0);
@@ -15,8 +19,16 @@ export function deriveKpis(t: Totals): Kpis {
     cpc: div(t.spend, t.clicks),
     cpm: div(t.spend, t.impressions) * 1000,
     roas: div(t.revenue, t.spend),
-    frequency: div(t.impressions, t.reach),
   };
+}
+
+/**
+ * Percent change vs a previous-period value; null when there is no meaningful
+ * baseline (prev <= 0) so the UI can hide the badge instead of showing +Inf.
+ */
+export function pctDelta(cur: number, prev: number): number | null {
+  if (prev <= 0) return null;
+  return ((cur - prev) / prev) * 100;
 }
 
 /** Window start as YYYY-MM-DD, `days` before `today` (inclusive). */

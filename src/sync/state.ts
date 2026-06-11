@@ -1,9 +1,23 @@
+import { eq } from "drizzle-orm";
 import { db, schema } from "@/db/client";
 import type { InsightsClient } from "@/meta/types";
 
 type Phase = "structure" | "insights";
 
-export async function markSync(accountId: string, phase: Phase, error: string | null): Promise<void> {
+/** True until the account completes its first insights sync (drives the initial backfill). */
+export async function isFirstInsightsSync(accountId: string): Promise<boolean> {
+  const [row] = await db
+    .select({ last: schema.syncState.lastInsightsSync })
+    .from(schema.syncState)
+    .where(eq(schema.syncState.accountId, accountId));
+  return !row?.last;
+}
+
+export async function markSync(
+  accountId: string,
+  phase: Phase,
+  error: string | null,
+): Promise<void> {
   const ok = error === null;
   const stamp = new Date();
   const advanceStructure = ok && phase === "structure";

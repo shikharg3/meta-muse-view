@@ -20,7 +20,12 @@ function meta(node: GraphNode) {
 
 export async function syncStructure(client: InsightsClient, accountId: string): Promise<void> {
   const campaigns = await client.getChildren(accountId, "campaigns", [
-    "id", "name", "status", "effective_status", "objective", "daily_budget",
+    "id",
+    "name",
+    "status",
+    "effective_status",
+    "objective",
+    "daily_budget",
   ]);
   for (const c of campaigns) {
     const vals = {
@@ -31,11 +36,18 @@ export async function syncStructure(client: InsightsClient, accountId: string): 
       dailyBudget: int(c.daily_budget),
       ...meta(c),
     };
-    await db.insert(schema.campaigns).values(vals).onConflictDoUpdate({ target: schema.campaigns.id, set: vals });
+    await db
+      .insert(schema.campaigns)
+      .values(vals)
+      .onConflictDoUpdate({ target: schema.campaigns.id, set: vals });
   }
 
   const adsets = await client.getChildren(accountId, "adsets", [
-    "id", "name", "status", "effective_status", "campaign_id",
+    "id",
+    "name",
+    "status",
+    "effective_status",
+    "campaign_id",
   ]);
   for (const s of adsets) {
     const vals = {
@@ -45,11 +57,19 @@ export async function syncStructure(client: InsightsClient, accountId: string): 
       name: reqStr(s.name, String(s.id)),
       ...meta(s),
     };
-    await db.insert(schema.adSets).values(vals).onConflictDoUpdate({ target: schema.adSets.id, set: vals });
+    await db
+      .insert(schema.adSets)
+      .values(vals)
+      .onConflictDoUpdate({ target: schema.adSets.id, set: vals });
   }
 
   const ads = await client.getChildren(accountId, "ads", [
-    "id", "name", "status", "effective_status", "adset_id", "creative{id}",
+    "id",
+    "name",
+    "status",
+    "effective_status",
+    "adset_id",
+    "creative{id}",
   ]);
   for (const a of ads) {
     const vals = {
@@ -60,10 +80,19 @@ export async function syncStructure(client: InsightsClient, accountId: string): 
       creativeId: creativeId(a),
       ...meta(a),
     };
-    await db.insert(schema.ads).values(vals).onConflictDoUpdate({ target: schema.ads.id, set: vals });
+    await db
+      .insert(schema.ads)
+      .values(vals)
+      .onConflictDoUpdate({ target: schema.ads.id, set: vals });
   }
 
-  const creatives = await client.getChildren(accountId, "adcreatives", ["id", "name", "thumbnail_url"]);
+  const creatives = await client.getChildren(accountId, "adcreatives", [
+    "id",
+    "name",
+    "thumbnail_url",
+    "object_type",
+    "object_story_spec",
+  ]);
   for (const cr of creatives) {
     const vals = {
       id: String(cr.id),
@@ -72,7 +101,10 @@ export async function syncStructure(client: InsightsClient, accountId: string): 
       raw: cr,
       syncedAt: now(),
     };
-    await db.insert(schema.adCreatives).values(vals).onConflictDoUpdate({ target: schema.adCreatives.id, set: vals });
+    await db
+      .insert(schema.adCreatives)
+      .values(vals)
+      .onConflictDoUpdate({ target: schema.adCreatives.id, set: vals });
   }
 }
 
@@ -91,7 +123,10 @@ export async function syncAccounts(client: InsightsClient, businessId: string): 
       raw: a,
       syncedAt: now(),
     };
-    await db.insert(schema.accounts).values(vals).onConflictDoUpdate({ target: schema.accounts.id, set: vals });
+    await db
+      .insert(schema.accounts)
+      .values(vals)
+      .onConflictDoUpdate({ target: schema.accounts.id, set: vals });
   }
   return ids;
 }

@@ -1,4 +1,4 @@
-import { useRouter, useRouterState, useSearch } from "@tanstack/react-router";
+import { Link, useRouter, useRouterState, useSearch } from "@tanstack/react-router";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
 import { Download, RefreshCw } from "lucide-react";
@@ -7,6 +7,8 @@ import { GlobalSearch } from "./GlobalSearch";
 import { RangePicker } from "./RangePicker";
 import { getExportCsv } from "@/lib/api/dashboard";
 import { toRange } from "@/lib/range";
+import { fmtRelTime } from "@/lib/format";
+import { cn } from "@/lib/utils";
 import type { CsvKind } from "@/server/fns/dashboard";
 
 function csvKindForPath(path: string): CsvKind | null {
@@ -17,11 +19,29 @@ function csvKindForPath(path: string): CsvKind | null {
   return null;
 }
 
+/** Data-freshness chip: last completed insights sync, colored by staleness. */
+function SyncFreshness({ lastSyncAt }: { lastSyncAt: string | null }) {
+  const ageMin = lastSyncAt ? (Date.now() - new Date(lastSyncAt).getTime()) / 60_000 : Infinity;
+  const tone = ageMin <= 120 ? "bg-success" : ageMin <= 360 ? "bg-warning" : "bg-destructive";
+  return (
+    <Link
+      to="/settings"
+      title={lastSyncAt ? `Last insights sync: ${lastSyncAt}` : "No sync has completed yet"}
+      className="hidden xl:flex items-center gap-1.5 rounded-md border border-border bg-card hover:bg-accent px-2.5 h-9 text-[11px] text-muted-foreground transition-colors"
+    >
+      <span className={cn("size-1.5 rounded-full", tone)} />
+      <span className="font-mono">
+        {lastSyncAt ? `synced ${fmtRelTime(lastSyncAt)}` : "never synced"}
+      </span>
+    </Link>
+  );
+}
+
 export function TopBar({
   business,
   accounts,
 }: {
-  business: { businessId: string; accountCount: number };
+  business: { businessId: string; accountCount: number; lastSyncAt: string | null };
   accounts: { id: string; name: string }[];
 }) {
   const router = useRouter();
@@ -54,6 +74,7 @@ export function TopBar({
 
       <div className="flex-1 lg:hidden" />
 
+      <SyncFreshness lastSyncAt={business.lastSyncAt} />
       <RangePicker />
 
       <Button

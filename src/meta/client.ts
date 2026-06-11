@@ -23,7 +23,10 @@ export class MetaClient implements InsightsClient {
   private sleep: (ms: number) => Promise<void>;
   private maxRetries: number;
 
-  constructor(private creds: MetaCredentials, deps: MetaClientDeps = {}) {
+  constructor(
+    private creds: MetaCredentials,
+    deps: MetaClientDeps = {},
+  ) {
     this.fetchImpl = deps.fetchImpl ?? fetch;
     this.sleep =
       deps.sleep ??
@@ -54,7 +57,8 @@ export class MetaClient implements InsightsClient {
     for (;;) {
       const res = await this.fetchImpl(this.url(path, params));
       if (res.status === 429 || res.status >= 500) {
-        if (attempt++ >= this.maxRetries) throw new Error(`Meta ${res.status} after ${attempt} retries`);
+        if (attempt++ >= this.maxRetries)
+          throw new Error(`Meta ${res.status} after ${attempt} retries`);
         await this.sleep(backoffMs(attempt));
         continue;
       }
@@ -63,7 +67,10 @@ export class MetaClient implements InsightsClient {
       if (error) throw new Error(`Meta error ${error.code}: ${error.message}`);
       if (accountId) {
         const usage = parseUsage(res.headers, accountId);
-        if (shouldBackoff(usage)) await this.sleep(Math.min(60_000, Math.max(1000, usage.estimatedTimeToRegainAccess * 60_000)));
+        if (shouldBackoff(usage))
+          await this.sleep(
+            Math.min(60_000, Math.max(1000, usage.estimatedTimeToRegainAccess * 60_000)),
+          );
       }
       return body;
     }
@@ -83,15 +90,24 @@ export class MetaClient implements InsightsClient {
       if (Array.isArray(data)) out.push(...(data as GraphNode[]));
       const paging = body?.paging as { next?: unknown; cursors?: { after?: unknown } } | undefined;
       after =
-        paging?.next && typeof paging.cursors?.after === "string" ? paging.cursors.after : undefined;
+        paging?.next && typeof paging.cursors?.after === "string"
+          ? paging.cursors.after
+          : undefined;
     } while (after);
     return out;
   }
 
   async getAccounts(businessId: string): Promise<GraphNode[]> {
     const fields = ["account_id", "name", "currency", "account_status"];
-    // System-user tokens without a business id enumerate via /me/adaccounts.
-    if (!businessId) {
+    // System-user tokens enumerate via /me/adaccounts when no usable business id is
+    // configured. BM ids are numeric; anything else (e.g. an email pasted into the
+    // Settings field) would 400 every cycle, so fall back instead of dying.
+    if (!businessId || !/^\d+$/.test(businessId)) {
+      if (businessId) {
+        console.warn(
+          `[meta] business id ${JSON.stringify(businessId)} is not numeric; enumerating via /me/adaccounts`,
+        );
+      }
       return this.getPaged("me/adaccounts", { fields, limit: 200 });
     }
     const [owned, managed] = await Promise.all([
@@ -119,7 +135,10 @@ export class MetaClient implements InsightsClient {
       input_token: this.creds.token,
     });
     const d = (body?.data ?? {}) as Record<string, unknown>;
-    return { is_valid: Boolean(d.is_valid), scopes: Array.isArray(d.scopes) ? (d.scopes as string[]) : [] };
+    return {
+      is_valid: Boolean(d.is_valid),
+      scopes: Array.isArray(d.scopes) ? (d.scopes as string[]) : [],
+    };
   }
 }
 

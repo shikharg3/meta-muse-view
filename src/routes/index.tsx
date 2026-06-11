@@ -7,7 +7,8 @@ import { BreakdownBar } from "@/components/dashboard/BreakdownBar";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { getOverview, getBreakdowns } from "@/lib/api/dashboard";
 import { fmtCurrency, fmtCompact, fmtPct } from "@/lib/format";
-import { rangeSearch, toRange } from "@/lib/range";
+import { rangeSearch, toRange, RANGE_LABELS } from "@/lib/range";
+import { kpiSparks } from "@/lib/sparks";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -19,14 +20,19 @@ export const Route = createFileRoute("/")({
   validateSearch: rangeSearch,
   loaderDeps: ({ search }) => ({ range: toRange(search.range) }),
   loader: async ({ deps: { range } }) => {
-    const [overview, breakdowns] = await Promise.all([getOverview({ data: range }), getBreakdowns({ data: range })]);
+    const [overview, breakdowns] = await Promise.all([
+      getOverview({ data: range }),
+      getBreakdowns({ data: range }),
+    ]);
     return { ...overview, placements: breakdowns.publisher_platform };
   },
   component: Overview,
 });
 
 function Overview() {
-  const { kpis, topAccounts, topCampaigns, trend, placements } = Route.useLoaderData();
+  const { kpis, deltas, topAccounts, topCampaigns, trend, placements } = Route.useLoaderData();
+  const { range } = Route.useLoaderDeps();
+  const sparks = kpiSparks(trend);
 
   return (
     <div className="p-6 md:p-8 space-y-8 max-w-[1600px]">
@@ -36,14 +42,49 @@ function Overview() {
       />
 
       <section className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <KpiCard label="Total Spend" value={fmtCurrency(kpis.spend)} delta={12.4} spark={[42, 50, 38, 55, 60, 72, 65, 80, 85, 92, 88, 95]} />
-        <KpiCard label="Avg. ROAS" value={`${kpis.roas.toFixed(2)}x`} delta={-2.1} spark={[70, 72, 68, 75, 71, 65, 62, 68, 64, 60, 58, 62]} />
-        <KpiCard label="CTR" value={fmtPct(kpis.ctr)} delta={0.4} spark={[30, 35, 40, 38, 45, 42, 50, 48, 52, 55, 53, 58]} />
-        <KpiCard label="Conversions" value={fmtCompact(kpis.conversions)} delta={18.2} spark={[50, 55, 60, 58, 65, 70, 68, 75, 78, 82, 88, 94]} />
-        <KpiCard label="Impressions" value={fmtCompact(kpis.impressions)} delta={9.6} spark={[55, 60, 58, 65, 70, 68, 72, 75, 80, 78, 84, 88]} />
-        <KpiCard label="Avg. CPC" value={fmtCurrency(kpis.cpc)} delta={-5.2} spark={[80, 75, 78, 72, 70, 68, 65, 62, 60, 58, 55, 52]} />
-        <KpiCard label="Avg. CPM" value={fmtCurrency(kpis.cpm)} delta={4.1} spark={[60, 62, 65, 64, 68, 70, 72, 74, 76, 75, 78, 80]} />
-        <KpiCard label="Reach" value={fmtCompact(kpis.reach)} delta={7.8} spark={[40, 45, 50, 48, 55, 58, 62, 65, 70, 72, 76, 80]} />
+        <KpiCard
+          label="Total Spend"
+          value={fmtCurrency(kpis.spend)}
+          delta={deltas.spend}
+          spark={sparks.spend}
+        />
+        <KpiCard
+          label="Avg. ROAS"
+          value={`${kpis.roas.toFixed(2)}x`}
+          delta={deltas.roas}
+          spark={sparks.roas}
+        />
+        <KpiCard label="CTR" value={fmtPct(kpis.ctr)} delta={deltas.ctr} spark={sparks.ctr} />
+        <KpiCard
+          label="Conversions"
+          value={fmtCompact(kpis.conversions)}
+          delta={deltas.conversions}
+          spark={sparks.conversions}
+        />
+        <KpiCard
+          label="Impressions"
+          value={fmtCompact(kpis.impressions)}
+          delta={deltas.impressions}
+          spark={sparks.impressions}
+        />
+        <KpiCard
+          label="Avg. CPC"
+          value={fmtCurrency(kpis.cpc)}
+          delta={deltas.cpc}
+          spark={sparks.cpc}
+        />
+        <KpiCard
+          label="Avg. CPM"
+          value={fmtCurrency(kpis.cpm)}
+          delta={deltas.cpm}
+          spark={sparks.cpm}
+        />
+        <KpiCard
+          label="Reach"
+          value={fmtCompact(kpis.reach)}
+          delta={deltas.reach}
+          spark={sparks.reach}
+        />
       </section>
 
       <section className="grid grid-cols-1 xl:grid-cols-3 gap-4">
@@ -51,7 +92,9 @@ function Overview() {
           <div className="flex items-center justify-between mb-2">
             <div>
               <h3 className="text-sm font-semibold">Spend &amp; Conversions</h3>
-              <p className="text-xs text-muted-foreground">Daily aggregate · last 30 days</p>
+              <p className="text-xs text-muted-foreground">
+                Daily aggregate · {RANGE_LABELS[range].toLowerCase()}
+              </p>
             </div>
           </div>
           <TrendChart data={trend} />
@@ -69,7 +112,9 @@ function Overview() {
         <div className="rounded-xl border border-border bg-card overflow-hidden">
           <div className="flex items-center justify-between px-5 py-4 border-b border-border">
             <h3 className="text-sm font-semibold">Top Accounts by Spend</h3>
-            <Link to="/accounts" className="text-xs text-primary hover:underline">View all</Link>
+            <Link to="/accounts" className="text-xs text-primary hover:underline">
+              View all
+            </Link>
           </div>
           <table className="w-full text-sm">
             <thead>
@@ -84,12 +129,26 @@ function Overview() {
               {topAccounts.map((a) => (
                 <tr key={a.id} className="hover:bg-accent/40 transition-colors">
                   <td className="px-5 py-3">
-                    <Link to="/accounts/$id" params={{ id: a.id }} className="font-medium hover:text-primary">{a.name}</Link>
+                    <Link
+                      to="/accounts/$id"
+                      params={{ id: a.id }}
+                      className="font-medium hover:text-primary"
+                    >
+                      {a.name}
+                    </Link>
                     <div className="font-mono text-[10px] text-muted-foreground">{a.id}</div>
                   </td>
                   <td className="px-3 py-3 text-right font-mono">{fmtCurrency(a.spend)}</td>
-                  <td className={`px-3 py-3 text-right font-mono ${a.roas >= 3 ? "text-success" : a.roas >= 1.5 ? "" : "text-destructive"}`}>{a.roas.toFixed(2)}x</td>
-                  <td className="px-5 py-3"><div className="flex justify-end"><Sparkline data={a.spark} /></div></td>
+                  <td
+                    className={`px-3 py-3 text-right font-mono ${a.roas >= 3 ? "text-success" : a.roas >= 1.5 ? "" : "text-destructive"}`}
+                  >
+                    {a.roas.toFixed(2)}x
+                  </td>
+                  <td className="px-5 py-3">
+                    <div className="flex justify-end">
+                      <Sparkline data={a.spark} />
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -99,7 +158,9 @@ function Overview() {
         <div className="rounded-xl border border-border bg-card overflow-hidden">
           <div className="flex items-center justify-between px-5 py-4 border-b border-border">
             <h3 className="text-sm font-semibold">Top Campaigns by ROAS</h3>
-            <Link to="/campaigns" className="text-xs text-primary hover:underline">Explorer</Link>
+            <Link to="/campaigns" className="text-xs text-primary hover:underline">
+              Explorer
+            </Link>
           </div>
           <table className="w-full text-sm">
             <thead>
@@ -115,11 +176,17 @@ function Overview() {
                 <tr key={c.id} className="hover:bg-accent/40 transition-colors">
                   <td className="px-5 py-3">
                     <div className="font-medium truncate max-w-[260px]">{c.name}</div>
-                    <div className="text-[10px] text-muted-foreground truncate max-w-[260px]">{c.accountName}</div>
+                    <div className="text-[10px] text-muted-foreground truncate max-w-[260px]">
+                      {c.accountName}
+                    </div>
                   </td>
                   <td className="px-3 py-3 text-right font-mono">{fmtCurrency(c.spend)}</td>
-                  <td className="px-3 py-3 text-right font-mono text-success">{c.roas.toFixed(2)}x</td>
-                  <td className="px-5 py-3 text-right"><StatusPill status={c.status} /></td>
+                  <td className="px-3 py-3 text-right font-mono text-success">
+                    {c.roas.toFixed(2)}x
+                  </td>
+                  <td className="px-5 py-3 text-right">
+                    <StatusPill status={c.status} />
+                  </td>
                 </tr>
               ))}
             </tbody>

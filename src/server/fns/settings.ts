@@ -2,12 +2,14 @@ import { eq } from "drizzle-orm";
 import { db, schema } from "@/db/client";
 import { getCredentials, saveCredentials } from "@/lib/credentials";
 import { MetaClient } from "@/meta/client";
+import { isCycleRunning } from "@/sync/cycle";
 
 export interface SettingsView {
   appId: string; businessId: string; accountIds: string[]; apiVersion: string;
   hasSecret: boolean; hasToken: boolean;
   token: { isValid: boolean; scopes: string[]; checkedAt: string | null } | null;
   sync: { accounts: number; lastInsightsSync: string | null; errors: number } | null;
+  syncRunning: boolean;
 }
 
 export interface CredsForm { appId: string; appSecret?: string; token?: string; businessId: string; accountIds: string; }
@@ -33,6 +35,7 @@ export async function fetchSettings(): Promise<SettingsView> {
           errors: states.filter((s) => s.status === "error").length,
         }
       : null,
+    syncRunning: isCycleRunning(),
   };
 }
 

@@ -5,7 +5,7 @@ import { Area, AreaChart, ResponsiveContainer } from "recharts";
 interface KpiCardProps {
   label: string;
   value: string;
-  delta?: number; // percent
+  delta?: number | null; // percent vs previous period; null/undefined hides the badge
   spark?: number[];
   hint?: string;
 }
@@ -16,14 +16,19 @@ export function KpiCard({ label, value, delta, spark, hint }: KpiCardProps) {
   return (
     <div className="rounded-xl border border-border bg-card p-5 flex flex-col gap-3">
       <div className="flex items-start justify-between gap-2">
-        <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">{label}</span>
-        {delta !== undefined && (
-          <span className={cn(
-            "inline-flex items-center gap-0.5 text-[10px] font-semibold px-1.5 py-0.5 rounded font-mono",
-            positive ? "bg-success/10 text-success" : "bg-destructive/10 text-destructive"
-          )}>
+        <span className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+          {label}
+        </span>
+        {delta != null && (
+          <span
+            className={cn(
+              "inline-flex items-center gap-0.5 text-[10px] font-semibold px-1.5 py-0.5 rounded font-mono",
+              positive ? "bg-success/10 text-success" : "bg-destructive/10 text-destructive",
+            )}
+          >
             {positive ? <ArrowUpRight className="size-3" /> : <ArrowDownRight className="size-3" />}
-            {positive ? "+" : ""}{delta.toFixed(1)}%
+            {positive ? "+" : ""}
+            {delta.toFixed(1)}%
           </span>
         )}
       </div>
@@ -38,7 +43,13 @@ export function KpiCard({ label, value, delta, spark, hint }: KpiCardProps) {
                   <stop offset="100%" stopColor="var(--color-primary)" stopOpacity={0} />
                 </linearGradient>
               </defs>
-              <Area type="monotone" dataKey="v" stroke="var(--color-primary)" strokeWidth={1.5} fill={`url(#g-${label})`} />
+              <Area
+                type="monotone"
+                dataKey="v"
+                stroke="var(--color-primary)"
+                strokeWidth={1.5}
+                fill={`url(#g-${label})`}
+              />
             </AreaChart>
           </ResponsiveContainer>
         ) : hint ? (

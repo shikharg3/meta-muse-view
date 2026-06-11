@@ -16,7 +16,10 @@ test("follows cursor pagination and aggregates pages", async () => {
     if (u.includes("after=CURSOR1")) {
       return jsonResponse({ data: [{ id: "b" }], paging: {} });
     }
-    return jsonResponse({ data: [{ id: "a" }], paging: { cursors: { after: "CURSOR1" }, next: "x" } });
+    return jsonResponse({
+      data: [{ id: "a" }],
+      paging: { cursors: { after: "CURSOR1" }, next: "x" },
+    });
   };
   const client = new MetaClient(
     { appId: "1", appSecret: "s", token: "t", version: "v25.0" },
@@ -47,14 +50,33 @@ test("retries on 429 then succeeds", async () => {
 test("getAccounts merges owned + client ad accounts and dedupes by id", async () => {
   const fetchImpl = async (url: string | URL) => {
     const u = String(url);
-    if (u.includes("owned_ad_accounts")) return jsonResponse({ data: [{ id: "act_1" }, { id: "act_2" }] });
-    if (u.includes("client_ad_accounts")) return jsonResponse({ data: [{ id: "act_2" }, { id: "act_3" }] });
+    if (u.includes("owned_ad_accounts"))
+      return jsonResponse({ data: [{ id: "act_1" }, { id: "act_2" }] });
+    if (u.includes("client_ad_accounts"))
+      return jsonResponse({ data: [{ id: "act_2" }, { id: "act_3" }] });
     return jsonResponse({ data: [] });
   };
   const client = new MetaClient(
     { appId: "1", appSecret: "s", token: "t", version: "v25.0" },
     { fetchImpl: fetchImpl as unknown as typeof fetch, sleep: async () => {} },
   );
-  const ids = (await client.getAccounts("bm_1")).map((a) => a.id).sort();
+  const ids = (await client.getAccounts("12345")).map((a) => a.id).sort();
   expect(ids).toEqual(["act_1", "act_2", "act_3"]);
+});
+
+test("getAccounts falls back to /me/adaccounts for empty or non-numeric business ids", async () => {
+  const calls: string[] = [];
+  const fetchImpl = async (url: string | URL) => {
+    calls.push(String(url));
+    return jsonResponse({ data: [{ id: "act_9" }] });
+  };
+  const client = new MetaClient(
+    { appId: "1", appSecret: "s", token: "t", version: "v25.0" },
+    { fetchImpl: fetchImpl as unknown as typeof fetch, sleep: async () => {} },
+  );
+  // an email pasted into the BM field must not 400 every sync cycle
+  expect((await client.getAccounts("admin@example.com")).map((a) => a.id)).toEqual(["act_9"]);
+  expect((await client.getAccounts("")).map((a) => a.id)).toEqual(["act_9"]);
+  expect(calls).toHaveLength(2);
+  for (const u of calls) expect(u).toContain("me/adaccounts");
 });

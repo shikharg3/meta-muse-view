@@ -1,8 +1,8 @@
 import { createFileRoute, useRouter } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { PageHeader } from "@/components/dashboard/PageHeader";
-import { getSettings, saveCredentialsForm, testConnection } from "@/lib/api/settings";
-import { CheckCircle2, KeyRound, RefreshCw, XCircle } from "lucide-react";
+import { getSettings, resetAndResync, saveCredentialsForm, testConnection } from "@/lib/api/settings";
+import { CheckCircle2, KeyRound, RefreshCw, Trash2, XCircle } from "lucide-react";
 
 export const Route = createFileRoute("/settings")({
   head: () => ({ meta: [{ title: "Settings — MetaConsole" }] }),
@@ -16,6 +16,15 @@ function Settings() {
   const [form, setForm] = useState({ appId: s.appId, appSecret: "", token: "", businessId: s.businessId, accountIds: s.accountIds.join(", ") });
   const [saving, setSaving] = useState(false);
   const [testResult, setTestResult] = useState<string | null>(null);
+  const [resetMsg, setResetMsg] = useState<string | null>(null);
+  const [resetting, setResetting] = useState(false);
+
+  // While a resync is in flight, keep the loader data (counts, last sync) fresh.
+  useEffect(() => {
+    if (!s.syncRunning) return;
+    const t = setInterval(() => void router.invalidate(), 5000);
+    return () => clearInterval(t);
+  }, [s.syncRunning, router]);
 
   const onSave = async () => {
     setSaving(true);
@@ -29,6 +38,20 @@ function Settings() {
     const r = await testConnection();
     setTestResult(r.isValid ? `Valid · scopes: ${r.scopes.join(", ") || "none"}` : `Invalid: ${r.error ?? "token rejected"}`);
     await router.invalidate();
+  };
+  const onReset = async () => {
+    if (!window.confirm("Delete ALL synced data (accounts, campaigns, stats) and re-download everything with the current credentials?")) return;
+    setResetting(true);
+    setResetMsg(null);
+    try {
+      const r = await resetAndResync();
+      setResetMsg(r.syncStarted ? "Data wiped — full resync running in background." : "Data wiped — a sync was already running; it will repopulate.");
+    } catch (e) {
+      setResetMsg(`Reset failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setResetting(false);
+      await router.invalidate();
+    }
   };
 
   return (
@@ -63,13 +86,34 @@ function Settings() {
       <section className="rounded-xl border border-border bg-card p-6 space-y-4">
         <div className="flex items-center gap-3">
           <div className="size-9 rounded-md bg-primary/10 grid place-items-center"><RefreshCw className="size-4 text-primary" /></div>
-          <h3 className="text-sm font-semibold">Sync status</h3>
+          <h3 className="text-sm font-semibold flex-1">Sync status</h3>
+          {s.syncRunning && (
+            <span className="inline-flex items-center gap-1 text-xs font-medium text-primary">
+              <RefreshCw className="size-3.5 animate-spin" /> Syncing…
+            </span>
+          )}
         </div>
         <div className="grid grid-cols-2 gap-4 text-xs">
           <Field label="Accounts tracked" value={s.sync ? String(s.sync.accounts) : "—"} />
           <Field label="Last insights sync" value={s.sync?.lastInsightsSync ?? "never"} />
           <Field label="Accounts in error" value={s.sync ? String(s.sync.errors) : "—"} />
           <Field label="API version" value={s.apiVersion} />
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-destructive/40 bg-card p-6 space-y-4">
+        <div className="flex items-center gap-3">
+          <div className="size-9 rounded-md bg-destructive/10 grid place-items-center"><Trash2 className="size-4 text-destructive" /></div>
+          <div className="flex-1">
+            <h3 className="text-sm font-semibold">Reset synced data</h3>
+            <p className="text-xs text-muted-foreground mt-0.5">Deletes all ad accounts, campaigns, and stats, then re-downloads everything (90-day backfill) with the saved credentials. Credentials are kept.</p>
+          </div>
+        </div>
+        <div className="flex items-center gap-3">
+          <button onClick={onReset} disabled={resetting || s.syncRunning} className="h-9 px-4 rounded-md bg-destructive text-destructive-foreground text-xs font-medium disabled:opacity-50">
+            {resetting ? "Wiping…" : "Reset & resync"}
+          </button>
+          {resetMsg && <span className="text-xs text-muted-foreground">{resetMsg}</span>}
         </div>
       </section>
     </div>

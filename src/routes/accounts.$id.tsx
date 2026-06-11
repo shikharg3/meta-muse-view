@@ -6,7 +6,8 @@ import { StatusPill } from "@/components/dashboard/StatusPill";
 import { getAccount } from "@/lib/api/dashboard";
 import { fmtCurrency, fmtCompact, fmtPct } from "@/lib/format";
 import { ChevronLeft } from "lucide-react";
-import { rangeSearch, toRange } from "@/lib/range";
+import { rangeSearch, toRange, RANGE_LABELS } from "@/lib/range";
+import { kpiSparks } from "@/lib/sparks";
 
 export const Route = createFileRoute("/accounts/$id")({
   validateSearch: rangeSearch,
@@ -19,24 +20,34 @@ export const Route = createFileRoute("/accounts/$id")({
   head: ({ loaderData }) => ({
     meta: [
       { title: `${loaderData?.account.name ?? "Account"} — MetaConsole` },
-      { name: "description", content: `Performance detail for ${loaderData?.account.name ?? "ad account"}.` },
+      {
+        name: "description",
+        content: `Performance detail for ${loaderData?.account.name ?? "ad account"}.`,
+      },
     ],
   }),
   component: AccountDetail,
   notFoundComponent: () => (
     <div className="p-8">
-      <Link to="/accounts" className="text-sm text-primary hover:underline">← Back to accounts</Link>
+      <Link to="/accounts" className="text-sm text-primary hover:underline">
+        ← Back to accounts
+      </Link>
       <p className="mt-4 text-muted-foreground">Account not found.</p>
     </div>
   ),
 });
 
 function AccountDetail() {
-  const { account, campaigns: accountCampaigns, trend } = Route.useLoaderData();
+  const { account, deltas, campaigns: accountCampaigns, trend } = Route.useLoaderData();
+  const { range } = Route.useLoaderDeps();
+  const sparks = kpiSparks(trend);
 
   return (
     <div className="p-6 md:p-8 space-y-8 max-w-[1600px]">
-      <Link to="/accounts" className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
+      <Link
+        to="/accounts"
+        className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+      >
         <ChevronLeft className="size-3.5" /> All accounts
       </Link>
       <PageHeader
@@ -47,26 +58,65 @@ function AccountDetail() {
       </PageHeader>
 
       <section className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <KpiCard label="Spend" value={fmtCurrency(account.spend)} delta={8.4} spark={account.spark} />
-        <KpiCard label="ROAS" value={`${account.roas.toFixed(2)}x`} delta={2.1} spark={account.spark.slice().reverse()} />
-        <KpiCard label="Conversions" value={fmtCompact(account.conversions)} delta={11.3} spark={account.spark} />
-        <KpiCard label="CTR" value={fmtPct(account.ctr)} delta={-0.4} spark={account.spark} />
-        <KpiCard label="Impressions" value={fmtCompact(account.impressions)} />
-        <KpiCard label="Reach" value={fmtCompact(account.reach)} />
-        <KpiCard label="Frequency" value={account.frequency.toFixed(2)} />
-        <KpiCard label="Revenue" value={fmtCurrency(account.revenue)} delta={14.8} spark={account.spark} />
+        <KpiCard
+          label="Spend"
+          value={fmtCurrency(account.spend)}
+          delta={deltas.spend}
+          spark={sparks.spend}
+        />
+        <KpiCard
+          label="ROAS"
+          value={`${account.roas.toFixed(2)}x`}
+          delta={deltas.roas}
+          spark={sparks.roas}
+        />
+        <KpiCard
+          label="Conversions"
+          value={fmtCompact(account.conversions)}
+          delta={deltas.conversions}
+          spark={sparks.conversions}
+        />
+        <KpiCard label="CTR" value={fmtPct(account.ctr)} delta={deltas.ctr} spark={sparks.ctr} />
+        <KpiCard
+          label="Impressions"
+          value={fmtCompact(account.impressions)}
+          delta={deltas.impressions}
+          spark={sparks.impressions}
+        />
+        <KpiCard
+          label="Reach"
+          value={fmtCompact(account.reach)}
+          delta={deltas.reach}
+          spark={sparks.reach}
+        />
+        <KpiCard
+          label="Avg. CPM"
+          value={fmtCurrency(account.cpm)}
+          delta={deltas.cpm}
+          spark={sparks.cpm}
+        />
+        <KpiCard
+          label="Revenue"
+          value={fmtCurrency(account.revenue)}
+          delta={deltas.revenue}
+          spark={sparks.revenue}
+        />
       </section>
 
       <section className="rounded-xl border border-border bg-card p-5">
         <h3 className="text-sm font-semibold mb-1">Performance Trend</h3>
-        <p className="text-xs text-muted-foreground mb-2">Last 30 days · spend &amp; conversions</p>
+        <p className="text-xs text-muted-foreground mb-2">
+          {RANGE_LABELS[range]} · spend &amp; conversions
+        </p>
         <TrendChart data={trend} />
       </section>
 
       <section className="rounded-xl border border-border bg-card overflow-hidden">
         <div className="px-5 py-4 border-b border-border flex items-center justify-between">
           <h3 className="text-sm font-semibold">Campaigns ({accountCampaigns.length})</h3>
-          <Link to="/campaigns" className="text-xs text-primary hover:underline">Open explorer</Link>
+          <Link to="/campaigns" className="text-xs text-primary hover:underline">
+            Open explorer
+          </Link>
         </div>
         <table className="w-full text-sm">
           <thead>
@@ -85,11 +135,21 @@ function AccountDetail() {
               <tr key={c.id} className="hover:bg-accent/40">
                 <td className="px-5 py-3 font-medium">{c.name}</td>
                 <td className="px-3 py-3 text-xs font-mono text-muted-foreground">{c.objective}</td>
-                <td className="px-3 py-3"><StatusPill status={c.status} /></td>
+                <td className="px-3 py-3">
+                  <StatusPill status={c.status} />
+                </td>
                 <td className="px-3 py-3 text-right font-mono">{fmtCurrency(c.spend)}</td>
-                <td className="px-3 py-3 text-right font-mono text-muted-foreground">{fmtPct(c.ctr)}</td>
-                <td className="px-3 py-3 text-right font-mono text-muted-foreground">{fmtCurrency(c.cpc)}</td>
-                <td className={`px-5 py-3 text-right font-mono ${c.roas >= 3 ? "text-success" : ""}`}>{c.roas.toFixed(2)}x</td>
+                <td className="px-3 py-3 text-right font-mono text-muted-foreground">
+                  {fmtPct(c.ctr)}
+                </td>
+                <td className="px-3 py-3 text-right font-mono text-muted-foreground">
+                  {fmtCurrency(c.cpc)}
+                </td>
+                <td
+                  className={`px-5 py-3 text-right font-mono ${c.roas >= 3 ? "text-success" : ""}`}
+                >
+                  {c.roas.toFixed(2)}x
+                </td>
               </tr>
             ))}
           </tbody>
