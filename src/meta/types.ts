@@ -26,7 +26,12 @@ export interface GraphNode {
 
 export interface InsightsClient {
   getAccounts(businessId: string): Promise<GraphNode[]>;
-  getChildren(parentId: string, edge: string, fields: string[]): Promise<GraphNode[]>;
+  getChildren(
+    parentId: string,
+    edge: string,
+    fields: string[],
+    extra?: Record<string, unknown>,
+  ): Promise<GraphNode[]>;
   getInsights(objectId: string, params: Record<string, unknown>): Promise<InsightRow[]>;
   debugToken(): Promise<{ is_valid: boolean; scopes: string[] }>;
 }

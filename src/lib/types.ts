@@ -36,6 +36,9 @@ export interface Ad {
   cpc: number;
   roas: number;
   conversions: number;
+  /** Objective-dependent "Results" count (e.g. purchases, leads, link clicks). */
+  results: number;
+  resultLabel: string;
   format: "Image" | "Video" | "Carousel" | "Collection";
   thumbHue: number;
   thumbnailUrl?: string | null;

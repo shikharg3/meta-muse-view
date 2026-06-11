@@ -1,7 +1,7 @@
 import { and, eq, gte, ilike, lt, or, sql } from "drizzle-orm";
 import { db, schema } from "@/db/client";
 import { accountStatus, deriveKpis, pctDelta, windowStart, type Totals } from "@/server/agg";
-import { creativeFormat, hueFromId } from "@/server/creative";
+import { creativeFormat, creativeImageUrl, hueFromId, resultSpec } from "@/server/creative";
 import type {
   AdAccount,
   BreakdownRow,
@@ -29,6 +29,25 @@ function totalsByEntity(level: string, since: string) {
     .from(schema.insightsDaily)
     .where(and(eq(schema.insightsDaily.level, level), gte(schema.insightsDaily.date, since)))
     .groupBy(schema.insightsDaily.entityId);
+}
+
+/**
+ * Ad-level action sums keyed `${entityId}:${action_type}`, for the objective-
+ * dependent "results" metric (actions live in jsonb, not numeric columns).
+ */
+async function adActionTotals(since: string): Promise<Map<string, number>> {
+  const rows = await db.execute(sql`
+    select entity_id, elem->>'action_type' as type, sum((elem->>'value')::double precision) as val
+    from insights_daily
+    cross join lateral jsonb_array_elements(actions) elem
+    where level = 'ad' and date >= ${since}
+    group by 1, 2
+  `);
+  const out = new Map<string, number>();
+  for (const r of rows as unknown as { entity_id: string; type: string; val: number }[]) {
+    out.set(`${r.entity_id}:${r.type}`, Number(r.val) || 0);
+  }
+  return out;
 }
 
 /** Account-level totals summed over [since, before). `reach` is the sum of daily reach. */
@@ -203,6 +222,7 @@ export async function fetchCampaigns(days: number): Promise<Campaign[]> {
     campTotals,
     setTotals,
     adTotals,
+    adActions,
   ] = await Promise.all([
     db.select().from(schema.campaigns),
     db.select().from(schema.adSets),
@@ -212,6 +232,7 @@ export async function fetchCampaigns(days: number): Promise<Campaign[]> {
     totalsByEntity("campaign", since),
     totalsByEntity("adset", since),
     totalsByEntity("ad", since),
+    adActionTotals(since),
   ]);
   const accName = new Map(accountRows.map((a) => [a.id, a.name]));
   const creativeById = new Map(creativeRows.map((c) => [c.id, c]));
@@ -233,6 +254,7 @@ export async function fetchCampaigns(days: number): Promise<Campaign[]> {
   }
 
   return campaignRows.map((c) => {
+    const rs = resultSpec(c.objective);
     const t = campT.get(c.id);
     const k = deriveKpis({
       spend: num(t?.spend),
@@ -264,9 +286,11 @@ export async function fetchCampaigns(days: number): Promise<Campaign[]> {
           cpc: ak.cpc,
           roas: ak.roas,
           conversions: ak.conversions,
+          results: rs.type === "reach" ? ak.reach : (adActions.get(`${ad.id}:${rs.type}`) ?? 0),
+          resultLabel: rs.label,
           format: creativeFormat(creative?.raw),
           thumbHue: hueFromId(ad.id),
-          thumbnailUrl: creative?.thumbnailUrl ?? null,
+          thumbnailUrl: creativeImageUrl(creative?.raw, creative?.thumbnailUrl ?? null),
         };
       });
       const st = setT.get(s.id);

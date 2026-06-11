@@ -2,7 +2,13 @@ import { test, expect, beforeEach } from "bun:test";
 import { sql as dsql } from "drizzle-orm";
 import { accountStatus, deriveKpis, deriveRoas, pctDelta } from "@/server/agg";
 import { db, schema } from "@/db/client";
-import { fetchAccounts, fetchBusinessSummary, searchEntities, windowDeltas } from "./dashboard";
+import {
+  fetchAccounts,
+  fetchBusinessSummary,
+  fetchCampaigns,
+  searchEntities,
+  windowDeltas,
+} from "./dashboard";
 
 test("deriveKpis computes ratios from summed totals", () => {
   const k = deriveKpis({
@@ -129,6 +135,54 @@ test("fetchAccounts respects the range window and maps status", async () => {
   expect(within7.spend).toBeCloseTo(100);
   expect(within90.spend).toBeCloseTo(1099);
   expect(within7.status).toBe("ACTIVE");
+}, 20000);
+
+test("fetchCampaigns derives objective-based results and hi-res creative urls", async () => {
+  await db.execute(
+    dsql`truncate table accounts, campaigns, ad_sets, ads, ad_creatives, insights_daily cascade`,
+  );
+  const today = new Date().toISOString().slice(0, 10);
+  await db.insert(schema.accounts).values({ id: "act_1", name: "Acc", currency: "USD" });
+  await db.insert(schema.campaigns).values({
+    id: "c1",
+    accountId: "act_1",
+    name: "Leads camp",
+    objective: "OUTCOME_LEADS",
+  });
+  await db
+    .insert(schema.adSets)
+    .values({ id: "s1", campaignId: "c1", accountId: "act_1", name: "S" });
+  await db.insert(schema.ads).values({
+    id: "a1",
+    adSetId: "s1",
+    accountId: "act_1",
+    name: "Ad",
+    creativeId: "cr1",
+  });
+  await db.insert(schema.adCreatives).values({
+    id: "cr1",
+    name: "Cr",
+    thumbnailUrl: "https://cdn/thumb.jpg",
+    raw: { image_url: "https://cdn/full.jpg" },
+  });
+  await db.insert(schema.insightsDaily).values({
+    level: "ad",
+    entityId: "a1",
+    date: today,
+    accountId: "act_1",
+    spend: 50,
+    impressions: 500,
+    clicks: 25,
+    actions: [
+      { action_type: "lead", value: "7" },
+      { action_type: "link_click", value: "30" },
+    ],
+  });
+  const [camp] = await fetchCampaigns(30);
+  const ad = camp.adSets[0].ads[0];
+  expect(ad.results).toBeCloseTo(7); // leads, not link clicks
+  expect(ad.resultLabel).toBe("Leads");
+  expect(ad.thumbnailUrl).toBe("https://cdn/full.jpg"); // image_url over thumbnail
 }, 20000);
 
 test("searchEntities matches accounts by name/id and campaigns by name", async () => {

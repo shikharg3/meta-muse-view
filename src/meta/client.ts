@@ -119,9 +119,14 @@ export class MetaClient implements InsightsClient {
     return [...byId.values()];
   }
 
-  getChildren(parentId: string, edge: string, fields: string[]): Promise<GraphNode[]> {
+  getChildren(
+    parentId: string,
+    edge: string,
+    fields: string[],
+    extra: Record<string, unknown> = {},
+  ): Promise<GraphNode[]> {
     const accountId = parentId.startsWith("act_") ? parentId : "";
-    return this.getPaged(`${parentId}/${edge}`, { fields, limit: 200 }, accountId);
+    return this.getPaged(`${parentId}/${edge}`, { fields, limit: 200, ...extra }, accountId);
   }
 
   async getInsights(objectId: string, params: Record<string, unknown>): Promise<InsightRow[]> {
