@@ -70,3 +70,31 @@ export async function getCredentials(): Promise<Credentials | null> {
   }
   return null;
 }
+
+export interface NotionCredentials {
+  token: string;
+  dbId: string;
+}
+
+/** Notion fields live on the same singleton row; blank token keeps the stored one. */
+export async function saveNotionCredentials(token: string, dbId: string): Promise<void> {
+  const key = env().APP_ENCRYPTION_KEY;
+  const set: Record<string, unknown> = { notionDbId: dbId, updatedAt: new Date() };
+  if (token) set.notionTokenEnc = encryptSecret(token, key);
+  await db
+    .insert(schema.metaCredentials)
+    .values({ id: "singleton", ...set })
+    .onConflictDoUpdate({ target: schema.metaCredentials.id, set });
+}
+
+export async function getNotionCredentials(): Promise<NotionCredentials | null> {
+  const [row] = await db
+    .select({
+      tokenEnc: schema.metaCredentials.notionTokenEnc,
+      dbId: schema.metaCredentials.notionDbId,
+    })
+    .from(schema.metaCredentials)
+    .where(eq(schema.metaCredentials.id, "singleton"));
+  if (!row?.tokenEnc || !row.dbId) return null;
+  return { token: decryptSecret(row.tokenEnc, env().APP_ENCRYPTION_KEY), dbId: row.dbId };
+}

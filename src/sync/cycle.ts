@@ -3,6 +3,7 @@ import { getCredentials } from "@/lib/credentials";
 import { syncStructure, syncAccounts } from "./jobs/structure";
 import { syncInsights } from "./jobs/insights";
 import { syncBreakdowns, BREAKDOWNS } from "./jobs/breakdowns";
+import { syncClients } from "./jobs/clients";
 import { isFirstInsightsSync, markSync, recordTokenHealth } from "./state";
 import { runOnce, type Jobs } from "./run";
 
@@ -83,6 +84,14 @@ export async function runCycle(): Promise<void> {
   }
   running = true;
   try {
+    // Notion client board first: independent of Meta credentials and non-fatal.
+    try {
+      const n = await syncClients();
+      if (n !== null) console.log(`[sync] notion clients: ${n}`);
+    } catch (e) {
+      console.error("[sync] notion clients failed:", e);
+    }
+
     const creds = await getCredentials();
     if (!creds) {
       console.warn(

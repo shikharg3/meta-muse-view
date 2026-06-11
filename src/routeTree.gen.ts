@@ -11,6 +11,7 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as CreativesRouteImport } from './routes/creatives'
+import { Route as ClientsRouteImport } from './routes/clients'
 import { Route as CampaignsRouteImport } from './routes/campaigns'
 import { Route as AudiencesRouteImport } from './routes/audiences'
 import { Route as IndexRouteImport } from './routes/index'
@@ -25,6 +26,11 @@ const SettingsRoute = SettingsRouteImport.update({
 const CreativesRoute = CreativesRouteImport.update({
   id: '/creatives',
   path: '/creatives',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ClientsRoute = ClientsRouteImport.update({
+  id: '/clients',
+  path: '/clients',
   getParentRoute: () => rootRouteImport,
 } as any)
 const CampaignsRoute = CampaignsRouteImport.update({
@@ -57,6 +63,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/audiences': typeof AudiencesRoute
   '/campaigns': typeof CampaignsRoute
+  '/clients': typeof ClientsRoute
   '/creatives': typeof CreativesRoute
   '/settings': typeof SettingsRoute
   '/accounts/$id': typeof AccountsIdRoute
@@ -66,6 +73,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/audiences': typeof AudiencesRoute
   '/campaigns': typeof CampaignsRoute
+  '/clients': typeof ClientsRoute
   '/creatives': typeof CreativesRoute
   '/settings': typeof SettingsRoute
   '/accounts/$id': typeof AccountsIdRoute
@@ -76,6 +84,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/audiences': typeof AudiencesRoute
   '/campaigns': typeof CampaignsRoute
+  '/clients': typeof ClientsRoute
   '/creatives': typeof CreativesRoute
   '/settings': typeof SettingsRoute
   '/accounts/$id': typeof AccountsIdRoute
@@ -87,6 +96,7 @@ export interface FileRouteTypes {
     | '/'
     | '/audiences'
     | '/campaigns'
+    | '/clients'
     | '/creatives'
     | '/settings'
     | '/accounts/$id'
@@ -96,6 +106,7 @@ export interface FileRouteTypes {
     | '/'
     | '/audiences'
     | '/campaigns'
+    | '/clients'
     | '/creatives'
     | '/settings'
     | '/accounts/$id'
@@ -105,6 +116,7 @@ export interface FileRouteTypes {
     | '/'
     | '/audiences'
     | '/campaigns'
+    | '/clients'
     | '/creatives'
     | '/settings'
     | '/accounts/$id'
@@ -115,6 +127,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AudiencesRoute: typeof AudiencesRoute
   CampaignsRoute: typeof CampaignsRoute
+  ClientsRoute: typeof ClientsRoute
   CreativesRoute: typeof CreativesRoute
   SettingsRoute: typeof SettingsRoute
   AccountsIdRoute: typeof AccountsIdRoute
@@ -135,6 +148,13 @@ declare module '@tanstack/react-router' {
       path: '/creatives'
       fullPath: '/creatives'
       preLoaderRoute: typeof CreativesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/clients': {
+      id: '/clients'
+      path: '/clients'
+      fullPath: '/clients'
+      preLoaderRoute: typeof ClientsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/campaigns': {
@@ -179,6 +199,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AudiencesRoute: AudiencesRoute,
   CampaignsRoute: CampaignsRoute,
+  ClientsRoute: ClientsRoute,
   CreativesRoute: CreativesRoute,
   SettingsRoute: SettingsRoute,
   AccountsIdRoute: AccountsIdRoute,

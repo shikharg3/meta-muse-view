@@ -1,23 +1,43 @@
 import { eq } from "drizzle-orm";
 import { db, schema } from "@/db/client";
-import { getCredentials, saveCredentials } from "@/lib/credentials";
+import { getCredentials, saveCredentials, saveNotionCredentials } from "@/lib/credentials";
 import { MetaClient } from "@/meta/client";
 import { isCycleRunning } from "@/sync/cycle";
+import { syncClients } from "@/sync/jobs/clients";
+import { parseNotionDbId } from "@/notion/client";
 
 export interface SettingsView {
-  appId: string; businessId: string; accountIds: string[]; apiVersion: string;
-  hasSecret: boolean; hasToken: boolean;
+  appId: string;
+  businessId: string;
+  accountIds: string[];
+  apiVersion: string;
+  hasSecret: boolean;
+  hasToken: boolean;
   token: { isValid: boolean; scopes: string[]; checkedAt: string | null } | null;
   sync: { accounts: number; lastInsightsSync: string | null; errors: number } | null;
   syncRunning: boolean;
+  notion: { configured: boolean; dbId: string; clients: number; lastSync: string | null };
 }
 
-export interface CredsForm { appId: string; appSecret?: string; token?: string; businessId: string; accountIds: string; }
+export interface CredsForm {
+  appId: string;
+  appSecret?: string;
+  token?: string;
+  businessId: string;
+  accountIds: string;
+}
 
 export async function fetchSettings(): Promise<SettingsView> {
-  const [cred] = await db.select().from(schema.metaCredentials).where(eq(schema.metaCredentials.id, "singleton"));
-  const [health] = await db.select().from(schema.tokenHealth).where(eq(schema.tokenHealth.id, "singleton"));
+  const [cred] = await db
+    .select()
+    .from(schema.metaCredentials)
+    .where(eq(schema.metaCredentials.id, "singleton"));
+  const [health] = await db
+    .select()
+    .from(schema.tokenHealth)
+    .where(eq(schema.tokenHealth.id, "singleton"));
   const states = await db.select().from(schema.syncState);
+  const clientRows = await db.select({ syncedAt: schema.clients.syncedAt }).from(schema.clients);
   return {
     appId: cred?.appId ?? "",
     businessId: cred?.businessId ?? "",
@@ -26,16 +46,34 @@ export async function fetchSettings(): Promise<SettingsView> {
     hasSecret: Boolean(cred?.appSecretEnc),
     hasToken: Boolean(cred?.systemUserTokenEnc),
     token: health
-      ? { isValid: health.isValid, scopes: (health.scopes as string[] | null) ?? [], checkedAt: health.checkedAt?.toISOString() ?? null }
+      ? {
+          isValid: health.isValid,
+          scopes: (health.scopes as string[] | null) ?? [],
+          checkedAt: health.checkedAt?.toISOString() ?? null,
+        }
       : null,
     sync: states.length
       ? {
           accounts: states.length,
-          lastInsightsSync: states.map((s) => s.lastInsightsSync?.toISOString() ?? "").sort().at(-1) || null,
+          lastInsightsSync:
+            states
+              .map((s) => s.lastInsightsSync?.toISOString() ?? "")
+              .sort()
+              .at(-1) || null,
           errors: states.filter((s) => s.status === "error").length,
         }
       : null,
     syncRunning: isCycleRunning(),
+    notion: {
+      configured: Boolean(cred?.notionTokenEnc && cred?.notionDbId),
+      dbId: cred?.notionDbId ?? "",
+      clients: clientRows.length,
+      lastSync:
+        clientRows
+          .map((c) => c.syncedAt?.toISOString() ?? "")
+          .sort()
+          .at(-1) || null,
+    },
   };
 }
 
@@ -49,23 +87,64 @@ export async function saveCredentialsFormData(data: CredsForm): Promise<{ ok: tr
     appSecret,
     token,
     businessId: data.businessId.trim(),
-    accountIds: data.accountIds.split(",").map((s) => s.trim()).filter(Boolean),
+    accountIds: data.accountIds
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
   });
   return { ok: true };
 }
 
-export async function runTestConnection(): Promise<{ isValid: boolean; scopes: string[]; error?: string }> {
+export async function runTestConnection(): Promise<{
+  isValid: boolean;
+  scopes: string[];
+  error?: string;
+}> {
   const creds = await getCredentials();
   if (!creds) return { isValid: false, scopes: [], error: "No credentials saved" };
   try {
-    const client = new MetaClient({ appId: creds.appId, appSecret: creds.appSecret, token: creds.token, version: creds.apiVersion });
+    const client = new MetaClient({
+      appId: creds.appId,
+      appSecret: creds.appSecret,
+      token: creds.token,
+      version: creds.apiVersion,
+    });
     const d = await client.debugToken();
-    await db.insert(schema.tokenHealth)
-      .values({ id: "singleton", checkedAt: new Date(), isValid: d.is_valid, scopes: d.scopes, note: null })
-      .onConflictDoUpdate({ target: schema.tokenHealth.id, set: { checkedAt: new Date(), isValid: d.is_valid, scopes: d.scopes, note: null } });
+    await db
+      .insert(schema.tokenHealth)
+      .values({
+        id: "singleton",
+        checkedAt: new Date(),
+        isValid: d.is_valid,
+        scopes: d.scopes,
+        note: null,
+      })
+      .onConflictDoUpdate({
+        target: schema.tokenHealth.id,
+        set: { checkedAt: new Date(), isValid: d.is_valid, scopes: d.scopes, note: null },
+      });
     return { isValid: d.is_valid, scopes: d.scopes };
   } catch (e) {
     return { isValid: false, scopes: [], error: e instanceof Error ? e.message : String(e) };
   }
 }
 
+export async function saveNotionForm(data: {
+  token?: string;
+  board: string;
+}): Promise<{ ok: boolean; error?: string }> {
+  const dbId = parseNotionDbId(data.board);
+  if (!dbId) return { ok: false, error: "Could not find a database id in that URL" };
+  await saveNotionCredentials(data.token?.trim() ?? "", dbId);
+  return { ok: true };
+}
+
+export async function runNotionSync(): Promise<{ ok: boolean; clients?: number; error?: string }> {
+  try {
+    const n = await syncClients();
+    if (n === null) return { ok: false, error: "Notion is not configured" };
+    return { ok: true, clients: n };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}

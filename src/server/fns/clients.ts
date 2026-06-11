@@ -1,0 +1,247 @@
+import { and, eq, gte, inArray } from "drizzle-orm";
+import { db, schema } from "@/db/client";
+import { deriveKpis, windowStart } from "@/server/agg";
+import { resultSpec } from "@/server/creative";
+import { effectiveAccountIds, getClientRow } from "@/sync/jobs/clients";
+import type { Kpis } from "@/lib/types";
+
+export interface ClientSummary {
+  id: string;
+  name: string;
+  status: string | null;
+  accountCount: number;
+  syncedAt: string | null;
+}
+
+export interface ClientAccountRow {
+  id: string;
+  name: string | null; // null = not in the current BM sync (old/external account)
+  source: "notion" | "manual";
+  spend: number;
+  impressions: number;
+  clicks: number;
+  ctr: number;
+  cpc: number;
+  hasData: boolean;
+}
+
+export interface ClientCampaignRow {
+  id: string;
+  name: string;
+  accountId: string;
+  status: string | null;
+  spend: number;
+  impressions: number;
+  ctr: number;
+  cpc: number;
+  results: number;
+  resultLabel: string;
+}
+
+export interface ClientDetail {
+  id: string;
+  name: string;
+  status: string | null;
+  kpis: Kpis;
+  accounts: ClientAccountRow[];
+  campaigns: ClientCampaignRow[];
+}
+
+export async function fetchClients(): Promise<ClientSummary[]> {
+  const rows = await db.select().from(schema.clients);
+  return rows
+    .map((r) => ({
+      id: r.id,
+      name: r.name,
+      status: r.status,
+      accountCount: effectiveAccountIds(r).length,
+      syncedAt: r.syncedAt?.toISOString() ?? null,
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+const num = (v: unknown): number => Number(v ?? 0);
+
+export async function fetchClientDetail(id: string, days: number): Promise<ClientDetail | null> {
+  const row = await getClientRow(id);
+  if (!row) return null;
+  const accountIds = effectiveAccountIds(row);
+  const since = windowStart(days);
+  const notionIds = (row.notionAccountIds as string[] | null) ?? [];
+
+  if (accountIds.length === 0) {
+    return {
+      id: row.id,
+      name: row.name,
+      status: row.status,
+      kpis: deriveKpis({
+        spend: 0,
+        impressions: 0,
+        clicks: 0,
+        conversions: 0,
+        revenue: 0,
+        reach: 0,
+      }),
+      accounts: [],
+      campaigns: [],
+    };
+  }
+
+  const [accountRows, accountTotals, campaignRows, campaignTotals] = await Promise.all([
+    db.select().from(schema.accounts).where(inArray(schema.accounts.id, accountIds)),
+    db
+      .select()
+      .from(schema.insightsDaily)
+      .where(
+        and(
+          eq(schema.insightsDaily.level, "account"),
+          inArray(schema.insightsDaily.entityId, accountIds),
+          gte(schema.insightsDaily.date, since),
+        ),
+      ),
+    db.select().from(schema.campaigns).where(inArray(schema.campaigns.accountId, accountIds)),
+    db
+      .select()
+      .from(schema.insightsDaily)
+      .where(
+        and(eq(schema.insightsDaily.level, "campaign"), gte(schema.insightsDaily.date, since)),
+      ),
+  ]);
+
+  const accName = new Map(accountRows.map((a) => [a.id, a.name]));
+
+  // Per-account sums + overall KPI totals.
+  const perAccount = new Map<string, { spend: number; impressions: number; clicks: number }>();
+  const totals = { spend: 0, impressions: 0, clicks: 0, conversions: 0, revenue: 0, reach: 0 };
+  for (const r of accountTotals) {
+    const acc = perAccount.get(r.entityId) ?? { spend: 0, impressions: 0, clicks: 0 };
+    acc.spend += num(r.spend);
+    acc.impressions += num(r.impressions);
+    acc.clicks += num(r.clicks);
+    perAccount.set(r.entityId, acc);
+    totals.spend += num(r.spend);
+    totals.impressions += num(r.impressions);
+    totals.clicks += num(r.clicks);
+    totals.conversions += num(r.conversions);
+    totals.revenue += num(r.conversionValues);
+    totals.reach += num(r.reach);
+  }
+
+  const accounts: ClientAccountRow[] = accountIds.map((aid) => {
+    const t = perAccount.get(aid);
+    const k = deriveKpis({
+      spend: t?.spend ?? 0,
+      impressions: t?.impressions ?? 0,
+      clicks: t?.clicks ?? 0,
+      conversions: 0,
+      revenue: 0,
+      reach: 0,
+    });
+    return {
+      id: aid,
+      name: accName.get(aid) ?? null,
+      source: notionIds.includes(aid) ? "notion" : "manual",
+      spend: k.spend,
+      impressions: k.impressions,
+      clicks: k.clicks,
+      ctr: k.ctr,
+      cpc: k.cpc,
+      hasData: Boolean(t),
+    };
+  });
+
+  // Campaign rows scoped to this client's accounts.
+  const campIds = new Set(campaignRows.map((c) => c.id));
+  const campT = new Map<string, { spend: number; impressions: number; clicks: number }>();
+  const campActions = new Map<string, Map<string, number>>();
+  for (const r of campaignTotals) {
+    if (!campIds.has(r.entityId)) continue;
+    const t = campT.get(r.entityId) ?? { spend: 0, impressions: 0, clicks: 0 };
+    t.spend += num(r.spend);
+    t.impressions += num(r.impressions);
+    t.clicks += num(r.clicks);
+    campT.set(r.entityId, t);
+    const acts = (r.actions as { action_type: string; value: string }[] | null) ?? [];
+    const m = campActions.get(r.entityId) ?? new Map<string, number>();
+    for (const a of acts)
+      m.set(a.action_type, (m.get(a.action_type) ?? 0) + (Number(a.value) || 0));
+    campActions.set(r.entityId, m);
+  }
+
+  const campaigns: ClientCampaignRow[] = campaignRows
+    .map((c) => {
+      const t = campT.get(c.id);
+      const k = deriveKpis({
+        spend: t?.spend ?? 0,
+        impressions: t?.impressions ?? 0,
+        clicks: t?.clicks ?? 0,
+        conversions: 0,
+        revenue: 0,
+        reach: 0,
+      });
+      const rs = resultSpec(c.objective);
+      const results = rs.type === "reach" ? 0 : (campActions.get(c.id)?.get(rs.type) ?? 0);
+      return {
+        id: c.id,
+        name: c.name,
+        accountId: c.accountId,
+        status: c.status,
+        spend: k.spend,
+        impressions: k.impressions,
+        ctr: k.ctr,
+        cpc: k.cpc,
+        results,
+        resultLabel: rs.label,
+      };
+    })
+    .sort((a, b) => b.spend - a.spend);
+
+  return {
+    id: row.id,
+    name: row.name,
+    status: row.status,
+    kpis: deriveKpis(totals),
+    accounts,
+    campaigns,
+  };
+}
+
+const ACT_RE = /^act_\d{6,}$/;
+
+/** Normalize loose user input ("123456789", "act_123456789") to act_<digits>. */
+export function normalizeAccountId(input: string): string | null {
+  const m = input.trim().match(/\d{6,}/);
+  if (!m) return null;
+  const id = `act_${m[0]}`;
+  return ACT_RE.test(id) ? id : null;
+}
+
+export async function updateClientAccounts(
+  clientId: string,
+  action: "add" | "remove",
+  accountId: string,
+): Promise<{ ok: boolean; error?: string }> {
+  const id = normalizeAccountId(accountId);
+  if (!id) return { ok: false, error: "Invalid account id" };
+  const row = await getClientRow(clientId);
+  if (!row) return { ok: false, error: "Unknown client" };
+
+  const notion = new Set((row.notionAccountIds as string[] | null) ?? []);
+  const add = new Set((row.manualAddIds as string[] | null) ?? []);
+  const remove = new Set((row.manualRemoveIds as string[] | null) ?? []);
+
+  if (action === "add") {
+    // Re-adding a notion-sourced account just clears its removal override.
+    remove.delete(id);
+    if (!notion.has(id)) add.add(id);
+  } else {
+    if (add.has(id)) add.delete(id);
+    else remove.add(id);
+  }
+
+  await db
+    .update(schema.clients)
+    .set({ manualAddIds: [...add], manualRemoveIds: [...remove] })
+    .where(eq(schema.clients.id, clientId));
+  return { ok: true };
+}

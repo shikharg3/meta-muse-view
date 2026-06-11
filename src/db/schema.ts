@@ -1,5 +1,13 @@
 import {
-  pgTable, text, bigint, doublePrecision, timestamp, jsonb, date, boolean, primaryKey,
+  pgTable,
+  text,
+  bigint,
+  doublePrecision,
+  timestamp,
+  jsonb,
+  date,
+  boolean,
+  primaryKey,
 } from "drizzle-orm/pg-core";
 
 export const accounts = pgTable("accounts", {
@@ -127,5 +135,21 @@ export const metaCredentials = pgTable("meta_credentials", {
   businessId: text("business_id"),
   accountIds: jsonb("account_ids"),
   apiVersion: text("api_version").default("v25.0"),
+  notionTokenEnc: text("notion_token_enc"),
+  notionDbId: text("notion_db_id"),
   updatedAt: timestamp("updated_at", { withTimezone: true }),
+});
+
+// Client ↔ ad-account mapping sourced from the Notion "Meta Campaigns" board,
+// with manual UI overrides that survive re-syncs.
+// Effective accounts = (notion ∪ manualAdd) − manualRemove.
+export const clients = pgTable("clients", {
+  id: text("id").primaryKey(), // slug of the normalized client name
+  name: text("name").notNull(),
+  status: text("status"),
+  notionAccountIds: jsonb("notion_account_ids"), // string[] act_ ids from Notion
+  manualAddIds: jsonb("manual_add_ids"), // string[] act_ ids added in the UI
+  manualRemoveIds: jsonb("manual_remove_ids"), // string[] act_ ids removed in the UI
+  raw: jsonb("raw"), // contributing Notion rows (page ids, titles)
+  syncedAt: timestamp("synced_at", { withTimezone: true }),
 });
