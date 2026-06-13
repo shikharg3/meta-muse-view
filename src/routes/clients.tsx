@@ -6,6 +6,7 @@ import { fmtCurrency, fmtPct, fmtCompact } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { Plus, Search, X } from "lucide-react";
 import { useSort, SortHeader } from "@/components/dashboard/SortableTable";
+import { CampaignTable } from "@/components/dashboard/CampaignTable";
 import { rangeSearch, toRange, type RangeDays } from "@/lib/range";
 
 type ClientSearch = { client?: string; range?: RangeDays };
@@ -79,16 +80,15 @@ function Clients() {
     },
     "spend",
   );
-  const campaignSort = useSort(
-    detail?.campaigns ?? [],
-    {
-      campaign: (c) => c.name,
-      spend: (c) => c.spend,
-      impressions: (c) => c.impressions,
-      ctr: (c) => c.ctr,
-      results: (c) => c.results,
-    },
-    "spend",
+  // Campaign status filter (item 1). CampaignTable handles its own sort/drilldown.
+  const [status, setStatus] = useState("ALL");
+  const statuses = useMemo(
+    () => ["ALL", ...Array.from(new Set((detail?.campaigns ?? []).map((c) => c.status)))],
+    [detail],
+  );
+  const visibleCampaigns = useMemo(
+    () => (detail?.campaigns ?? []).filter((c) => status === "ALL" || c.status === status),
+    [detail, status],
   );
 
   const mutate = async (action: "add" | "remove", accountId: string) => {
@@ -328,96 +328,34 @@ function Clients() {
                 </div>
               </section>
 
-              <section className="rounded-xl border border-border bg-card overflow-hidden">
-                <div className="p-4 border-b border-border">
-                  <h3 className="text-sm font-semibold">
+              <section className="space-y-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <h3 className="text-sm font-semibold flex-1">
                     Campaigns{" "}
                     <span className="text-muted-foreground font-normal">
-                      ({detail.campaigns.length})
+                      ({visibleCampaigns.length})
                     </span>
                   </h3>
-                </div>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-xs">
-                    <thead>
-                      <tr className="text-[10px] uppercase tracking-wider text-muted-foreground bg-muted/30">
-                        <SortHeader
-                          label="Campaign"
-                          sortKey="campaign"
-                          active={campaignSort.key}
-                          dir={campaignSort.dir}
-                          onSort={campaignSort.toggle}
-                        />
-                        <th className="px-3 py-2.5 font-semibold text-left">Status</th>
-                        <SortHeader
-                          label="Spend"
-                          sortKey="spend"
-                          active={campaignSort.key}
-                          dir={campaignSort.dir}
-                          onSort={campaignSort.toggle}
-                          align="right"
-                        />
-                        <SortHeader
-                          label="Impr."
-                          sortKey="impressions"
-                          active={campaignSort.key}
-                          dir={campaignSort.dir}
-                          onSort={campaignSort.toggle}
-                          align="right"
-                        />
-                        <SortHeader
-                          label="CTR"
-                          sortKey="ctr"
-                          active={campaignSort.key}
-                          dir={campaignSort.dir}
-                          onSort={campaignSort.toggle}
-                          align="right"
-                        />
-                        <SortHeader
-                          label="Results"
-                          sortKey="results"
-                          active={campaignSort.key}
-                          dir={campaignSort.dir}
-                          onSort={campaignSort.toggle}
-                          align="right"
-                        />
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-border">
-                      {campaignSort.sorted.map((c) => (
-                        <tr key={c.id} className="hover:bg-accent/40">
-                          <td className="px-5 py-2.5">
-                            <div className="font-medium truncate max-w-md">{c.name}</div>
-                            <div className="font-mono text-[10px] text-muted-foreground">
-                              {c.accountId}
-                            </div>
-                          </td>
-                          <td className="px-3 py-2.5">{c.status ?? "—"}</td>
-                          <td className="px-3 py-2.5 text-right font-mono">
-                            {fmtCurrency(c.spend)}
-                          </td>
-                          <td className="px-3 py-2.5 text-right font-mono">
-                            {fmtCompact(c.impressions)}
-                          </td>
-                          <td className="px-3 py-2.5 text-right font-mono">{fmtPct(c.ctr)}</td>
-                          <td className="px-3 py-2.5 text-right font-mono">
-                            {fmtCompact(c.results)}{" "}
-                            <span className="text-muted-foreground">
-                              {c.resultLabel.toLowerCase()}
-                            </span>
-                          </td>
-                        </tr>
+                  {statuses.length > 2 && (
+                    <div className="flex rounded-md border border-border bg-card overflow-hidden text-xs">
+                      {statuses.map((st) => (
+                        <button
+                          key={st}
+                          onClick={() => setStatus(st)}
+                          className={cn(
+                            "px-2.5 h-8 font-medium font-mono uppercase text-[10px] transition-colors",
+                            status === st
+                              ? "bg-primary text-primary-foreground"
+                              : "text-muted-foreground hover:bg-accent",
+                          )}
+                        >
+                          {st}
+                        </button>
                       ))}
-                      {detail.campaigns.length === 0 && (
-                        <tr>
-                          <td colSpan={6} className="px-4 py-6 text-center text-muted-foreground">
-                            No synced campaigns for these accounts (old accounts have no data).
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
+                    </div>
+                  )}
                 </div>
+                <CampaignTable campaigns={visibleCampaigns} />
               </section>
             </>
           )}

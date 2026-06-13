@@ -183,8 +183,17 @@ export async function runTool(name: string, input: Record<string, unknown>): Pro
           ctr: a.ctr,
           cpc: a.cpc,
         })),
-        // Bound tokens: campaigns are spend-sorted, keep the top 25.
-        campaigns: detail.campaigns.slice(0, 25),
+        // Bound tokens: spend-sorted, top 25, compact (drop the ad-set/ad tree).
+        campaigns: detail.campaigns.slice(0, 25).map((c) => ({
+          name: c.name,
+          status: c.status,
+          objective: c.objective,
+          spend: c.spend,
+          ctr: c.ctr,
+          cpc: c.cpc,
+          results: c.results,
+          resultLabel: c.resultLabel,
+        })),
       };
     }
     case "get_overview": {

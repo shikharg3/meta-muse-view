@@ -1,9 +1,9 @@
 import { and, eq, gte, inArray } from "drizzle-orm";
 import { db, schema } from "@/db/client";
 import { deriveKpis, windowStart } from "@/server/agg";
-import { resultSpec } from "@/server/creative";
+import { fetchCampaigns } from "./dashboard";
 import { effectiveAccountIds, getClientRow } from "@/sync/jobs/clients";
-import type { Kpis } from "@/lib/types";
+import type { Campaign, Kpis } from "@/lib/types";
 
 export interface ClientSummary {
   id: string;
@@ -25,26 +25,13 @@ export interface ClientAccountRow {
   hasData: boolean;
 }
 
-export interface ClientCampaignRow {
-  id: string;
-  name: string;
-  accountId: string;
-  status: string | null;
-  spend: number;
-  impressions: number;
-  ctr: number;
-  cpc: number;
-  results: number;
-  resultLabel: string;
-}
-
 export interface ClientDetail {
   id: string;
   name: string;
   status: string | null;
   kpis: Kpis;
   accounts: ClientAccountRow[];
-  campaigns: ClientCampaignRow[];
+  campaigns: Campaign[];
 }
 
 export async function fetchClients(): Promise<ClientSummary[]> {
@@ -87,7 +74,7 @@ export async function fetchClientDetail(id: string, days: number): Promise<Clien
     };
   }
 
-  const [accountRows, accountTotals, campaignRows, campaignTotals] = await Promise.all([
+  const [accountRows, accountTotals] = await Promise.all([
     db.select().from(schema.accounts).where(inArray(schema.accounts.id, accountIds)),
     db
       .select()
@@ -98,13 +85,6 @@ export async function fetchClientDetail(id: string, days: number): Promise<Clien
           inArray(schema.insightsDaily.entityId, accountIds),
           gte(schema.insightsDaily.date, since),
         ),
-      ),
-    db.select().from(schema.campaigns).where(inArray(schema.campaigns.accountId, accountIds)),
-    db
-      .select()
-      .from(schema.insightsDaily)
-      .where(
-        and(eq(schema.insightsDaily.level, "campaign"), gte(schema.insightsDaily.date, since)),
       ),
   ]);
 
@@ -150,51 +130,8 @@ export async function fetchClientDetail(id: string, days: number): Promise<Clien
     };
   });
 
-  // Campaign rows scoped to this client's accounts.
-  const campIds = new Set(campaignRows.map((c) => c.id));
-  const campT = new Map<string, { spend: number; impressions: number; clicks: number }>();
-  const campActions = new Map<string, Map<string, number>>();
-  for (const r of campaignTotals) {
-    if (!campIds.has(r.entityId)) continue;
-    const t = campT.get(r.entityId) ?? { spend: 0, impressions: 0, clicks: 0 };
-    t.spend += num(r.spend);
-    t.impressions += num(r.impressions);
-    t.clicks += num(r.clicks);
-    campT.set(r.entityId, t);
-    const acts = (r.actions as { action_type: string; value: string }[] | null) ?? [];
-    const m = campActions.get(r.entityId) ?? new Map<string, number>();
-    for (const a of acts)
-      m.set(a.action_type, (m.get(a.action_type) ?? 0) + (Number(a.value) || 0));
-    campActions.set(r.entityId, m);
-  }
-
-  const campaigns: ClientCampaignRow[] = campaignRows
-    .map((c) => {
-      const t = campT.get(c.id);
-      const k = deriveKpis({
-        spend: t?.spend ?? 0,
-        impressions: t?.impressions ?? 0,
-        clicks: t?.clicks ?? 0,
-        conversions: 0,
-        revenue: 0,
-        reach: 0,
-      });
-      const rs = resultSpec(c.objective);
-      const results = rs.type === "reach" ? 0 : (campActions.get(c.id)?.get(rs.type) ?? 0);
-      return {
-        id: c.id,
-        name: c.name,
-        accountId: c.accountId,
-        status: c.status,
-        spend: k.spend,
-        impressions: k.impressions,
-        ctr: k.ctr,
-        cpc: k.cpc,
-        results,
-        resultLabel: rs.label,
-      };
-    })
-    .sort((a, b) => b.spend - a.spend);
+  // Nested campaign→ad set→ad tree scoped to this client's accounts (drill-down).
+  const campaigns = (await fetchCampaigns(days, accountIds)).sort((a, b) => b.spend - a.spend);
 
   return {
     id: row.id,

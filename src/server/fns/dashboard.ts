@@ -1,4 +1,4 @@
-import { and, eq, gte, ilike, lt, or, sql } from "drizzle-orm";
+import { and, eq, gte, ilike, inArray, lt, or, sql } from "drizzle-orm";
 import { db, schema } from "@/db/client";
 import { accountStatus, deriveKpis, pctDelta, windowStart, type Totals } from "@/server/agg";
 import { creativeFormat, creativeImageUrl, hueFromId, resultSpec } from "@/server/creative";
@@ -282,8 +282,12 @@ export async function fetchOverview(days: number): Promise<{
   };
 }
 
-export async function fetchCampaigns(days: number): Promise<Campaign[]> {
+export async function fetchCampaigns(days: number, accountIds?: string[]): Promise<Campaign[]> {
   const since = windowStart(days);
+  // Optional account scope (used by the per-client view). Empty = no rows.
+  const inAccts = accountIds ? inArray(schema.campaigns.accountId, accountIds) : undefined;
+  const inAcctsSet = accountIds ? inArray(schema.adSets.accountId, accountIds) : undefined;
+  const inAcctsAd = accountIds ? inArray(schema.ads.accountId, accountIds) : undefined;
   const [
     campaignRows,
     adsetRows,
@@ -295,9 +299,9 @@ export async function fetchCampaigns(days: number): Promise<Campaign[]> {
     adTotals,
     adActions,
   ] = await Promise.all([
-    db.select().from(schema.campaigns),
-    db.select().from(schema.adSets),
-    db.select().from(schema.ads),
+    db.select().from(schema.campaigns).where(inAccts),
+    db.select().from(schema.adSets).where(inAcctsSet),
+    db.select().from(schema.ads).where(inAcctsAd),
     db.select().from(schema.accounts),
     db.select().from(schema.adCreatives),
     totalsByEntity("campaign", since),
