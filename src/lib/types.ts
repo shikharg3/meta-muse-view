@@ -25,6 +25,9 @@ export interface AdAccount {
   roas: number;
   reach: number;
   spark: number[];
+  /** Objective-aware "Results" total (leads/purchases/etc.) across the account. */
+  results: number;
+  resultLabel: string;
 }
 export interface Ad {
   id: string;
@@ -50,6 +53,8 @@ export interface AdSet {
   spend: number;
   ctr: number;
   roas: number;
+  results: number;
+  resultLabel: string;
   audience: string;
   ads: Ad[];
 }
@@ -67,6 +72,8 @@ export interface Campaign {
   cpc: number;
   cpm: number;
   roas: number;
+  results: number;
+  resultLabel: string;
   adSets: AdSet[];
 }
 export interface CreativeCard extends Ad {

@@ -9,6 +9,7 @@ import { getOverview, getBreakdowns } from "@/lib/api/dashboard";
 import { fmtCurrency, fmtCompact, fmtPct } from "@/lib/format";
 import { rangeSearch, toRange, RANGE_LABELS } from "@/lib/range";
 import { kpiSparks } from "@/lib/sparks";
+import { useSort, SortHeader } from "@/components/dashboard/SortableTable";
 
 export const Route = createFileRoute("/overview")({
   head: () => ({
@@ -30,9 +31,28 @@ export const Route = createFileRoute("/overview")({
 });
 
 function Overview() {
-  const { kpis, deltas, topAccounts, topCampaigns, trend, placements } = Route.useLoaderData();
+  const { kpis, deltas, results, topAccounts, topCampaigns, trend, placements } =
+    Route.useLoaderData();
   const { range } = Route.useLoaderDeps();
   const sparks = kpiSparks(trend);
+  const accounts = useSort(
+    topAccounts,
+    {
+      name: (a) => a.name,
+      spend: (a) => a.spend,
+      results: (a) => a.results,
+    },
+    "spend",
+  );
+  const campaigns = useSort(
+    topCampaigns,
+    {
+      name: (c) => c.name,
+      spend: (c) => c.spend,
+      results: (c) => c.results,
+    },
+    "spend",
+  );
 
   return (
     <div className="p-6 md:p-8 space-y-8 max-w-[1600px]">
@@ -48,12 +68,7 @@ function Overview() {
           delta={deltas.spend}
           spark={sparks.spend}
         />
-        <KpiCard
-          label="Avg. ROAS"
-          value={`${kpis.roas.toFixed(2)}x`}
-          delta={deltas.roas}
-          spark={sparks.roas}
-        />
+        <KpiCard label={results.label} value={fmtCompact(results.value)} />
         <KpiCard label="CTR" value={fmtPct(kpis.ctr)} delta={deltas.ctr} spark={sparks.ctr} />
         <KpiCard
           label="Conversions"
@@ -119,14 +134,35 @@ function Overview() {
           <table className="w-full text-sm">
             <thead>
               <tr className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider bg-muted/30">
-                <th className="text-left px-5 py-2.5">Account</th>
-                <th className="text-right px-3 py-2.5">Spend</th>
-                <th className="text-right px-3 py-2.5">ROAS</th>
+                <SortHeader
+                  label="Account"
+                  sortKey="name"
+                  active={accounts.key}
+                  dir={accounts.dir}
+                  onSort={accounts.toggle}
+                  align="left"
+                />
+                <SortHeader
+                  label="Spend"
+                  sortKey="spend"
+                  active={accounts.key}
+                  dir={accounts.dir}
+                  onSort={accounts.toggle}
+                  align="right"
+                />
+                <SortHeader
+                  label="Results"
+                  sortKey="results"
+                  active={accounts.key}
+                  dir={accounts.dir}
+                  onSort={accounts.toggle}
+                  align="right"
+                />
                 <th className="text-right px-5 py-2.5">Trend</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
-              {topAccounts.map((a) => (
+              {accounts.sorted.map((a) => (
                 <tr key={a.id} className="hover:bg-accent/40 transition-colors">
                   <td className="px-5 py-3">
                     <Link
@@ -139,10 +175,9 @@ function Overview() {
                     <div className="font-mono text-[10px] text-muted-foreground">{a.id}</div>
                   </td>
                   <td className="px-3 py-3 text-right font-mono">{fmtCurrency(a.spend)}</td>
-                  <td
-                    className={`px-3 py-3 text-right font-mono ${a.roas >= 3 ? "text-success" : a.roas >= 1.5 ? "" : "text-destructive"}`}
-                  >
-                    {a.roas.toFixed(2)}x
+                  <td className="px-3 py-3 text-right font-mono">
+                    {fmtCompact(a.results)}{" "}
+                    <span className="text-muted-foreground">{a.resultLabel.toLowerCase()}</span>
                   </td>
                   <td className="px-5 py-3">
                     <div className="flex justify-end">
@@ -157,7 +192,7 @@ function Overview() {
 
         <div className="rounded-xl border border-border bg-card overflow-hidden">
           <div className="flex items-center justify-between px-5 py-4 border-b border-border">
-            <h3 className="text-sm font-semibold">Top Campaigns by ROAS</h3>
+            <h3 className="text-sm font-semibold">Top Campaigns by Spend</h3>
             <Link to="/campaigns" className="text-xs text-primary hover:underline">
               Explorer
             </Link>
@@ -165,14 +200,35 @@ function Overview() {
           <table className="w-full text-sm">
             <thead>
               <tr className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider bg-muted/30">
-                <th className="text-left px-5 py-2.5">Campaign</th>
-                <th className="text-right px-3 py-2.5">Spend</th>
-                <th className="text-right px-3 py-2.5">ROAS</th>
+                <SortHeader
+                  label="Campaign"
+                  sortKey="name"
+                  active={campaigns.key}
+                  dir={campaigns.dir}
+                  onSort={campaigns.toggle}
+                  align="left"
+                />
+                <SortHeader
+                  label="Spend"
+                  sortKey="spend"
+                  active={campaigns.key}
+                  dir={campaigns.dir}
+                  onSort={campaigns.toggle}
+                  align="right"
+                />
+                <SortHeader
+                  label="Results"
+                  sortKey="results"
+                  active={campaigns.key}
+                  dir={campaigns.dir}
+                  onSort={campaigns.toggle}
+                  align="right"
+                />
                 <th className="text-right px-5 py-2.5">Status</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
-              {topCampaigns.map((c) => (
+              {campaigns.sorted.map((c) => (
                 <tr key={c.id} className="hover:bg-accent/40 transition-colors">
                   <td className="px-5 py-3">
                     <div className="font-medium truncate max-w-[260px]">{c.name}</div>
@@ -181,8 +237,9 @@ function Overview() {
                     </div>
                   </td>
                   <td className="px-3 py-3 text-right font-mono">{fmtCurrency(c.spend)}</td>
-                  <td className="px-3 py-3 text-right font-mono text-success">
-                    {c.roas.toFixed(2)}x
+                  <td className="px-3 py-3 text-right font-mono">
+                    {fmtCompact(c.results)}{" "}
+                    <span className="text-muted-foreground">{c.resultLabel.toLowerCase()}</span>
                   </td>
                   <td className="px-5 py-3 text-right">
                     <StatusPill status={c.status} />

@@ -10,18 +10,29 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command";
+import { cn } from "@/lib/utils";
 import { runSearch } from "@/lib/api/dashboard";
 
 type Results = {
+  clients: { id: string; name: string; status: string | null }[];
   accounts: { id: string; name: string }[];
   campaigns: { id: string; name: string; accountId: string }[];
 };
-const EMPTY: Results = { accounts: [], campaigns: [] };
+const EMPTY: Results = { clients: [], accounts: [], campaigns: [] };
 
-/** Global search palette (⌘K) querying accounts + campaigns server-side; navigates on select. */
+type Scope = "all" | "clients" | "accounts" | "campaigns";
+const SCOPES: { key: Scope; label: string }[] = [
+  { key: "all", label: "All" },
+  { key: "clients", label: "Clients" },
+  { key: "accounts", label: "Accounts" },
+  { key: "campaigns", label: "Campaigns" },
+];
+
+/** Global search palette (⌘K) over clients, accounts, and campaigns; navigates on select. */
 export function GlobalSearch() {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState("");
+  const [scope, setScope] = useState<Scope>("all");
   const [res, setRes] = useState<Results>(EMPTY);
   const navigate = useNavigate();
 
@@ -57,11 +68,20 @@ export function GlobalSearch() {
     return () => document.removeEventListener("keydown", onKey);
   }, []);
 
-  function goAccount(id: string) {
+  const close = () => {
     setOpen(false);
     setQ("");
+  };
+  const goClient = (id: string) => {
+    close();
+    navigate({ to: "/clients", search: (s) => ({ ...s, client: id }) });
+  };
+  const goAccount = (id: string) => {
+    close();
     navigate({ to: "/accounts/$id", params: { id } });
-  }
+  };
+
+  const show = (s: Scope) => scope === "all" || scope === s;
 
   return (
     <>
@@ -70,18 +90,50 @@ export function GlobalSearch() {
         className="hidden lg:flex items-center gap-2 flex-1 max-w-xs ml-2 h-9 rounded-md border border-border bg-card px-3 text-xs text-muted-foreground hover:bg-accent transition-colors"
       >
         <Search className="size-3.5" />
-        <span>Search accounts, campaigns…</span>
+        <span>Search clients, accounts…</span>
         <kbd className="ml-auto text-[10px] font-mono opacity-60">⌘K</kbd>
       </button>
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="overflow-hidden p-0" aria-describedby={undefined}>
           <DialogTitle className="sr-only">Search</DialogTitle>
           <Command shouldFilter={false}>
-            <CommandInput placeholder="Search accounts, campaigns…" value={q} onValueChange={setQ} />
+            <CommandInput
+              placeholder="Search clients, accounts, campaigns…"
+              value={q}
+              onValueChange={setQ}
+            />
+            <div className="flex items-center gap-1 px-2 py-1.5 border-b border-border">
+              {SCOPES.map((s) => (
+                <button
+                  key={s.key}
+                  onClick={() => setScope(s.key)}
+                  className={cn(
+                    "rounded px-2 h-6 text-[11px] font-medium transition-colors",
+                    scope === s.key
+                      ? "bg-primary text-primary-foreground"
+                      : "text-muted-foreground hover:bg-accent",
+                  )}
+                >
+                  {s.label}
+                </button>
+              ))}
+            </div>
             <CommandList>
               <CommandEmpty>{q.trim() ? "No results." : "Type to search."}</CommandEmpty>
-              {res.accounts.length > 0 && (
-                <CommandGroup heading="Accounts">
+              {show("clients") && res.clients.length > 0 && (
+                <CommandGroup heading="Clients">
+                  {res.clients.map((c) => (
+                    <CommandItem key={c.id} value={`cl:${c.id}`} onSelect={() => goClient(c.id)}>
+                      <span className="truncate">{c.name}</span>
+                      <span className="ml-auto text-[10px] text-muted-foreground">
+                        {c.status ?? "client"}
+                      </span>
+                    </CommandItem>
+                  ))}
+                </CommandGroup>
+              )}
+              {show("accounts") && res.accounts.length > 0 && (
+                <CommandGroup heading="Ad accounts">
                   {res.accounts.map((a) => (
                     <CommandItem key={a.id} value={`a:${a.id}`} onSelect={() => goAccount(a.id)}>
                       <span className="truncate">{a.name}</span>
@@ -92,12 +144,18 @@ export function GlobalSearch() {
                   ))}
                 </CommandGroup>
               )}
-              {res.campaigns.length > 0 && (
+              {show("campaigns") && res.campaigns.length > 0 && (
                 <CommandGroup heading="Campaigns">
                   {res.campaigns.map((c) => (
-                    <CommandItem key={c.id} value={`c:${c.id}`} onSelect={() => goAccount(c.accountId)}>
+                    <CommandItem
+                      key={c.id}
+                      value={`c:${c.id}`}
+                      onSelect={() => goAccount(c.accountId)}
+                    >
                       <span className="truncate">{c.name}</span>
-                      <span className="ml-auto text-[10px] text-muted-foreground">view account</span>
+                      <span className="ml-auto text-[10px] text-muted-foreground">
+                        open account
+                      </span>
                     </CommandItem>
                   ))}
                 </CommandGroup>

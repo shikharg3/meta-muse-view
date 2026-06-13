@@ -6,6 +6,7 @@ import { listCampaigns } from "@/lib/api/dashboard";
 import { fmtCurrency, fmtPct, fmtCompact } from "@/lib/format";
 import { ChevronDown, ChevronRight, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useSort, SortHeader } from "@/components/dashboard/SortableTable";
 import { rangeSearch, toRange } from "@/lib/range";
 
 export const Route = createFileRoute("/campaigns")({
@@ -41,6 +42,24 @@ function CampaignsExplorer() {
             c.accountName.toLowerCase().includes(q.toLowerCase())),
       ),
     [campaigns, q, objective],
+  );
+
+  const {
+    sorted,
+    key,
+    dir,
+    toggle: toggleSort,
+  } = useSort(
+    filtered,
+    {
+      name: (c) => c.name,
+      spend: (c) => c.spend,
+      ctr: (c) => c.ctr,
+      cpc: (c) => c.cpc,
+      conversions: (c) => c.conversions,
+      results: (c) => c.results,
+    },
+    "spend",
   );
 
   const toggle = (id: string, fullOpen?: boolean) =>
@@ -86,26 +105,69 @@ function CampaignsExplorer() {
           <table className="w-full text-sm">
             <thead>
               <tr className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider bg-muted/30">
-                <th className="text-left px-5 py-2.5 w-[40%]">Entity</th>
+                <SortHeader
+                  label="Entity"
+                  sortKey="name"
+                  active={key}
+                  dir={dir}
+                  onSort={toggleSort}
+                  align="left"
+                  className="w-[40%]"
+                />
                 <th className="text-left px-3 py-2.5">Status</th>
-                <th className="text-right px-3 py-2.5">Spend</th>
-                <th className="text-right px-3 py-2.5">CTR</th>
-                <th className="text-right px-3 py-2.5">CPC</th>
-                <th className="text-right px-3 py-2.5">Conv.</th>
-                <th className="text-right px-5 py-2.5">ROAS</th>
+                <SortHeader
+                  label="Spend"
+                  sortKey="spend"
+                  active={key}
+                  dir={dir}
+                  onSort={toggleSort}
+                  align="right"
+                />
+                <SortHeader
+                  label="CTR"
+                  sortKey="ctr"
+                  active={key}
+                  dir={dir}
+                  onSort={toggleSort}
+                  align="right"
+                />
+                <SortHeader
+                  label="CPC"
+                  sortKey="cpc"
+                  active={key}
+                  dir={dir}
+                  onSort={toggleSort}
+                  align="right"
+                />
+                <SortHeader
+                  label="Conv."
+                  sortKey="conversions"
+                  active={key}
+                  dir={dir}
+                  onSort={toggleSort}
+                  align="right"
+                />
+                <SortHeader
+                  label="Results"
+                  sortKey="results"
+                  active={key}
+                  dir={dir}
+                  onSort={toggleSort}
+                  align="right"
+                />
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
-              {filtered.map((c) => {
+              {sorted.map((c) => {
                 const isOpen = open[c.id];
                 return (
                   <Fragment key={c.id}>
-                    <tr className="hover:bg-accent/40 transition-colors">
+                    <tr
+                      onClick={() => toggle(c.id)}
+                      className="hover:bg-accent/40 transition-colors cursor-pointer"
+                    >
                       <td className="px-5 py-3">
-                        <button
-                          onClick={() => toggle(c.id)}
-                          className="flex items-center gap-2 text-left group"
-                        >
+                        <div className="flex items-center gap-2 text-left group">
                           {isOpen ? (
                             <ChevronDown className="size-3.5 text-muted-foreground" />
                           ) : (
@@ -119,7 +181,7 @@ function CampaignsExplorer() {
                               {c.accountName} · <span className="font-mono">{c.objective}</span>
                             </div>
                           </div>
-                        </button>
+                        </div>
                       </td>
                       <td className="px-3 py-3">
                         <StatusPill status={c.status} />
@@ -134,13 +196,9 @@ function CampaignsExplorer() {
                       <td className="px-3 py-3 text-right font-mono">
                         {fmtCompact(c.conversions)}
                       </td>
-                      <td
-                        className={cn(
-                          "px-5 py-3 text-right font-mono",
-                          c.roas >= 3 ? "text-success" : c.roas < 1.5 && "text-destructive",
-                        )}
-                      >
-                        {c.roas.toFixed(2)}x
+                      <td className="px-5 py-3 text-right font-mono">
+                        {fmtCompact(c.results)}{" "}
+                        <span className="text-muted-foreground">{c.resultLabel.toLowerCase()}</span>
                       </td>
                     </tr>
                     {isOpen &&
@@ -148,12 +206,12 @@ function CampaignsExplorer() {
                         const isSetOpen = open[s.id];
                         return (
                           <Fragment key={s.id}>
-                            <tr className="bg-muted/20 hover:bg-accent/40">
+                            <tr
+                              onClick={() => toggle(s.id)}
+                              className="bg-muted/20 hover:bg-accent/40 cursor-pointer"
+                            >
                               <td className="px-5 py-2.5">
-                                <button
-                                  onClick={() => toggle(s.id)}
-                                  className="flex items-center gap-2 text-left pl-6"
-                                >
+                                <div className="flex items-center gap-2 text-left pl-6">
                                   {isSetOpen ? (
                                     <ChevronDown className="size-3 text-muted-foreground" />
                                   ) : (
@@ -167,7 +225,7 @@ function CampaignsExplorer() {
                                       {s.audience}
                                     </div>
                                   </div>
-                                </button>
+                                </div>
                               </td>
                               <td className="px-3 py-2.5">
                                 <StatusPill status={s.status} />
@@ -181,7 +239,7 @@ function CampaignsExplorer() {
                               <td />
                               <td />
                               <td className="px-5 py-2.5 text-right font-mono text-xs">
-                                {s.roas.toFixed(2)}x
+                                {fmtCompact(s.results)}
                               </td>
                             </tr>
                             {isSetOpen &&
@@ -219,7 +277,7 @@ function CampaignsExplorer() {
                                     {fmtCompact(ad.conversions)}
                                   </td>
                                   <td className="px-5 py-2 text-right font-mono text-xs">
-                                    {ad.roas.toFixed(2)}x
+                                    {fmtCompact(ad.results)}
                                   </td>
                                 </tr>
                               ))}

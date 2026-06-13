@@ -8,6 +8,7 @@ import { fmtCurrency, fmtCompact, fmtPct } from "@/lib/format";
 import { ChevronLeft } from "lucide-react";
 import { rangeSearch, toRange, RANGE_LABELS } from "@/lib/range";
 import { kpiSparks } from "@/lib/sparks";
+import { useSort, SortHeader } from "@/components/dashboard/SortableTable";
 
 export const Route = createFileRoute("/accounts/$id")({
   validateSearch: rangeSearch,
@@ -41,6 +42,17 @@ function AccountDetail() {
   const { account, deltas, campaigns: accountCampaigns, trend } = Route.useLoaderData();
   const { range } = Route.useLoaderDeps();
   const sparks = kpiSparks(trend);
+  const { sorted, key, dir, toggle } = useSort(
+    accountCampaigns,
+    {
+      name: (c) => c.name,
+      spend: (c) => c.spend,
+      ctr: (c) => c.ctr,
+      cpc: (c) => c.cpc,
+      results: (c) => c.results,
+    },
+    "spend",
+  );
 
   return (
     <div className="p-6 md:p-8 space-y-8 max-w-[1600px]">
@@ -64,12 +76,7 @@ function AccountDetail() {
           delta={deltas.spend}
           spark={sparks.spend}
         />
-        <KpiCard
-          label="ROAS"
-          value={`${account.roas.toFixed(2)}x`}
-          delta={deltas.roas}
-          spark={sparks.roas}
-        />
+        <KpiCard label={account.resultLabel} value={fmtCompact(account.results)} />
         <KpiCard
           label="Conversions"
           value={fmtCompact(account.conversions)}
@@ -95,12 +102,6 @@ function AccountDetail() {
           delta={deltas.cpm}
           spark={sparks.cpm}
         />
-        <KpiCard
-          label="Revenue"
-          value={fmtCurrency(account.revenue)}
-          delta={deltas.revenue}
-          spark={sparks.revenue}
-        />
       </section>
 
       <section className="rounded-xl border border-border bg-card p-5">
@@ -121,17 +122,52 @@ function AccountDetail() {
         <table className="w-full text-sm">
           <thead>
             <tr className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider bg-muted/30">
-              <th className="text-left px-5 py-2.5">Campaign</th>
+              <SortHeader
+                label="Campaign"
+                sortKey="name"
+                active={key}
+                dir={dir}
+                onSort={toggle}
+                align="left"
+              />
               <th className="text-left px-3 py-2.5">Objective</th>
               <th className="text-left px-3 py-2.5">Status</th>
-              <th className="text-right px-3 py-2.5">Spend</th>
-              <th className="text-right px-3 py-2.5">CTR</th>
-              <th className="text-right px-3 py-2.5">CPC</th>
-              <th className="text-right px-5 py-2.5">ROAS</th>
+              <SortHeader
+                label="Spend"
+                sortKey="spend"
+                active={key}
+                dir={dir}
+                onSort={toggle}
+                align="right"
+              />
+              <SortHeader
+                label="CTR"
+                sortKey="ctr"
+                active={key}
+                dir={dir}
+                onSort={toggle}
+                align="right"
+              />
+              <SortHeader
+                label="CPC"
+                sortKey="cpc"
+                active={key}
+                dir={dir}
+                onSort={toggle}
+                align="right"
+              />
+              <SortHeader
+                label="Results"
+                sortKey="results"
+                active={key}
+                dir={dir}
+                onSort={toggle}
+                align="right"
+              />
             </tr>
           </thead>
           <tbody className="divide-y divide-border">
-            {accountCampaigns.map((c) => (
+            {sorted.map((c) => (
               <tr key={c.id} className="hover:bg-accent/40">
                 <td className="px-5 py-3 font-medium">{c.name}</td>
                 <td className="px-3 py-3 text-xs font-mono text-muted-foreground">{c.objective}</td>
@@ -145,10 +181,11 @@ function AccountDetail() {
                 <td className="px-3 py-3 text-right font-mono text-muted-foreground">
                   {fmtCurrency(c.cpc)}
                 </td>
-                <td
-                  className={`px-5 py-3 text-right font-mono ${c.roas >= 3 ? "text-success" : ""}`}
-                >
-                  {c.roas.toFixed(2)}x
+                <td className="px-5 py-3 text-right font-mono">
+                  {fmtCompact(c.results)}{" "}
+                  <span className="text-muted-foreground text-[10px]">
+                    {c.resultLabel.toLowerCase()}
+                  </span>
                 </td>
               </tr>
             ))}

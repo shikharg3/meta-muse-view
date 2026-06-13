@@ -13,7 +13,10 @@ export const Route = createFileRoute("/accounts/")({
   head: () => ({
     meta: [
       { title: "Ad Accounts — MetaConsole" },
-      { name: "description", content: "All ad accounts under the Business Manager with key performance metrics." },
+      {
+        name: "description",
+        content: "All ad accounts under the Business Manager with key performance metrics.",
+      },
     ],
   }),
   validateSearch: rangeSearch,
@@ -22,7 +25,7 @@ export const Route = createFileRoute("/accounts/")({
   component: Accounts,
 });
 
-type SortKey = "name" | "spend" | "roas" | "ctr" | "cpm" | "conversions";
+type SortKey = "name" | "spend" | "results" | "ctr" | "cpm" | "conversions";
 
 function Accounts() {
   const { accounts } = Route.useLoaderData();
@@ -32,21 +35,26 @@ function Accounts() {
   const [status, setStatus] = useState<string>("ALL");
 
   const filtered = useMemo(() => {
-    const list = accounts.filter((a) =>
-      (status === "ALL" || a.status === status) &&
-      (q.trim() === "" || a.name.toLowerCase().includes(q.toLowerCase()) || a.id.includes(q))
+    const list = accounts.filter(
+      (a) =>
+        (status === "ALL" || a.status === status) &&
+        (q.trim() === "" || a.name.toLowerCase().includes(q.toLowerCase()) || a.id.includes(q)),
     );
     return [...list].sort((a, b) => {
       const av = a[sort] as number | string;
       const bv = b[sort] as number | string;
-      const cmp = typeof av === "string" ? av.localeCompare(bv as string) : (av as number) - (bv as number);
+      const cmp =
+        typeof av === "string" ? av.localeCompare(bv as string) : (av as number) - (bv as number);
       return dir === "asc" ? cmp : -cmp;
     });
   }, [accounts, q, sort, dir, status]);
 
   const toggle = (k: SortKey) => {
     if (sort === k) setDir(dir === "asc" ? "desc" : "asc");
-    else { setSort(k); setDir("desc"); }
+    else {
+      setSort(k);
+      setDir("desc");
+    }
   };
 
   return (
@@ -60,7 +68,8 @@ function Accounts() {
         <div className="relative flex-1 min-w-[220px] max-w-sm">
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
           <input
-            value={q} onChange={(e) => setQ(e.target.value)}
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
             placeholder="Search accounts…"
             className="w-full h-9 rounded-md border border-border bg-card pl-8 pr-3 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
           />
@@ -72,9 +81,13 @@ function Accounts() {
               onClick={() => setStatus(s)}
               className={cn(
                 "px-3 h-9 font-medium transition-colors",
-                status === s ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-accent"
+                status === s
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:bg-accent",
               )}
-            >{s}</button>
+            >
+              {s}
+            </button>
           ))}
         </div>
       </div>
@@ -84,13 +97,54 @@ function Accounts() {
           <table className="w-full text-sm">
             <thead>
               <tr className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider bg-muted/30">
-                <Th label="Account" sortable onClick={() => toggle("name")} active={sort === "name"} dir={dir} />
+                <Th
+                  label="Account"
+                  sortable
+                  onClick={() => toggle("name")}
+                  active={sort === "name"}
+                  dir={dir}
+                />
                 <Th label="Status" />
-                <Th label="Spend" align="right" sortable onClick={() => toggle("spend")} active={sort === "spend"} dir={dir} />
-                <Th label="ROAS" align="right" sortable onClick={() => toggle("roas")} active={sort === "roas"} dir={dir} />
-                <Th label="CTR" align="right" sortable onClick={() => toggle("ctr")} active={sort === "ctr"} dir={dir} />
-                <Th label="CPM" align="right" sortable onClick={() => toggle("cpm")} active={sort === "cpm"} dir={dir} />
-                <Th label="Conv." align="right" sortable onClick={() => toggle("conversions")} active={sort === "conversions"} dir={dir} />
+                <Th
+                  label="Spend"
+                  align="right"
+                  sortable
+                  onClick={() => toggle("spend")}
+                  active={sort === "spend"}
+                  dir={dir}
+                />
+                <Th
+                  label="Results"
+                  align="right"
+                  sortable
+                  onClick={() => toggle("results")}
+                  active={sort === "results"}
+                  dir={dir}
+                />
+                <Th
+                  label="CTR"
+                  align="right"
+                  sortable
+                  onClick={() => toggle("ctr")}
+                  active={sort === "ctr"}
+                  dir={dir}
+                />
+                <Th
+                  label="CPM"
+                  align="right"
+                  sortable
+                  onClick={() => toggle("cpm")}
+                  active={sort === "cpm"}
+                  dir={dir}
+                />
+                <Th
+                  label="Conv."
+                  align="right"
+                  sortable
+                  onClick={() => toggle("conversions")}
+                  active={sort === "conversions"}
+                  dir={dir}
+                />
                 <Th label="Reach" align="right" />
                 <Th label="14d trend" align="right" />
               </tr>
@@ -99,21 +153,48 @@ function Accounts() {
               {filtered.map((a) => (
                 <tr key={a.id} className="hover:bg-accent/40 transition-colors">
                   <td className="px-5 py-3">
-                    <Link to="/accounts/$id" params={{ id: a.id }} className="font-medium hover:text-primary">{a.name}</Link>
+                    <Link
+                      to="/accounts/$id"
+                      params={{ id: a.id }}
+                      className="font-medium hover:text-primary"
+                    >
+                      {a.name}
+                    </Link>
                     <div className="font-mono text-[10px] text-muted-foreground">{a.id}</div>
                   </td>
-                  <td className="px-3 py-3"><StatusPill status={a.status} /></td>
+                  <td className="px-3 py-3">
+                    <StatusPill status={a.status} />
+                  </td>
                   <td className="px-3 py-3 text-right font-mono">{fmtCurrency(a.spend)}</td>
-                  <td className={cn("px-3 py-3 text-right font-mono", a.roas >= 3 ? "text-success" : a.roas < 1.5 && "text-destructive")}>{a.roas.toFixed(2)}x</td>
-                  <td className="px-3 py-3 text-right font-mono text-muted-foreground">{fmtPct(a.ctr)}</td>
-                  <td className="px-3 py-3 text-right font-mono text-muted-foreground">{fmtCurrency(a.cpm)}</td>
+                  <td className="px-3 py-3 text-right font-mono">
+                    {fmtCompact(a.results)}{" "}
+                    <span className="text-muted-foreground text-[10px]">
+                      {a.resultLabel.toLowerCase()}
+                    </span>
+                  </td>
+                  <td className="px-3 py-3 text-right font-mono text-muted-foreground">
+                    {fmtPct(a.ctr)}
+                  </td>
+                  <td className="px-3 py-3 text-right font-mono text-muted-foreground">
+                    {fmtCurrency(a.cpm)}
+                  </td>
                   <td className="px-3 py-3 text-right font-mono">{fmtCompact(a.conversions)}</td>
-                  <td className="px-3 py-3 text-right font-mono text-muted-foreground">{fmtCompact(a.reach)}</td>
-                  <td className="px-5 py-3"><div className="flex justify-end"><Sparkline data={a.spark} /></div></td>
+                  <td className="px-3 py-3 text-right font-mono text-muted-foreground">
+                    {fmtCompact(a.reach)}
+                  </td>
+                  <td className="px-5 py-3">
+                    <div className="flex justify-end">
+                      <Sparkline data={a.spark} />
+                    </div>
+                  </td>
                 </tr>
               ))}
               {filtered.length === 0 && (
-                <tr><td colSpan={9} className="px-5 py-12 text-center text-sm text-muted-foreground">No accounts match your filters.</td></tr>
+                <tr>
+                  <td colSpan={9} className="px-5 py-12 text-center text-sm text-muted-foreground">
+                    No accounts match your filters.
+                  </td>
+                </tr>
               )}
             </tbody>
           </table>
@@ -127,17 +208,35 @@ function Accounts() {
 }
 
 function Th({
-  label, sortable, onClick, active, dir, align = "left",
+  label,
+  sortable,
+  onClick,
+  active,
+  dir,
+  align = "left",
 }: {
-  label: string; sortable?: boolean; onClick?: () => void; active?: boolean; dir?: "asc" | "desc"; align?: "left" | "right";
+  label: string;
+  sortable?: boolean;
+  onClick?: () => void;
+  active?: boolean;
+  dir?: "asc" | "desc";
+  align?: "left" | "right";
 }) {
   return (
     <th className={cn("px-3 first:pl-5 last:pr-5 py-2.5", align === "right" && "text-right")}>
       {sortable ? (
-        <button onClick={onClick} className={cn("inline-flex items-center gap-1 hover:text-foreground", active && "text-foreground")}>
+        <button
+          onClick={onClick}
+          className={cn(
+            "inline-flex items-center gap-1 hover:text-foreground",
+            active && "text-foreground",
+          )}
+        >
           {label} <ArrowUpDown className={cn("size-3 opacity-50", active && "opacity-100")} />
         </button>
-      ) : label}
+      ) : (
+        label
+      )}
     </th>
   );
 }

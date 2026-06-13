@@ -31,16 +31,13 @@ function totalsByEntity(level: string, since: string) {
     .groupBy(schema.insightsDaily.entityId);
 }
 
-/**
- * Ad-level action sums keyed `${entityId}:${action_type}`, for the objective-
- * dependent "results" metric (actions live in jsonb, not numeric columns).
- */
-async function adActionTotals(since: string): Promise<Map<string, number>> {
+/** Action sums keyed `${entityId}:${action_type}` at a level (actions live in jsonb). */
+async function actionTotals(level: string, since: string): Promise<Map<string, number>> {
   const rows = await db.execute(sql`
     select entity_id, elem->>'action_type' as type, sum((elem->>'value')::double precision) as val
     from insights_daily
     cross join lateral jsonb_array_elements(actions) elem
-    where level = 'ad' and date >= ${since}
+    where level = ${level} and date >= ${since}
     group by 1, 2
   `);
   const out = new Map<string, number>();
@@ -48,6 +45,69 @@ async function adActionTotals(since: string): Promise<Map<string, number>> {
     out.set(`${r.entity_id}:${r.type}`, Number(r.val) || 0);
   }
   return out;
+}
+
+export interface ScopeResult {
+  value: number;
+  label: string;
+}
+
+/** When a scope spans mixed objectives, label it by the objective that spent most. */
+function dominantLabel(m: Map<string, number>): string {
+  let best = -1;
+  let label = "Results";
+  for (const [l, s] of m)
+    if (s > best) {
+      best = s;
+      label = l;
+    }
+  return label;
+}
+
+/**
+ * Objective-aware "results" per campaign and per account (plus overall). Each
+ * campaign contributes its objective's result action (reach for awareness),
+ * summed from campaign-level insights — no ecommerce ROAS assumption.
+ */
+async function objectiveResults(since: string): Promise<{
+  campaign: Map<string, ScopeResult>;
+  account: Map<string, ScopeResult>;
+  total: ScopeResult;
+}> {
+  const [camps, actions, totals] = await Promise.all([
+    db
+      .select({
+        id: schema.campaigns.id,
+        accountId: schema.campaigns.accountId,
+        objective: schema.campaigns.objective,
+      })
+      .from(schema.campaigns),
+    actionTotals("campaign", since),
+    totalsByEntity("campaign", since),
+  ]);
+  const spendReach = new Map(totals.map((t) => [t.entityId, t]));
+  const campaign = new Map<string, ScopeResult>();
+  const acctValue = new Map<string, number>();
+  const acctLabelSpend = new Map<string, Map<string, number>>();
+  let totalValue = 0;
+  const totalLabelSpend = new Map<string, number>();
+  for (const c of camps) {
+    const rs = resultSpec(c.objective);
+    const t = spendReach.get(c.id);
+    const value = rs.type === "reach" ? num(t?.reach) : (actions.get(`${c.id}:${rs.type}`) ?? 0);
+    const spend = num(t?.spend);
+    campaign.set(c.id, { value, label: rs.label });
+    acctValue.set(c.accountId, (acctValue.get(c.accountId) ?? 0) + value);
+    const ls = acctLabelSpend.get(c.accountId) ?? new Map<string, number>();
+    ls.set(rs.label, (ls.get(rs.label) ?? 0) + spend);
+    acctLabelSpend.set(c.accountId, ls);
+    totalValue += value;
+    totalLabelSpend.set(rs.label, (totalLabelSpend.get(rs.label) ?? 0) + spend);
+  }
+  const account = new Map<string, ScopeResult>();
+  for (const [id, value] of acctValue)
+    account.set(id, { value, label: dominantLabel(acctLabelSpend.get(id)!) });
+  return { campaign, account, total: { value: totalValue, label: dominantLabel(totalLabelSpend) } };
 }
 
 /** Account-level totals summed over [since, before). `reach` is the sum of daily reach. */
@@ -133,6 +193,7 @@ export async function fetchAccounts(days: number): Promise<AdAccount[]> {
   const accounts = await db.select().from(schema.accounts);
   const totals = await totalsByEntity("account", since);
   const totalsById = new Map(totals.map((t) => [t.entityId, t]));
+  const results = (await objectiveResults(since)).account;
 
   // daily spend per account for sparklines
   const sparkSince = windowStart(days);
@@ -173,6 +234,8 @@ export async function fetchAccounts(days: number): Promise<AdAccount[]> {
       status: accountStatus(a.status),
       ...k,
       spark: sparkById.get(a.id) ?? [],
+      results: results.get(a.id)?.value ?? 0,
+      resultLabel: results.get(a.id)?.label ?? "Results",
     };
   });
 }
@@ -180,6 +243,7 @@ export async function fetchAccounts(days: number): Promise<AdAccount[]> {
 export async function fetchOverview(days: number): Promise<{
   kpis: Kpis;
   deltas: KpiDeltas;
+  results: ScopeResult;
   topAccounts: AdAccount[];
   topCampaigns: Campaign[];
   trend: TrendPoint[];
@@ -202,11 +266,18 @@ export async function fetchOverview(days: number): Promise<{
     windowDeltas(days),
     fetchCampaigns(days),
   ]);
+  const labelSpend = new Map<string, number>();
+  for (const c of campaigns)
+    labelSpend.set(c.resultLabel, (labelSpend.get(c.resultLabel) ?? 0) + c.spend);
   return {
     kpis: deriveKpis(totals),
     deltas,
+    results: {
+      value: campaigns.reduce((n, c) => n + c.results, 0),
+      label: dominantLabel(labelSpend),
+    },
     topAccounts: [...accounts].sort((a, b) => b.spend - a.spend).slice(0, 6),
-    topCampaigns: [...campaigns].sort((a, b) => b.roas - a.roas).slice(0, 5),
+    topCampaigns: [...campaigns].sort((a, b) => b.spend - a.spend).slice(0, 5),
     trend,
   };
 }
@@ -232,7 +303,7 @@ export async function fetchCampaigns(days: number): Promise<Campaign[]> {
     totalsByEntity("campaign", since),
     totalsByEntity("adset", since),
     totalsByEntity("ad", since),
-    adActionTotals(since),
+    actionTotals("ad", since),
   ]);
   const accName = new Map(accountRows.map((a) => [a.id, a.name]));
   const creativeById = new Map(creativeRows.map((c) => [c.id, c]));
@@ -309,6 +380,8 @@ export async function fetchCampaigns(days: number): Promise<Campaign[]> {
         spend: sk.spend,
         ctr: sk.ctr,
         roas: sk.roas,
+        results: ads.reduce((n, a) => n + a.results, 0),
+        resultLabel: rs.label,
         audience: s.name,
         ads,
       };
@@ -327,6 +400,8 @@ export async function fetchCampaigns(days: number): Promise<Campaign[]> {
       cpc: k.cpc,
       cpm: k.cpm,
       roas: k.roas,
+      results: adSets.reduce((n, s) => n + s.results, 0),
+      resultLabel: rs.label,
       adSets,
     };
   });
@@ -440,13 +515,19 @@ export async function fetchAccountOptions(): Promise<{ id: string; name: string 
 }
 
 export async function searchEntities(q: string): Promise<{
+  clients: { id: string; name: string; status: string | null }[];
   accounts: { id: string; name: string }[];
   campaigns: { id: string; name: string; accountId: string }[];
 }> {
   const term = q.trim();
-  if (!term) return { accounts: [], campaigns: [] };
+  if (!term) return { clients: [], accounts: [], campaigns: [] };
   const like = `%${term}%`;
-  const [accounts, campaigns] = await Promise.all([
+  const [clients, accounts, campaigns] = await Promise.all([
+    db
+      .select({ id: schema.clients.id, name: schema.clients.name, status: schema.clients.status })
+      .from(schema.clients)
+      .where(ilike(schema.clients.name, like))
+      .limit(8),
     db
       .select({ id: schema.accounts.id, name: schema.accounts.name })
       .from(schema.accounts)
@@ -462,7 +543,7 @@ export async function searchEntities(q: string): Promise<{
       .where(ilike(schema.campaigns.name, like))
       .limit(8),
   ]);
-  return { accounts, campaigns };
+  return { clients, accounts, campaigns };
 }
 
 export const CSV_KINDS = ["accounts", "campaigns", "creatives", "breakdowns"] as const;
