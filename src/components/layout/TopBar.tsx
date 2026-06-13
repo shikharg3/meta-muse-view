@@ -1,4 +1,5 @@
 import { Link, useRouter, useRouterState, useSearch } from "@tanstack/react-router";
+import { useState } from "react";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
 import { Download, RefreshCw } from "lucide-react";
@@ -46,6 +47,33 @@ function SyncFreshness({ lastSyncAt, isAdmin }: { lastSyncAt: string | null; isA
   );
 }
 
+/** Refetches all route loaders, with a spinner + disabled state so it's clear something happened. */
+function RefreshButton() {
+  const router = useRouter();
+  const [refreshing, setRefreshing] = useState(false);
+  const refresh = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
+    try {
+      await router.invalidate();
+    } finally {
+      setRefreshing(false);
+    }
+  };
+  return (
+    <Button
+      variant="outline"
+      size="sm"
+      className="hidden sm:inline-flex h-9 text-xs"
+      onClick={() => void refresh()}
+      disabled={refreshing}
+    >
+      <RefreshCw className={cn("size-3.5", refreshing && "animate-spin")} />
+      {refreshing ? "Refreshing…" : "Refresh"}
+    </Button>
+  );
+}
+
 export function TopBar({
   business,
   accounts,
@@ -55,7 +83,6 @@ export function TopBar({
   accounts: { id: string; name: string }[];
   isAdmin?: boolean;
 }) {
-  const router = useRouter();
   const path = useRouterState({ select: (s) => s.location.pathname });
   const search = useSearch({ strict: false }) as { range?: number };
   const range = toRange(search.range);
@@ -88,14 +115,7 @@ export function TopBar({
       <SyncFreshness lastSyncAt={business.lastSyncAt} isAdmin={isAdmin} />
       <RangePicker />
 
-      <Button
-        variant="outline"
-        size="sm"
-        className="hidden sm:inline-flex h-9 text-xs"
-        onClick={() => router.invalidate()}
-      >
-        <RefreshCw className="size-3.5" /> Refresh
-      </Button>
+      <RefreshButton />
       <Button size="sm" className="h-9 text-xs" onClick={onExport} disabled={!kind}>
         <Download className="size-3.5" /> Export
       </Button>
