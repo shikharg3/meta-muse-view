@@ -5,6 +5,7 @@ import {
   saveCredentialsFormData,
   saveNotionForm,
   runNotionSync,
+  saveChatForm,
   type CredsForm,
 } from "@/server/fns/settings";
 import { resetAndResync as resetAndResyncImpl } from "@/server/fns/reset";
@@ -27,3 +28,7 @@ export const saveNotionSettings = createServerFn({ method: "POST" })
   .handler(({ data }) => saveNotionForm(data));
 
 export const syncNotionNow = createServerFn({ method: "POST" }).handler(() => runNotionSync());
+
+export const saveChatSettings = createServerFn({ method: "POST" })
+  .inputValidator((d: { token?: string; model: string; effort: string }) => d)
+  .handler(({ data }) => saveChatForm(data));

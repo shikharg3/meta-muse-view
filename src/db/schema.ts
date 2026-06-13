@@ -137,6 +137,9 @@ export const metaCredentials = pgTable("meta_credentials", {
   apiVersion: text("api_version").default("v25.0"),
   notionTokenEnc: text("notion_token_enc"),
   notionDbId: text("notion_db_id"),
+  anthropicTokenEnc: text("anthropic_token_enc"),
+  chatModel: text("chat_model").default("claude-opus-4-8"),
+  chatEffort: text("chat_effort").default("xhigh"),
   updatedAt: timestamp("updated_at", { withTimezone: true }),
 });
 

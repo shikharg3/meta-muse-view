@@ -8,6 +8,7 @@ import {
   Settings,
   Activity,
   Briefcase,
+  Sparkles,
 } from "lucide-react";
 import {
   Sidebar,
@@ -23,7 +24,8 @@ import {
 } from "@/components/ui/sidebar";
 
 const main = [
-  { title: "Overview", url: "/", icon: LayoutDashboard },
+  { title: "Ask", url: "/", icon: Sparkles },
+  { title: "Overview", url: "/overview", icon: LayoutDashboard },
   { title: "Ad Accounts", url: "/accounts", icon: Building2 },
   { title: "Campaigns", url: "/campaigns", icon: Megaphone },
   { title: "Creatives", url: "/creatives", icon: Images },

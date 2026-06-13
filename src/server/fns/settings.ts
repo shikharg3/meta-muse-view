@@ -1,6 +1,12 @@
 import { eq } from "drizzle-orm";
 import { db, schema } from "@/db/client";
-import { getCredentials, saveCredentials, saveNotionCredentials } from "@/lib/credentials";
+import {
+  getCredentials,
+  saveCredentials,
+  saveNotionCredentials,
+  saveChatCredentials,
+} from "@/lib/credentials";
+import { DEFAULT_CHAT_MODEL, DEFAULT_CHAT_EFFORT } from "@/lib/chat-options";
 import { MetaClient } from "@/meta/client";
 import { isCycleRunning } from "@/sync/cycle";
 import { syncClients } from "@/sync/jobs/clients";
@@ -17,6 +23,7 @@ export interface SettingsView {
   sync: { accounts: number; lastInsightsSync: string | null; errors: number } | null;
   syncRunning: boolean;
   notion: { configured: boolean; dbId: string; clients: number; lastSync: string | null };
+  chat: { configured: boolean; model: string; effort: string };
 }
 
 export interface CredsForm {
@@ -74,7 +81,21 @@ export async function fetchSettings(): Promise<SettingsView> {
           .sort()
           .at(-1) || null,
     },
+    chat: {
+      configured: Boolean(cred?.anthropicTokenEnc),
+      model: cred?.chatModel ?? DEFAULT_CHAT_MODEL,
+      effort: cred?.chatEffort ?? DEFAULT_CHAT_EFFORT,
+    },
   };
+}
+
+export async function saveChatForm(data: {
+  token?: string;
+  model: string;
+  effort: string;
+}): Promise<{ ok: true }> {
+  await saveChatCredentials(data.token?.trim() ?? "", data.model, data.effort);
+  return { ok: true };
 }
 
 export async function saveCredentialsFormData(data: CredsForm): Promise<{ ok: true }> {

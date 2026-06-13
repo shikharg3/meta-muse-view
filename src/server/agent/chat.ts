@@ -1,0 +1,151 @@
+import { getChatCredentials } from "@/lib/credentials";
+import { fetchClients } from "@/server/fns/clients";
+import {
+  AnthropicClient,
+  type AnthropicMessage,
+  type ContentBlock,
+  type LlmClient,
+} from "./anthropic";
+import { TOOLS, runTool } from "./tools";
+import type { Kpis } from "@/lib/types";
+
+export interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface ToolTrace {
+  name: string;
+  ok: boolean;
+}
+
+export interface ChatResult {
+  reply: string;
+  toolCalls: ToolTrace[];
+  /** KPI strip the UI renders from the last data tool that succeeded, if any. */
+  cards: { title: string; kpis: Kpis } | null;
+  error?: string;
+}
+
+// Cap tool round-trips so a confused model can't loop the bill up.
+const MAX_ITERATIONS = 5;
+
+export async function buildSystemPrompt(today = new Date()): Promise<string> {
+  const clients = await fetchClients();
+  const names = clients.map((c) => c.name).join(", ");
+  return [
+    "You are the analytics assistant inside MetaConsole, an internal Meta Ads dashboard for a marketing agency.",
+    `Today is ${today.toISOString().slice(0, 10)}.`,
+    "You answer questions about ad performance for the agency's clients, ad accounts, and campaigns.",
+    "",
+    "Rules:",
+    "- ALWAYS call a tool to get figures. NEVER invent, estimate, or recall numbers from earlier — fetch them.",
+    "- Resolve fuzzy client names using the known-clients list below or the list_clients tool.",
+    "- When no time range is stated, default to the last 30 days. Data only exists for the last 90 days.",
+    "- Be concise and lead with the answer. Format money as $ and rates as %. Use short bullet lists for breakdowns.",
+    "- A client's accounts may include old ones not in the current Business Manager (shown with no data) — say so rather than reporting them as zero performance.",
+    "- If a name can't be resolved, say so and offer the closest matches.",
+    "",
+    `Known clients: ${names || "(none synced yet)"}`,
+  ].join("\n");
+}
+
+const textOf = (blocks: ContentBlock[]): string =>
+  blocks
+    .filter((b): b is Extract<ContentBlock, { type: "text" }> => b.type === "text")
+    .map((b) => b.text)
+    .join("\n")
+    .trim();
+
+const isErr = (r: unknown): boolean =>
+  typeof r === "object" && r !== null && "error" in (r as Record<string, unknown>);
+
+/**
+ * Drive the tool-use loop to completion: call the model, run any requested
+ * tools against Postgres, feed results back, repeat until the model answers or
+ * the iteration cap trips. Pure w.r.t. the LLM (injected) so it can be tested.
+ */
+export async function runAgentLoop(
+  llm: LlmClient,
+  system: string,
+  history: ChatMessage[],
+  opts: { model: string; effort: string },
+): Promise<ChatResult> {
+  const messages: AnthropicMessage[] = history.map((m) => ({ role: m.role, content: m.content }));
+  const toolCalls: ToolTrace[] = [];
+  let cards: ChatResult["cards"] = null;
+
+  for (let i = 0; i < MAX_ITERATIONS; i++) {
+    const resp = await llm.createMessage({
+      model: opts.model,
+      effort: opts.effort,
+      system,
+      tools: TOOLS,
+      messages,
+    });
+    // Preserve the full content (incl. thinking blocks) verbatim — required for
+    // tool-use continuations with extended thinking.
+    messages.push({ role: "assistant", content: resp.content });
+
+    if (resp.stop_reason !== "tool_use") {
+      return { reply: textOf(resp.content), toolCalls, cards };
+    }
+
+    const results: ContentBlock[] = [];
+    for (const block of resp.content) {
+      if (block.type !== "tool_use") continue;
+      let result: unknown;
+      try {
+        result = await runTool(block.name, block.input);
+      } catch (e) {
+        result = { error: e instanceof Error ? e.message : String(e) };
+      }
+      const ok = !isErr(result);
+      toolCalls.push({ name: block.name, ok });
+      if (ok && block.name === "get_client_stats") {
+        const r = result as { client: string; kpis: Kpis };
+        cards = { title: r.client, kpis: r.kpis };
+      } else if (ok && block.name === "get_overview") {
+        cards = { title: "All accounts", kpis: (result as { kpis: Kpis }).kpis };
+      }
+      results.push({
+        type: "tool_result",
+        tool_use_id: block.id,
+        content: JSON.stringify(result),
+        is_error: !ok,
+      });
+    }
+    messages.push({ role: "user", content: results });
+  }
+
+  return {
+    reply: "I couldn't finish that in a reasonable number of steps. Try a narrower question.",
+    toolCalls,
+    cards,
+  };
+}
+
+/** Entry point for the chat server fn: load creds, run the loop, map errors to a reply. */
+export async function chatTurn(history: ChatMessage[]): Promise<ChatResult> {
+  const creds = await getChatCredentials();
+  if (!creds) {
+    return {
+      reply: "",
+      toolCalls: [],
+      cards: null,
+      error: "No Claude API key configured. Add one in Settings → Assistant.",
+    };
+  }
+  const llm = new AnthropicClient(creds.token);
+  const system = await buildSystemPrompt();
+  try {
+    return await runAgentLoop(llm, system, history, { model: creds.model, effort: creds.effort });
+  } catch (e) {
+    return {
+      reply: "",
+      toolCalls: [],
+      cards: null,
+      error: e instanceof Error ? e.message : String(e),
+    };
+  }
+}

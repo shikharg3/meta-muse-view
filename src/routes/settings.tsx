@@ -4,12 +4,14 @@ import { PageHeader } from "@/components/dashboard/PageHeader";
 import {
   getSettings,
   resetAndResync,
+  saveChatSettings,
   saveCredentialsForm,
   saveNotionSettings,
   syncNotionNow,
   testConnection,
 } from "@/lib/api/settings";
-import { CheckCircle2, Database, KeyRound, RefreshCw, Trash2, XCircle } from "lucide-react";
+import { CHAT_MODELS, CHAT_EFFORTS } from "@/lib/chat-options";
+import { Bot, CheckCircle2, Database, KeyRound, RefreshCw, Trash2, XCircle } from "lucide-react";
 
 export const Route = createFileRoute("/settings")({
   head: () => ({ meta: [{ title: "Settings — MetaConsole" }] }),
@@ -33,6 +35,8 @@ function Settings() {
   const [resetting, setResetting] = useState(false);
   const [notion, setNotion] = useState({ token: "", board: s.notion.dbId });
   const [notionMsg, setNotionMsg] = useState<string | null>(null);
+  const [chat, setChat] = useState({ token: "", model: s.chat.model, effort: s.chat.effort });
+  const [chatMsg, setChatMsg] = useState<string | null>(null);
 
   // While a resync is in flight, keep the loader data (counts, last sync) fresh.
   useEffect(() => {
@@ -100,10 +104,66 @@ function Settings() {
     setNotionMsg(r.ok ? `Synced ${r.clients} clients.` : `Sync failed: ${r.error}`);
     await router.invalidate();
   };
+  const onChatSave = async () => {
+    setChatMsg("Saving…");
+    await saveChatSettings({ data: chat });
+    setChat((f) => ({ ...f, token: "" }));
+    setChatMsg("Saved.");
+    await router.invalidate();
+  };
 
   return (
     <div className="p-6 md:p-8 space-y-6 max-w-3xl">
       <PageHeader title="Settings" description="Meta Marketing API credentials and sync status." />
+
+      <section className="rounded-xl border border-border bg-card p-6 space-y-4">
+        <div className="flex items-center gap-3">
+          <div className="size-9 rounded-md bg-primary/10 grid place-items-center">
+            <Bot className="size-4 text-primary" />
+          </div>
+          <h3 className="text-sm font-semibold flex-1">Assistant · Claude</h3>
+          {s.chat.configured && (
+            <span className="inline-flex items-center gap-1 text-xs font-medium text-success">
+              <CheckCircle2 className="size-3.5" /> Key set
+            </span>
+          )}
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Powers the natural-language chat on the home page. The model only orchestrates; all
+          figures come from your synced data.
+        </p>
+        <Input
+          label={`Anthropic API key ${s.chat.configured ? "(set — leave blank to keep)" : ""}`}
+          type="password"
+          value={chat.token}
+          onChange={(v) => setChat({ ...chat, token: v })}
+        />
+        <div className="grid grid-cols-2 gap-4">
+          <Select
+            label="Model"
+            value={chat.model}
+            options={[...CHAT_MODELS]}
+            onChange={(v) => setChat({ ...chat, model: v })}
+          />
+          <Select
+            label="Reasoning effort"
+            value={chat.effort}
+            options={[...CHAT_EFFORTS]}
+            onChange={(v) => setChat({ ...chat, effort: v })}
+          />
+        </div>
+        <div className="flex items-center gap-3 pt-1">
+          <button
+            onClick={onChatSave}
+            className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-xs font-medium"
+          >
+            Save
+          </button>
+          <span className="text-xs text-muted-foreground">
+            {chatMsg ?? "Higher effort = deeper reasoning but slower/costlier."}
+          </span>
+        </div>
+      </section>
 
       <section className="rounded-xl border border-border bg-card p-6 space-y-4">
         <div className="flex items-center gap-3">
@@ -288,6 +348,36 @@ function Input({
         onChange={(e) => onChange(e.target.value)}
         className="mt-1 w-full h-9 rounded-md border border-border bg-background px-3 text-xs font-mono"
       />
+    </label>
+  );
+}
+function Select({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: string[];
+  onChange: (v: string) => void;
+}) {
+  return (
+    <label className="block">
+      <span className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">
+        {label}
+      </span>
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        className="mt-1 w-full h-9 rounded-md border border-border bg-background px-3 text-xs font-mono"
+      >
+        {options.map((o) => (
+          <option key={o} value={o}>
+            {o}
+          </option>
+        ))}
+      </select>
     </label>
   );
 }

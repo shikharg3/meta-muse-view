@@ -1,0 +1,143 @@
+import { test, expect, beforeEach } from "bun:test";
+import { sql } from "drizzle-orm";
+import { db, schema } from "@/db/client";
+import { resolveClient, runTool } from "./tools";
+import { runAgentLoop, type ChatResult } from "./chat";
+import type { CreateMessageParams, AnthropicResponse, LlmClient } from "./anthropic";
+
+async function seed() {
+  await db.execute(
+    sql`truncate table accounts, campaigns, ad_sets, ads, insights_daily, clients cascade`,
+  );
+  await db.insert(schema.accounts).values([
+    { id: "act_111", name: "Wild Main", currency: "USD" },
+    { id: "act_222", name: "Wild Old", currency: "USD" },
+  ]);
+  await db.insert(schema.clients).values([
+    {
+      id: "wildcasino-ag",
+      name: "wildcasino.ag",
+      status: "Live",
+      notionAccountIds: ["act_111", "act_222"],
+    },
+    {
+      id: "playw3-be-the-boss",
+      name: "playW3 / be the boss",
+      status: "Live",
+      notionAccountIds: ["act_999"],
+    },
+  ]);
+  await db.insert(schema.campaigns).values({
+    id: "c1",
+    accountId: "act_111",
+    name: "Wild #5",
+    objective: "OUTCOME_LEADS",
+    status: "ACTIVE",
+  });
+  const today = new Date().toISOString().slice(0, 10);
+  await db.insert(schema.insightsDaily).values([
+    {
+      level: "account",
+      entityId: "act_111",
+      date: today,
+      accountId: "act_111",
+      spend: 200,
+      impressions: 2000,
+      clicks: 100,
+    },
+    {
+      level: "campaign",
+      entityId: "c1",
+      date: today,
+      accountId: "act_111",
+      spend: 200,
+      impressions: 2000,
+      clicks: 100,
+      actions: [{ action_type: "lead", value: "20" }],
+    },
+  ]);
+}
+
+beforeEach(seed);
+
+test("resolveClient handles exact, fuzzy, ambiguous, and missing", async () => {
+  expect(await resolveClient("wildcasino.ag")).toMatchObject({ id: "wildcasino-ag" });
+  expect(await resolveClient("wild")).toMatchObject({ id: "wildcasino-ag" }); // fuzzy substring
+  expect(await resolveClient("Playw3")).toMatchObject({ id: "playw3-be-the-boss" });
+  const none = await resolveClient("nonexistent-xyz");
+  expect(none).toHaveProperty("error");
+  expect((none as { candidates: string[] }).candidates.length).toBeGreaterThan(0);
+}, 20000);
+
+test("get_client_stats returns grounded KPIs across the client's accounts", async () => {
+  const r = (await runTool("get_client_stats", { client: "wild", days: 7 })) as {
+    client: string;
+    kpis: { spend: number; ctr: number };
+    accounts: unknown[];
+  };
+  expect(r.client).toBe("wildcasino.ag");
+  expect(r.kpis.spend).toBeCloseTo(200);
+  expect(r.kpis.ctr).toBeCloseTo(5); // 100/2000*100
+  expect(r.accounts).toHaveLength(2); // current + old
+}, 20000);
+
+test("runTool returns error data for unknown tools rather than throwing", async () => {
+  expect(await runTool("bogus", {})).toEqual({ error: "Unknown tool: bogus" });
+});
+
+// Scripted fake LLM: first reply asks for a tool, second reply ends the turn.
+function scriptedLlm(steps: AnthropicResponse[]): LlmClient {
+  let i = 0;
+  return {
+    createMessage: async (_p: CreateMessageParams) => steps[Math.min(i++, steps.length - 1)],
+  };
+}
+
+test("runAgentLoop executes requested tools, captures KPI cards, and terminates", async () => {
+  const llm = scriptedLlm([
+    {
+      stop_reason: "tool_use",
+      content: [
+        { type: "text", text: "Let me check." },
+        {
+          type: "tool_use",
+          id: "tu_1",
+          name: "get_client_stats",
+          input: { client: "Wild", days: 7 },
+        },
+      ],
+      usage: { input_tokens: 1, output_tokens: 1 },
+    },
+    {
+      stop_reason: "end_turn",
+      content: [{ type: "text", text: "Wild spent $200 with a 5% CTR over the last 7 days." }],
+      usage: { input_tokens: 1, output_tokens: 1 },
+    },
+  ]);
+  const out: ChatResult = await runAgentLoop(
+    llm,
+    "system",
+    [{ role: "user", content: "stats for Wild last 7 days" }],
+    { model: "claude-opus-4-8", effort: "xhigh" },
+  );
+  expect(out.reply).toContain("$200");
+  expect(out.toolCalls).toEqual([{ name: "get_client_stats", ok: true }]);
+  expect(out.cards).toMatchObject({ title: "wildcasino.ag" });
+  expect(out.cards?.kpis.spend).toBeCloseTo(200);
+}, 20000);
+
+test("runAgentLoop stops at the iteration cap if the model never finishes", async () => {
+  const looping = scriptedLlm([
+    {
+      stop_reason: "tool_use",
+      content: [{ type: "tool_use", id: "tu", name: "list_clients", input: {} }],
+      usage: { input_tokens: 1, output_tokens: 1 },
+    },
+  ]);
+  const out = await runAgentLoop(looping, "system", [{ role: "user", content: "loop" }], {
+    model: "claude-opus-4-8",
+    effort: "low",
+  });
+  expect(out.reply).toContain("couldn't finish");
+  expect(out.toolCalls.length).toBe(5); // MAX_ITERATIONS
+}, 20000);
