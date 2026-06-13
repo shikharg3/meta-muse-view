@@ -85,11 +85,6 @@ export const TOOLS: AnthropicTool[] = [
           description:
             "Row breakdown dimension. 'day' = one row per day. Default none (single total row).",
         },
-        level: {
-          type: "string",
-          enum: ["account", "campaign", "ad"],
-          description: "Aggregation level (default account).",
-        },
       },
       required: ["subject"],
     },
@@ -226,9 +221,6 @@ async function generateReportTool(input: Record<string, unknown>): Promise<unkno
   if (!range)
     return { error: "What date range? e.g. 'last 7 days' or specific since/until dates." };
 
-  const level = ["account", "campaign", "ad"].includes(String(input.level))
-    ? (String(input.level) as "account" | "campaign" | "ad")
-    : "account";
   return await runReport({
     name,
     accountIds,
@@ -236,6 +228,5 @@ async function generateReportTool(input: Record<string, unknown>): Promise<unkno
     until: range.until,
     columns: normalizeColumns(Array.isArray(input.columns) ? input.columns.map(String) : []),
     breakdown: normalizeBreakdown(input.breakdown),
-    level,
   });
 }

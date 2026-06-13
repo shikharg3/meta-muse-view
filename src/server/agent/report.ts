@@ -1,6 +1,9 @@
 import { getCredentials } from "@/lib/credentials";
+import { db, schema } from "@/db/client";
+import { inArray } from "drizzle-orm";
 import { MetaClient } from "@/meta/client";
 import { pickAction } from "@/meta/insights";
+import { resultSpec } from "@/server/creative";
 import { trailingRange } from "@/sync/jobs/insights";
 import type { InsightRow, InsightsClient } from "@/meta/types";
 
@@ -46,6 +49,7 @@ interface Agg {
 }
 
 const BASE_FIELDS = [
+  "campaign_id",
   "spend",
   "impressions",
   "reach",
@@ -55,9 +59,11 @@ const BASE_FIELDS = [
   "action_values",
 ];
 
-// "Results" has no single API field; approximate as a deduped sum of outcome
-// actions (leads + registrations + purchases + installs). Documented in the UI.
-const RESULT_ACTION_TYPES = ["lead", "complete_registration", "omni_purchase", "omni_app_install"];
+// "Results" is objective-dependent in Ads Manager (traffic→link clicks,
+// leads→leads, sales→purchases, …). We query at campaign level so each row
+// carries a campaign_id, map it to its objective, and count that objective's
+// result action — matching what the dashboards show. omni_purchase is the
+// conversion baseline used elsewhere.
 const CONVERSION_TYPE = "omni_purchase";
 
 const META_BREAKDOWN: Record<Exclude<Breakdown, "none" | "day">, string> = {
@@ -173,11 +179,19 @@ export function normalizeBreakdown(input: unknown): Breakdown {
 
 export interface BuildSpec {
   accountIds: string[];
-  level: "account" | "campaign" | "ad";
   since: string;
   until: string;
   columns: string[];
   breakdown: Breakdown;
+  /** campaign_id → objective, for objective-aware "results". */
+  objectiveByCampaign: Record<string, string>;
+}
+
+/** The action type (or "reach") whose value is this row's "result", per objective. */
+function resultValue(r: InsightRow, objective: string | undefined): number {
+  const spec = resultSpec(objective);
+  if (spec.type === "reach") return num(r.reach);
+  return pickAction(r.actions, spec.type);
 }
 
 const num = (v: unknown): number => (v == null ? 0 : Number(v) || 0);
@@ -191,13 +205,13 @@ const emptyAgg = (): Agg => ({
   conversions: 0,
   conversionValue: 0,
 });
-function accumulate(a: Agg, r: InsightRow): void {
+function accumulate(a: Agg, r: InsightRow, objectiveByCampaign: Record<string, string>): void {
   a.spend += num(r.spend);
   a.impressions += num(r.impressions);
   a.reach += num(r.reach);
   a.clicks += num(r.clicks);
   a.linkClicks += num(r.inline_link_clicks);
-  for (const t of RESULT_ACTION_TYPES) a.results += pickAction(r.actions, t);
+  a.results += resultValue(r, objectiveByCampaign[String(r.campaign_id ?? "")]);
   a.conversions += pickAction(r.actions, CONVERSION_TYPE);
   a.conversionValue += pickAction(r.action_values, CONVERSION_TYPE);
 }
@@ -226,7 +240,7 @@ export async function buildReport(
 
   for (const acc of spec.accountIds) {
     const params: Record<string, unknown> = {
-      level: spec.level,
+      level: "campaign", // campaign level → rows carry campaign_id for objective-aware results
       time_range: { since: spec.since, until: spec.until },
       fields: BASE_FIELDS,
       use_unified_attribution_setting: true,
@@ -255,7 +269,7 @@ export async function buildReport(
         aggByKey.set(key, a);
         order.push(key);
       }
-      accumulate(a, r);
+      accumulate(a, r, spec.objectiveByCampaign);
     }
   }
 
@@ -339,7 +353,18 @@ export interface ReportArgs {
   until: string;
   columns: string[];
   breakdown: Breakdown;
-  level: "account" | "campaign" | "ad";
+}
+
+/** Load campaign_id → objective for the given accounts (for objective-aware results). */
+async function objectiveMap(accountIds: string[]): Promise<Record<string, string>> {
+  if (accountIds.length === 0) return {};
+  const rows = await db
+    .select({ id: schema.campaigns.id, objective: schema.campaigns.objective })
+    .from(schema.campaigns)
+    .where(inArray(schema.campaigns.accountId, accountIds));
+  const out: Record<string, string> = {};
+  for (const r of rows) if (r.objective) out[r.id] = r.objective;
+  return out;
 }
 
 /** Build the Meta client from stored creds and produce the report (or an error for the LLM). */
@@ -358,11 +383,11 @@ export async function runReport(args: ReportArgs): Promise<ReportPayload | { err
     client,
     {
       accountIds: args.accountIds,
-      level: args.level,
       since: args.since,
       until: args.until,
       columns: args.columns,
       breakdown: args.breakdown,
+      objectiveByCampaign: await objectiveMap(args.accountIds),
     },
     args.name,
   );
