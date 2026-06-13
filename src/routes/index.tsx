@@ -1,9 +1,22 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
-import { Sparkles, Send, Wrench, AlertCircle, Loader2, FileText, Download } from "lucide-react";
+import {
+  Sparkles,
+  Send,
+  Wrench,
+  AlertCircle,
+  Loader2,
+  FileText,
+  Download,
+  Plus,
+} from "lucide-react";
 import { sendChat } from "@/lib/api/chat";
+import { generateClientReport } from "@/lib/api/report";
+import { listClients } from "@/lib/api/clients";
 import type { ChatResult, ToolTrace } from "@/server/agent/chat";
 import type { ReportPayload, ReportColumn } from "@/server/agent/report";
+import { ReportBuilder, type ReportRequest } from "@/components/chat/ReportBuilder";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { fmtCurrency, fmtCompact, fmtNumber, fmtPct } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -17,6 +30,7 @@ export const Route = createFileRoute("/")({
       },
     ],
   }),
+  loader: async () => ({ clients: await listClients() }),
   component: Ask,
 });
 
@@ -48,9 +62,12 @@ const TOOL_LABEL: Record<string, string> = {
 };
 
 function Ask() {
+  const { clients } = Route.useLoaderData();
   const [messages, setMessages] = useState<UiMessage[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [builderOpen, setBuilderOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -89,6 +106,45 @@ function Ask() {
     }
   };
 
+  // Direct (no-LLM) report path from the builder: run it and drop the result
+  // into the thread as a normal assistant turn.
+  const runReport = async (req: ReportRequest) => {
+    setBuilderOpen(false);
+    if (loading) return;
+    setMessages((prev) => [...prev, { role: "user", content: `📄 Report — ${req.summary}` }]);
+    setLoading(true);
+    try {
+      const res = await generateClientReport({
+        data: {
+          clientId: req.clientId,
+          days: req.days,
+          since: req.since,
+          until: req.until,
+          columns: req.columns,
+          breakdown: req.breakdown,
+        },
+      });
+      const errored = "error" in res;
+      setMessages((prev) => [
+        ...prev,
+        errored
+          ? { role: "assistant", content: "", error: res.error }
+          : {
+              role: "assistant",
+              content: `Here's your report for ${req.clientName}.`,
+              report: res,
+            },
+      ]);
+    } catch (e) {
+      setMessages((prev) => [
+        ...prev,
+        { role: "assistant", content: "", error: e instanceof Error ? e.message : String(e) },
+      ]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const empty = messages.length === 0;
 
   return (
@@ -105,6 +161,20 @@ function Ask() {
                 Plain-English questions about clients, accounts, and campaigns. Every number is
                 pulled live from your synced data.
               </p>
+              <button
+                onClick={() => setBuilderOpen(true)}
+                className="w-full flex items-center gap-3 text-left rounded-lg border border-primary/30 bg-primary/5 hover:bg-primary/10 px-4 py-3 mt-7 transition-colors"
+              >
+                <div className="size-8 rounded-md bg-primary/15 grid place-items-center shrink-0">
+                  <FileText className="size-4 text-primary" />
+                </div>
+                <div className="min-w-0">
+                  <div className="text-sm font-medium">/reports — Build a report</div>
+                  <div className="text-xs text-muted-foreground">
+                    Pick a client, columns, and breakdown → download CSV or PDF
+                  </div>
+                </div>
+              </button>
               <div className="grid sm:grid-cols-2 gap-2.5 mt-8 w-full">
                 {SUGGESTIONS.map((s) => (
                   <button
@@ -137,6 +207,16 @@ function Ask() {
 
       <div className="border-t border-border bg-background/80 backdrop-blur">
         <div className="mx-auto max-w-3xl px-4 md:px-6 py-3">
+          {builderOpen && (
+            <div className="mb-3">
+              <ReportBuilder
+                clients={clients}
+                busy={loading}
+                onSubmit={(r) => void runReport(r)}
+                onClose={() => setBuilderOpen(false)}
+              />
+            </div>
+          )}
           <form
             onSubmit={(e) => {
               e.preventDefault();
@@ -144,9 +224,42 @@ function Ask() {
             }}
             className="flex items-end gap-2"
           >
+            <Popover open={menuOpen} onOpenChange={setMenuOpen}>
+              <PopoverTrigger asChild>
+                <button
+                  type="button"
+                  title="Powers"
+                  className="h-[42px] w-[42px] grid place-items-center rounded-lg border border-border bg-card hover:bg-accent shrink-0 text-muted-foreground"
+                >
+                  <Plus className="size-4" />
+                </button>
+              </PopoverTrigger>
+              <PopoverContent align="start" side="top" className="p-1.5 w-64">
+                <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold px-2 py-1">
+                  Powers
+                </div>
+                <button
+                  onClick={() => {
+                    setMenuOpen(false);
+                    setBuilderOpen(true);
+                  }}
+                  className="w-full flex items-center gap-2.5 text-left rounded-md hover:bg-accent px-2 py-2"
+                >
+                  <FileText className="size-4 text-primary shrink-0" />
+                  <div>
+                    <div className="text-xs font-medium">/reports</div>
+                    <div className="text-[11px] text-muted-foreground">Build a CSV/PDF report</div>
+                  </div>
+                </button>
+              </PopoverContent>
+            </Popover>
             <textarea
               value={input}
-              onChange={(e) => setInput(e.target.value)}
+              onChange={(e) => {
+                const v = e.target.value;
+                setInput(v);
+                if (v === "/") setMenuOpen(true);
+              }}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
@@ -154,7 +267,7 @@ function Ask() {
                 }
               }}
               rows={1}
-              placeholder="Ask about a client, account, or campaign…"
+              placeholder="Ask about a client, account, or campaign…  (type / for powers)"
               className="flex-1 resize-none rounded-lg border border-border bg-card px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 max-h-40"
             />
             <button

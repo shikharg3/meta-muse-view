@@ -6,6 +6,12 @@ import { pickAction } from "@/meta/insights";
 import { resultSpec } from "@/server/creative";
 import { trailingRange } from "@/sync/jobs/insights";
 import type { InsightRow, InsightsClient } from "@/meta/types";
+import { getClientRow, effectiveAccountIds } from "@/sync/jobs/clients";
+import {
+  REPORT_COLUMNS,
+  DEFAULT_REPORT_COLUMN_KEYS,
+  type ReportColumnKind,
+} from "@/lib/report-options";
 
 export type Breakdown =
   | "none"
@@ -17,7 +23,7 @@ export type Breakdown =
   | "country"
   | "region";
 
-type Kind = "text" | "int" | "money" | "float" | "pct";
+type Kind = ReportColumnKind;
 
 export interface ReportColumn {
   key: string;
@@ -85,45 +91,27 @@ const DIM_LABEL: Record<Breakdown, string> = {
   region: "Region",
 };
 
-interface ColDef {
-  label: string;
-  kind: Kind;
-  value: (a: Agg) => number;
-}
-const CATALOG: Record<string, ColDef> = {
-  spend: { label: "Spend", kind: "money", value: (a) => a.spend },
-  impressions: { label: "Impressions", kind: "int", value: (a) => a.impressions },
-  reach: { label: "Reach", kind: "int", value: (a) => a.reach },
-  clicks: { label: "Clicks", kind: "int", value: (a) => a.clicks },
-  link_clicks: { label: "Link Clicks", kind: "int", value: (a) => a.linkClicks },
-  ctr: {
-    label: "CTR",
-    kind: "pct",
-    value: (a) => (a.impressions ? (a.clicks / a.impressions) * 100 : 0),
-  },
-  cpc: { label: "CPC", kind: "money", value: (a) => (a.clicks ? a.spend / a.clicks : 0) },
-  cpm: {
-    label: "CPM",
-    kind: "money",
-    value: (a) => (a.impressions ? (a.spend / a.impressions) * 1000 : 0),
-  },
-  frequency: {
-    label: "Frequency",
-    kind: "float",
-    value: (a) => (a.reach ? a.impressions / a.reach : 0),
-  },
-  results: { label: "Results", kind: "int", value: (a) => a.results },
-  cost_per_result: {
-    label: "Cost / Result",
-    kind: "money",
-    value: (a) => (a.results ? a.spend / a.results : 0),
-  },
-  conversions: { label: "Conversions", kind: "int", value: (a) => a.conversions },
-  conversion_value: { label: "Conv. Value", kind: "money", value: (a) => a.conversionValue },
-  roas: { label: "ROAS", kind: "float", value: (a) => (a.spend ? a.conversionValue / a.spend : 0) },
+// Aggregate → metric value. Labels/kinds live in the client-safe report-options
+// module (single source of truth shared with the column-picker UI).
+const COL_META = new Map(REPORT_COLUMNS.map((c) => [c.key, c]));
+const VALUE_FNS: Record<string, (a: Agg) => number> = {
+  spend: (a) => a.spend,
+  impressions: (a) => a.impressions,
+  reach: (a) => a.reach,
+  clicks: (a) => a.clicks,
+  link_clicks: (a) => a.linkClicks,
+  ctr: (a) => (a.impressions ? (a.clicks / a.impressions) * 100 : 0),
+  cpc: (a) => (a.clicks ? a.spend / a.clicks : 0),
+  cpm: (a) => (a.impressions ? (a.spend / a.impressions) * 1000 : 0),
+  frequency: (a) => (a.reach ? a.impressions / a.reach : 0),
+  results: (a) => a.results,
+  cost_per_result: (a) => (a.results ? a.spend / a.results : 0),
+  conversions: (a) => a.conversions,
+  conversion_value: (a) => a.conversionValue,
+  roas: (a) => (a.spend ? a.conversionValue / a.spend : 0),
 };
 
-export const DEFAULT_COLUMNS = ["spend", "impressions", "ctr", "cpc", "results"];
+export const DEFAULT_COLUMNS = DEFAULT_REPORT_COLUMN_KEYS;
 
 const COLUMN_ALIASES: Record<string, string> = {
   spend: "spend",
@@ -229,7 +217,7 @@ export async function buildReport(
   subjectName: string,
 ): Promise<ReportPayload> {
   const keys = spec.columns.length ? spec.columns : DEFAULT_COLUMNS;
-  const metricCols = keys.filter((k) => k in CATALOG);
+  const metricCols = keys.filter((k) => COL_META.has(k));
   const cols = metricCols.length ? metricCols : DEFAULT_COLUMNS;
   const dim = spec.breakdown;
 
@@ -280,13 +268,17 @@ export async function buildReport(
 
   const columns: ReportColumn[] =
     dim === "none"
-      ? cols.map((k) => ({ key: k, label: CATALOG[k].label, kind: CATALOG[k].kind }))
+      ? cols.map((k) => ({ key: k, label: COL_META.get(k)!.label, kind: COL_META.get(k)!.kind }))
       : [
-          { key: "_dim", label: DIM_LABEL[dim], kind: "text" },
-          ...cols.map((k) => ({ key: k, label: CATALOG[k].label, kind: CATALOG[k].kind })),
+          { key: "_dim", label: DIM_LABEL[dim], kind: "text" as const },
+          ...cols.map((k) => ({
+            key: k,
+            label: COL_META.get(k)!.label,
+            kind: COL_META.get(k)!.kind,
+          })),
         ];
 
-  const metricCells = (a: Agg): number[] => cols.map((k) => CATALOG[k].value(a));
+  const metricCells = (a: Agg): number[] => cols.map((k) => VALUE_FNS[k](a));
   const rows: (string | number)[][] = limited.map((key) => {
     const a = aggByKey.get(key)!;
     return dim === "none" ? metricCells(a) : [key, ...metricCells(a)];
@@ -415,4 +407,37 @@ export function resolveRange(input: {
   const days = Math.round(Number(input.days));
   if (Number.isFinite(days) && days > 0) return trailingRange(Math.min(days, 365));
   return null;
+}
+
+export interface ClientReportInput {
+  clientId: string;
+  days?: number;
+  since?: string;
+  until?: string;
+  columns: string[];
+  breakdown: string;
+}
+
+/**
+ * Direct (no-LLM) report path for the UI Report Builder: the user has already
+ * picked the client, range, columns, and breakdown, so resolve and run straight
+ * against Meta — deterministic and fast.
+ */
+export async function reportForClient(
+  input: ClientReportInput,
+): Promise<ReportPayload | { error: string }> {
+  const row = await getClientRow(input.clientId);
+  if (!row) return { error: "Unknown client." };
+  const range = resolveRange(input);
+  if (!range) return { error: "Pick a valid date range." };
+  const columns = normalizeColumns(input.columns);
+  if (columns.length === 0) return { error: "Select at least one column." };
+  return runReport({
+    name: row.name,
+    accountIds: effectiveAccountIds(row),
+    since: range.since,
+    until: range.until,
+    columns,
+    breakdown: normalizeBreakdown(input.breakdown),
+  });
 }
