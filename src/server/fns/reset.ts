@@ -32,3 +32,12 @@ export async function resetAndResync(): Promise<ResetResult> {
   void runCycle().catch((e) => console.error("[reset] background resync failed:", e));
   return { ok: true, syncStarted: true };
 }
+
+/** Kick a fresh sync cycle in the background (no wipe). Admin-only. */
+export async function triggerSync(): Promise<{ ok: true; started: boolean }> {
+  await requireAdmin();
+  if (isCycleRunning()) return { ok: true, started: false };
+  await audit("sync.manual", "triggered a manual sync");
+  void runCycle().catch((e) => console.error("[sync] manual sync failed:", e));
+  return { ok: true, started: true };
+}

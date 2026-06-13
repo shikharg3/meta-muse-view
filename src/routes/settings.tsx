@@ -8,6 +8,7 @@ import {
   saveCredentialsForm,
   saveNotionSettings,
   syncNotionNow,
+  syncNow,
   testConnection,
 } from "@/lib/api/settings";
 import { getCurrentUser } from "@/lib/api/auth";
@@ -42,6 +43,8 @@ function Settings() {
   const [notionMsg, setNotionMsg] = useState<string | null>(null);
   const [chat, setChat] = useState({ token: "", model: s.chat.model, effort: s.chat.effort });
   const [chatMsg, setChatMsg] = useState<string | null>(null);
+  const [syncing, setSyncing] = useState(false);
+  const [syncMsg, setSyncMsg] = useState<string | null>(null);
 
   // While a resync is in flight, keep the loader data (counts, last sync) fresh.
   useEffect(() => {
@@ -87,6 +90,23 @@ function Settings() {
       setResetMsg(`Reset failed: ${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setResetting(false);
+      await router.invalidate();
+    }
+  };
+  const onSyncNow = async () => {
+    setSyncing(true);
+    setSyncMsg(null);
+    try {
+      const r = await syncNow();
+      setSyncMsg(
+        r.started
+          ? "Sync started — pulling the latest from Meta in the background."
+          : "A sync is already running.",
+      );
+    } catch (e) {
+      setSyncMsg(`Sync failed: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setSyncing(false);
       await router.invalidate();
     }
   };
@@ -255,6 +275,19 @@ function Settings() {
           <Field label="Last insights sync" value={s.sync?.lastInsightsSync ?? "never"} />
           <Field label="Accounts in error" value={s.sync ? String(s.sync.errors) : "—"} />
           <Field label="API version" value={s.apiVersion} />
+        </div>
+        <div className="flex items-center gap-3 pt-1">
+          <button
+            onClick={onSyncNow}
+            disabled={syncing || s.syncRunning}
+            className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-xs font-medium disabled:opacity-50 inline-flex items-center gap-1.5"
+          >
+            <RefreshCw className={`size-3.5 ${syncing || s.syncRunning ? "animate-spin" : ""}`} />
+            {s.syncRunning ? "Syncing…" : "Sync now"}
+          </button>
+          <span className="text-xs text-muted-foreground">
+            {syncMsg ?? "Pull the latest data from Meta now (runs in the background; ~minutes)."}
+          </span>
         </div>
       </section>
 

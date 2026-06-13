@@ -8,7 +8,7 @@ import {
   saveChatForm,
   type CredsForm,
 } from "@/server/fns/settings";
-import { resetAndResync as resetAndResyncImpl } from "@/server/fns/reset";
+import { resetAndResync as resetAndResyncImpl, triggerSync } from "@/server/fns/reset";
 
 export const getSettings = createServerFn({ method: "GET" }).handler(() => fetchSettings());
 
@@ -22,6 +22,9 @@ export const testConnection = createServerFn({ method: "POST" }).handler(() => r
 export const resetAndResync = createServerFn({ method: "POST" }).handler(() =>
   resetAndResyncImpl(),
 );
+
+/** Kicks a fresh Meta sync in the background (no wipe). Admin-only. */
+export const syncNow = createServerFn({ method: "POST" }).handler(() => triggerSync());
 
 export const saveNotionSettings = createServerFn({ method: "POST" })
   .inputValidator((d: { token?: string; board: string }) => d)
