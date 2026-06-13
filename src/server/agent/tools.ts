@@ -1,5 +1,7 @@
 import { fetchClients, fetchClientDetail } from "@/server/fns/clients";
 import { fetchOverview, searchEntities } from "@/server/fns/dashboard";
+import { getClientRow, effectiveAccountIds } from "@/sync/jobs/clients";
+import { runReport, resolveRange, normalizeColumns, normalizeBreakdown } from "./report";
 import type { AnthropicTool } from "./anthropic";
 
 // Insights are only backfilled ~90 days; clamp so the model can't ask beyond data.
@@ -52,6 +54,44 @@ export const TOOLS: AnthropicTool[] = [
       type: "object",
       properties: { query: { type: "string" } },
       required: ["query"],
+    },
+  },
+  {
+    name: "generate_report",
+    description:
+      "Generate a downloadable CSV/PDF performance report from the Meta Ads API for a client or ad account. Use for the /reports command or any request to 'generate/export/download a report'. Pull data live from Meta. Ask the user for missing details before calling: a report REQUIRES a subject (client or account) and a date range. Columns and breakdown are optional.",
+    input_schema: {
+      type: "object",
+      properties: {
+        subject: {
+          type: "string",
+          description: "Client or ad-account name, e.g. 'PlayW3'. Fuzzy-matched.",
+        },
+        days: {
+          type: "integer",
+          description: "Trailing window in days (e.g. 7). Use this OR since+until.",
+        },
+        since: { type: "string", description: "Start date YYYY-MM-DD (with until)." },
+        until: { type: "string", description: "End date YYYY-MM-DD (with since)." },
+        columns: {
+          type: "array",
+          items: { type: "string" },
+          description:
+            "Metrics in order. Allowed: spend, impressions, reach, clicks, link_clicks, ctr, cpc, cpm, frequency, results, cost_per_result, conversions, conversion_value, roas. Defaults to spend, impressions, ctr, cpc, results.",
+        },
+        breakdown: {
+          type: "string",
+          enum: ["none", "day", "platform", "placement", "age", "gender", "country", "region"],
+          description:
+            "Row breakdown dimension. 'day' = one row per day. Default none (single total row).",
+        },
+        level: {
+          type: "string",
+          enum: ["account", "campaign", "ad"],
+          description: "Aggregation level (default account).",
+        },
+      },
+      required: ["subject"],
     },
   },
 ];
@@ -143,7 +183,59 @@ export async function runTool(name: string, input: Record<string, unknown>): Pro
     }
     case "search_entities":
       return await searchEntities(String(input.query ?? ""));
+    case "generate_report":
+      return await generateReportTool(input);
     default:
       return { error: `Unknown tool: ${name}` };
   }
+}
+
+/**
+ * Resolve a report request: subject → account ids (client mapping first, then
+ * account search), validate the date range, normalize columns/breakdown, then
+ * pull live from Meta. Missing/ambiguous inputs return error data so the model
+ * can ask the user.
+ */
+async function generateReportTool(input: Record<string, unknown>): Promise<unknown> {
+  const subject = String(input.subject ?? "").trim();
+  if (!subject) return { error: "Which client or ad account is the report for?" };
+
+  let name: string;
+  let accountIds: string[];
+  const client = await resolveClient(subject);
+  if (!("error" in client)) {
+    const row = await getClientRow(client.id);
+    name = client.name;
+    accountIds = row ? effectiveAccountIds(row) : [];
+  } else {
+    const ents = await searchEntities(subject);
+    if (ents.accounts.length === 1) {
+      name = ents.accounts[0].name;
+      accountIds = [ents.accounts[0].id];
+    } else if (ents.accounts.length > 1) {
+      return {
+        error: `Multiple accounts match "${subject}". Ask the user which one.`,
+        candidates: ents.accounts.map((a) => a.name).slice(0, 10),
+      };
+    } else {
+      return client; // client-resolution error + candidates
+    }
+  }
+
+  const range = resolveRange(input);
+  if (!range)
+    return { error: "What date range? e.g. 'last 7 days' or specific since/until dates." };
+
+  const level = ["account", "campaign", "ad"].includes(String(input.level))
+    ? (String(input.level) as "account" | "campaign" | "ad")
+    : "account";
+  return await runReport({
+    name,
+    accountIds,
+    since: range.since,
+    until: range.until,
+    columns: normalizeColumns(Array.isArray(input.columns) ? input.columns.map(String) : []),
+    breakdown: normalizeBreakdown(input.breakdown),
+    level,
+  });
 }

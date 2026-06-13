@@ -7,6 +7,7 @@ import {
   type LlmClient,
 } from "./anthropic";
 import { TOOLS, runTool } from "./tools";
+import { summarizeReportForLlm, type ReportPayload } from "./report";
 import type { Kpis } from "@/lib/types";
 
 export interface ChatMessage {
@@ -24,6 +25,8 @@ export interface ChatResult {
   toolCalls: ToolTrace[];
   /** KPI strip the UI renders from the last data tool that succeeded, if any. */
   cards: { title: string; kpis: Kpis } | null;
+  /** Full report payload from a generate_report call, for the UI to render + download. */
+  report: ReportPayload | null;
   error?: string;
 }
 
@@ -45,6 +48,7 @@ export async function buildSystemPrompt(today = new Date()): Promise<string> {
     "- Be concise and lead with the answer. Format money as $ and rates as %. Use short bullet lists for breakdowns.",
     "- A client's accounts may include old ones not in the current Business Manager (shown with no data) — say so rather than reporting them as zero performance.",
     "- If a name can't be resolved, say so and offer the closest matches.",
+    "- The /reports command (or any 'generate/export a report' request) maps to generate_report: it builds a downloadable CSV/PDF from live Meta data. It REQUIRES a subject (client/account) and a date range — if either is missing, ask the user for the missing detail instead of calling the tool. After a successful report, give a one-line confirmation (the table and download buttons render automatically); do not paste the full table.",
     "",
     `Known clients: ${names || "(none synced yet)"}`,
   ].join("\n");
@@ -74,6 +78,7 @@ export async function runAgentLoop(
   const messages: AnthropicMessage[] = history.map((m) => ({ role: m.role, content: m.content }));
   const toolCalls: ToolTrace[] = [];
   let cards: ChatResult["cards"] = null;
+  let report: ChatResult["report"] = null;
 
   for (let i = 0; i < MAX_ITERATIONS; i++) {
     const resp = await llm.createMessage({
@@ -88,7 +93,7 @@ export async function runAgentLoop(
     messages.push({ role: "assistant", content: resp.content });
 
     if (resp.stop_reason !== "tool_use") {
-      return { reply: textOf(resp.content), toolCalls, cards };
+      return { reply: textOf(resp.content), toolCalls, cards, report };
     }
 
     const results: ContentBlock[] = [];
@@ -102,7 +107,11 @@ export async function runAgentLoop(
       }
       const ok = !isErr(result);
       toolCalls.push({ name: block.name, ok });
-      if (ok && block.name === "get_client_stats") {
+      let content = JSON.stringify(result);
+      if (ok && block.name === "generate_report") {
+        report = result as ReportPayload;
+        content = JSON.stringify(summarizeReportForLlm(report));
+      } else if (ok && block.name === "get_client_stats") {
         const r = result as { client: string; kpis: Kpis };
         cards = { title: r.client, kpis: r.kpis };
       } else if (ok && block.name === "get_overview") {
@@ -111,7 +120,7 @@ export async function runAgentLoop(
       results.push({
         type: "tool_result",
         tool_use_id: block.id,
-        content: JSON.stringify(result),
+        content,
         is_error: !ok,
       });
     }
@@ -122,6 +131,7 @@ export async function runAgentLoop(
     reply: "I couldn't finish that in a reasonable number of steps. Try a narrower question.",
     toolCalls,
     cards,
+    report,
   };
 }
 
@@ -133,6 +143,7 @@ export async function chatTurn(history: ChatMessage[]): Promise<ChatResult> {
       reply: "",
       toolCalls: [],
       cards: null,
+      report: null,
       error: "No Claude API key configured. Add one in Settings → Assistant.",
     };
   }
@@ -145,6 +156,7 @@ export async function chatTurn(history: ChatMessage[]): Promise<ChatResult> {
       reply: "",
       toolCalls: [],
       cards: null,
+      report: null,
       error: e instanceof Error ? e.message : String(e),
     };
   }
