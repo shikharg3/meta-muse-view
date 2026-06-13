@@ -97,7 +97,6 @@ export class MetaClient implements InsightsClient {
     return out;
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   async getAccounts(_businessId: string): Promise<GraphNode[]> {
     const fields = ["account_id", "name", "currency", "account_status"];
     // A system-user token can read exactly the accounts assigned to it, which is
