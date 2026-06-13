@@ -2,6 +2,7 @@ import { createFileRoute, useNavigate, useRouter } from "@tanstack/react-router"
 import { useMemo, useState } from "react";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { getClientDetail, listClients, mutateClientAccounts } from "@/lib/api/clients";
+import { getCurrentUser } from "@/lib/api/auth";
 import { fmtCurrency, fmtPct, fmtCompact } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { Plus, Search, X } from "lucide-react";
@@ -19,12 +20,12 @@ export const Route = createFileRoute("/clients")({
   }),
   loaderDeps: ({ search }) => ({ range: toRange(search.range), client: search.client }),
   loader: async ({ deps }) => {
-    const clients = await listClients();
+    const [clients, me] = await Promise.all([listClients(), getCurrentUser()]);
     const selected = deps.client ?? clients[0]?.id;
     const detail = selected
       ? await getClientDetail({ data: { id: selected, days: deps.range } })
       : null;
-    return { clients, detail };
+    return { clients, detail, isAdmin: me?.role === "admin" };
   },
   component: Clients,
 });
@@ -41,7 +42,7 @@ const STATUS_DOT: Record<string, string> = {
 };
 
 function Clients() {
-  const { clients, detail } = Route.useLoaderData();
+  const { clients, detail, isAdmin } = Route.useLoaderData();
   const navigate = useNavigate({ from: "/clients" });
   const router = useRouter();
   const [filter, setFilter] = useState("");
@@ -198,23 +199,25 @@ function Clients() {
                       ({detail.accounts.length})
                     </span>
                   </h3>
-                  <div className="flex items-center gap-2">
-                    <input
-                      value={newAccount}
-                      onChange={(e) => setNewAccount(e.target.value)}
-                      onKeyDown={(e) =>
-                        e.key === "Enter" && newAccount.trim() && void mutate("add", newAccount)
-                      }
-                      placeholder="act_1234567890"
-                      className="h-8 w-44 rounded-md border border-border bg-background px-2.5 text-xs font-mono"
-                    />
-                    <button
-                      onClick={() => newAccount.trim() && void mutate("add", newAccount)}
-                      className="h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-medium inline-flex items-center gap-1"
-                    >
-                      <Plus className="size-3.5" /> Add
-                    </button>
-                  </div>
+                  {isAdmin && (
+                    <div className="flex items-center gap-2">
+                      <input
+                        value={newAccount}
+                        onChange={(e) => setNewAccount(e.target.value)}
+                        onKeyDown={(e) =>
+                          e.key === "Enter" && newAccount.trim() && void mutate("add", newAccount)
+                        }
+                        placeholder="act_1234567890"
+                        className="h-8 w-44 rounded-md border border-border bg-background px-2.5 text-xs font-mono"
+                      />
+                      <button
+                        onClick={() => newAccount.trim() && void mutate("add", newAccount)}
+                        className="h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-medium inline-flex items-center gap-1"
+                      >
+                        <Plus className="size-3.5" /> Add
+                      </button>
+                    </div>
+                  )}
                 </div>
                 {error && (
                   <div className="px-4 py-2 text-xs text-destructive border-b border-border">
@@ -306,13 +309,15 @@ function Clients() {
                             {a.hasData ? fmtCurrency(a.cpc) : "—"}
                           </td>
                           <td className="px-3 py-2.5 text-right">
-                            <button
-                              onClick={() => void mutate("remove", a.id)}
-                              title="Remove from client"
-                              className="size-6 rounded grid place-items-center text-muted-foreground hover:text-destructive hover:bg-destructive/10"
-                            >
-                              <X className="size-3.5" />
-                            </button>
+                            {isAdmin && (
+                              <button
+                                onClick={() => void mutate("remove", a.id)}
+                                title="Remove from client"
+                                className="size-6 rounded grid place-items-center text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                              >
+                                <X className="size-3.5" />
+                              </button>
+                            )}
                           </td>
                         </tr>
                       ))}

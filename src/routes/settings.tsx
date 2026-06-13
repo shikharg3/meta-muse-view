@@ -1,4 +1,4 @@
-import { createFileRoute, useRouter } from "@tanstack/react-router";
+import { createFileRoute, useRouter, redirect } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import {
@@ -10,12 +10,17 @@ import {
   syncNotionNow,
   testConnection,
 } from "@/lib/api/settings";
+import { getCurrentUser } from "@/lib/api/auth";
 import { CHAT_MODELS, CHAT_EFFORTS } from "@/lib/chat-options";
 import { Bot, CheckCircle2, Database, KeyRound, RefreshCw, Trash2, XCircle } from "lucide-react";
 
 export const Route = createFileRoute("/settings")({
   head: () => ({ meta: [{ title: "Settings — MetaConsole" }] }),
-  loader: async () => await getSettings(),
+  loader: async () => {
+    const me = await getCurrentUser();
+    if (me?.role !== "admin") throw redirect({ to: "/" });
+    return await getSettings();
+  },
   component: Settings,
 });
 

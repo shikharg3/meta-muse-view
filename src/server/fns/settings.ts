@@ -11,6 +11,7 @@ import { MetaClient } from "@/meta/client";
 import { isCycleRunning } from "@/sync/cycle";
 import { syncClients } from "@/sync/jobs/clients";
 import { parseNotionDbId } from "@/notion/client";
+import { requireAdmin, audit } from "./auth";
 
 export interface SettingsView {
   appId: string;
@@ -35,6 +36,7 @@ export interface CredsForm {
 }
 
 export async function fetchSettings(): Promise<SettingsView> {
+  await requireAdmin();
   const [cred] = await db
     .select()
     .from(schema.metaCredentials)
@@ -94,11 +96,14 @@ export async function saveChatForm(data: {
   model: string;
   effort: string;
 }): Promise<{ ok: true }> {
+  await requireAdmin();
   await saveChatCredentials(data.token?.trim() ?? "", data.model, data.effort);
+  await audit("settings.chat", "saved assistant (Claude) settings");
   return { ok: true };
 }
 
 export async function saveCredentialsFormData(data: CredsForm): Promise<{ ok: true }> {
+  await requireAdmin();
   const existing = await getCredentials();
   // Secrets are write-only from the UI: keep the stored secret if the field is left blank.
   const appSecret = data.appSecret?.trim() || existing?.appSecret || "";
@@ -113,6 +118,7 @@ export async function saveCredentialsFormData(data: CredsForm): Promise<{ ok: tr
       .map((s) => s.trim())
       .filter(Boolean),
   });
+  await audit("settings.meta", "saved Meta credentials");
   return { ok: true };
 }
 
@@ -121,6 +127,7 @@ export async function runTestConnection(): Promise<{
   scopes: string[];
   error?: string;
 }> {
+  await requireAdmin();
   const creds = await getCredentials();
   if (!creds) return { isValid: false, scopes: [], error: "No credentials saved" };
   try {
@@ -154,16 +161,20 @@ export async function saveNotionForm(data: {
   token?: string;
   board: string;
 }): Promise<{ ok: boolean; error?: string }> {
+  await requireAdmin();
   const dbId = parseNotionDbId(data.board);
   if (!dbId) return { ok: false, error: "Could not find a database id in that URL" };
   await saveNotionCredentials(data.token?.trim() ?? "", dbId);
+  await audit("settings.notion", "saved Notion settings");
   return { ok: true };
 }
 
 export async function runNotionSync(): Promise<{ ok: boolean; clients?: number; error?: string }> {
+  await requireAdmin();
   try {
     const n = await syncClients();
     if (n === null) return { ok: false, error: "Notion is not configured" };
+    await audit("sync.notion", `synced ${n} clients from Notion`);
     return { ok: true, clients: n };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };

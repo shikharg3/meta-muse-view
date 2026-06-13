@@ -138,13 +138,27 @@ export async function upsertGoogleUser(g: {
   return { ok: true, user: u };
 }
 
-export async function listAllUsers(): Promise<PublicUser[]> {
+export interface AdminUser extends PublicUser {
+  lastLoginAt: string | null;
+  createdAt: string;
+}
+export async function listAllUsers(): Promise<AdminUser[]> {
   const rows = await db.select().from(schema.users).orderBy(schema.users.createdAt);
-  return rows.map(toPublicUser);
+  return rows.map((u) => ({
+    ...toPublicUser(u),
+    lastLoginAt: u.lastLoginAt?.toISOString() ?? null,
+    createdAt: u.createdAt.toISOString(),
+  }));
 }
 export async function setUserStatus(id: string, status: UserStatus): Promise<void> {
   await db.update(schema.users).set({ status }).where(eq(schema.users.id, id));
 }
 export async function setUserRole(id: string, role: UserRole): Promise<void> {
   await db.update(schema.users).set({ role }).where(eq(schema.users.id, id));
+}
+export async function deleteUser(id: string): Promise<void> {
+  await db.delete(schema.users).where(eq(schema.users.id, id));
+}
+export async function getUserById(id: string): Promise<UserRow | null> {
+  return findUserById(id);
 }

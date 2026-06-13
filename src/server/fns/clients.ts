@@ -4,6 +4,7 @@ import { deriveKpis, windowStart } from "@/server/agg";
 import { fetchCampaigns, objectiveResults } from "./dashboard";
 import { effectiveAccountIds, getClientRow } from "@/sync/jobs/clients";
 import type { Campaign, Kpis } from "@/lib/types";
+import { currentUser, audit } from "@/server/fns/auth";
 
 const num = (v: unknown): number => Number(v ?? 0);
 
@@ -227,6 +228,8 @@ export async function updateClientAccounts(
   action: "add" | "remove",
   accountId: string,
 ): Promise<{ ok: boolean; error?: string }> {
+  const me = await currentUser();
+  if (me?.role !== "admin") return { ok: false, error: "Admins only." };
   const id = normalizeAccountId(accountId);
   if (!id) return { ok: false, error: "Invalid account id" };
   const row = await getClientRow(clientId);
@@ -249,5 +252,9 @@ export async function updateClientAccounts(
     .update(schema.clients)
     .set({ manualAddIds: [...add], manualRemoveIds: [...remove] })
     .where(eq(schema.clients.id, clientId));
+  await audit(
+    `client.account.${action}`,
+    `${action} ${id} ${action === "add" ? "to" : "from"} ${row.name}`,
+  );
   return { ok: true };
 }

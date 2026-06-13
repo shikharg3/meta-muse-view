@@ -35,13 +35,18 @@ const main = [
   { title: "Audiences", url: "/audiences", icon: Users },
   { title: "Clients", url: "/clients", icon: Briefcase },
 ];
-const system = [{ title: "Settings", url: "/settings", icon: Settings }];
 
 export function AppSidebar({ user }: { user: PublicUser }) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const isActive = (url: string) => (url === "/" ? pathname === "/" : pathname.startsWith(url));
+  // Settings + Users are admin-only.
   const systemItems =
-    user.role === "admin" ? [{ title: "Users", url: "/users", icon: UserCog }, ...system] : system;
+    user.role === "admin"
+      ? [
+          { title: "Users", url: "/users", icon: UserCog },
+          { title: "Settings", url: "/settings", icon: Settings },
+        ]
+      : [];
 
   return (
     <Sidebar collapsible="icon">
@@ -76,23 +81,25 @@ export function AppSidebar({ user }: { user: PublicUser }) {
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
-        <SidebarGroup>
-          <SidebarGroupLabel>System</SidebarGroupLabel>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              {systemItems.map((item) => (
-                <SidebarMenuItem key={item.url}>
-                  <SidebarMenuButton asChild isActive={isActive(item.url)} tooltip={item.title}>
-                    <Link to={item.url}>
-                      <item.icon />
-                      <span>{item.title}</span>
-                    </Link>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              ))}
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
+        {systemItems.length > 0 && (
+          <SidebarGroup>
+            <SidebarGroupLabel>System</SidebarGroupLabel>
+            <SidebarGroupContent>
+              <SidebarMenu>
+                {systemItems.map((item) => (
+                  <SidebarMenuItem key={item.url}>
+                    <SidebarMenuButton asChild isActive={isActive(item.url)} tooltip={item.title}>
+                      <Link to={item.url}>
+                        <item.icon />
+                        <span>{item.title}</span>
+                      </Link>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                ))}
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        )}
       </SidebarContent>
       <SidebarFooter>
         <div className="flex items-center gap-2.5 rounded-md bg-sidebar-accent/40 p-2 group-data-[collapsible=icon]:bg-transparent group-data-[collapsible=icon]:p-0">

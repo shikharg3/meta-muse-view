@@ -1,6 +1,7 @@
 import { sql } from "drizzle-orm";
 import { db } from "@/db/client";
 import { runCycle, isCycleRunning } from "@/sync/cycle";
+import { requireAdmin, audit } from "./auth";
 
 /**
  * Wipe every synced artifact (structure, insights, sync/token state) while
@@ -24,6 +25,8 @@ export interface ResetResult {
 
 /** Wipe all synced data, then kick off a full resync in the background. */
 export async function resetAndResync(): Promise<ResetResult> {
+  await requireAdmin();
+  await audit("sync.reset", "wiped all synced data and triggered a full resync");
   await wipeSyncedData();
   if (isCycleRunning()) return { ok: true, syncStarted: false };
   void runCycle().catch((e) => console.error("[reset] background resync failed:", e));

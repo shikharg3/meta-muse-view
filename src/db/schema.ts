@@ -170,3 +170,12 @@ export const users = pgTable("users", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
 });
+
+// Admin action trail (approvals, role changes, mapping edits, resets, credential saves).
+export const auditLog = pgTable("audit_log", {
+  id: text("id").primaryKey(),
+  actorEmail: text("actor_email").notNull(),
+  action: text("action").notNull(), // e.g. "user.approve", "client.account.add", "sync.reset"
+  detail: text("detail").notNull(), // human-readable summary
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
