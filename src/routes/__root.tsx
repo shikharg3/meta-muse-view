@@ -179,7 +179,7 @@ function RootComponent() {
         <SidebarProvider>
           <AppSidebar user={user} />
           <SidebarInset>
-            <TopBar business={business!} accounts={accounts} />
+            <TopBar business={business!} accounts={accounts} isAdmin={user.role === "admin"} />
             <main className="flex-1 overflow-x-hidden">
               <Outlet />
             </main>

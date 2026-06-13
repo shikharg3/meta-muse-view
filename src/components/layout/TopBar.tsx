@@ -20,29 +20,40 @@ function csvKindForPath(path: string): CsvKind | null {
 }
 
 /** Data-freshness chip: last completed insights sync, colored by staleness. */
-function SyncFreshness({ lastSyncAt }: { lastSyncAt: string | null }) {
+function SyncFreshness({ lastSyncAt, isAdmin }: { lastSyncAt: string | null; isAdmin: boolean }) {
   const ageMin = lastSyncAt ? (Date.now() - new Date(lastSyncAt).getTime()) / 60_000 : Infinity;
   const tone = ageMin <= 120 ? "bg-success" : ageMin <= 360 ? "bg-warning" : "bg-destructive";
-  return (
-    <Link
-      to="/settings"
-      title={lastSyncAt ? `Last insights sync: ${lastSyncAt}` : "No sync has completed yet"}
-      className="hidden xl:flex items-center gap-1.5 rounded-md border border-border bg-card hover:bg-accent px-2.5 h-9 text-[11px] text-muted-foreground transition-colors"
-    >
+  const cls =
+    "hidden xl:flex items-center gap-1.5 rounded-md border border-border bg-card px-2.5 h-9 text-[11px] text-muted-foreground";
+  const title = lastSyncAt ? `Last insights sync: ${lastSyncAt}` : "No sync has completed yet";
+  const inner = (
+    <>
       <span className={cn("size-1.5 rounded-full", tone)} />
       <span className="font-mono">
         {lastSyncAt ? `synced ${fmtRelTime(lastSyncAt)}` : "never synced"}
       </span>
+    </>
+  );
+  // Only admins can reach Settings, so only they get the link.
+  return isAdmin ? (
+    <Link to="/settings" title={title} className={cn(cls, "hover:bg-accent transition-colors")}>
+      {inner}
     </Link>
+  ) : (
+    <div title={title} className={cls}>
+      {inner}
+    </div>
   );
 }
 
 export function TopBar({
   business,
   accounts,
+  isAdmin = false,
 }: {
   business: { businessId: string; accountCount: number; lastSyncAt: string | null };
   accounts: { id: string; name: string }[];
+  isAdmin?: boolean;
 }) {
   const router = useRouter();
   const path = useRouterState({ select: (s) => s.location.pathname });
@@ -74,7 +85,7 @@ export function TopBar({
 
       <div className="flex-1 lg:hidden" />
 
-      <SyncFreshness lastSyncAt={business.lastSyncAt} />
+      <SyncFreshness lastSyncAt={business.lastSyncAt} isAdmin={isAdmin} />
       <RangePicker />
 
       <Button
