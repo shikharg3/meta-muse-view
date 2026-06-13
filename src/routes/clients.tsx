@@ -336,7 +336,7 @@ function Clients() {
                       ({visibleCampaigns.length})
                     </span>
                   </h3>
-                  {statuses.length > 2 && (
+                  {statuses.length > 1 && (
                     <div className="flex rounded-md border border-border bg-card overflow-hidden text-xs">
                       {statuses.map((st) => (
                         <button
