@@ -88,11 +88,13 @@ export async function syncStructure(client: InsightsClient, accountId: string): 
 
   // thumbnail_url defaults to 64x64; ask for 1080 so cards render sharp.
   // image_url / object_story_spec carry the original-resolution assets in raw.
+  // object_story_spec is large and forcing 1080px thumbnails is heavy: a full
+  // page (200) makes Meta 500 with "reduce the amount of data". Page small.
   const creatives = await client.getChildren(
     accountId,
     "adcreatives",
     ["id", "name", "thumbnail_url", "image_url", "object_type", "object_story_spec"],
-    { thumbnail_width: 1080, thumbnail_height: 1080 },
+    { thumbnail_width: 1080, thumbnail_height: 1080, limit: 25 },
   );
   for (const cr of creatives) {
     const vals = {

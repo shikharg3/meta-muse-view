@@ -18,13 +18,23 @@ export interface RunOpts {
 export async function runOnce({ client, accountIds, jobs, onError }: RunOpts): Promise<void> {
   await jobs.tokenHealth(client);
   for (const id of accountIds) {
-    try {
-      await jobs.structure(client, id);
-      await jobs.insights(client, id);
-      await jobs.breakdowns(client, id);
-    } catch (err) {
-      onError?.(id, err);
-      console.error(`[sync] account ${id} failed:`, err);
-    }
+    // Each job is isolated: a structure failure (e.g. a 500 on one heavy edge)
+    // must NOT skip insights/breakdowns for the same account.
+    await runJob(() => jobs.structure(client, id), id, onError);
+    await runJob(() => jobs.insights(client, id), id, onError);
+    await runJob(() => jobs.breakdowns(client, id), id, onError);
+  }
+}
+
+async function runJob(
+  fn: () => Promise<void>,
+  id: string,
+  onError?: (accountId: string, err: unknown) => void,
+): Promise<void> {
+  try {
+    await fn();
+  } catch (err) {
+    onError?.(id, err);
+    console.error(`[sync] account ${id} job failed:`, err);
   }
 }

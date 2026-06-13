@@ -80,3 +80,20 @@ test("getAccounts falls back to /me/adaccounts for empty or non-numeric business
   expect(calls).toHaveLength(2);
   for (const u of calls) expect(u).toContain("me/adaccounts");
 });
+
+test("getAccounts unions /me/adaccounts with BM edges so token-accessible accounts aren't missed", async () => {
+  const fetchImpl = async (url: string | URL) => {
+    const u = String(url);
+    if (u.includes("me/adaccounts")) return jsonResponse({ data: [{ id: "act_shared" }] });
+    if (u.includes("owned_ad_accounts")) return jsonResponse({ data: [{ id: "act_1" }] });
+    if (u.includes("client_ad_accounts")) return jsonResponse({ data: [] });
+    return jsonResponse({ data: [] });
+  };
+  const client = new MetaClient(
+    { appId: "1", appSecret: "s", token: "t", version: "v25.0" },
+    { fetchImpl: fetchImpl as unknown as typeof fetch, sleep: async () => {} },
+  );
+  // act_shared is only visible via /me/adaccounts (not under the BM edges).
+  const ids = (await client.getAccounts("12345")).map((a) => a.id).sort();
+  expect(ids).toEqual(["act_1", "act_shared"]);
+});
