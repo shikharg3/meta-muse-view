@@ -267,7 +267,13 @@ function Ask() {
                   <Plus className="size-4" />
                 </button>
               </PopoverTrigger>
-              <PopoverContent align="start" side="top" className="p-1.5 w-64">
+              <PopoverContent
+                align="start"
+                side="top"
+                className="p-1.5 w-64"
+                onOpenAutoFocus={(e) => e.preventDefault()}
+                onCloseAutoFocus={(e) => e.preventDefault()}
+              >
                 <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold px-2 py-1">
                   Powers
                 </div>
@@ -304,7 +310,7 @@ function Ask() {
               onChange={(e) => {
                 const v = e.target.value;
                 setInput(v);
-                if (v === "/") setMenuOpen(true);
+                setMenuOpen(v === "/"); // hint menu only while input is bare "/"; never steals focus
               }}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
