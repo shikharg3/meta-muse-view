@@ -97,33 +97,15 @@ export class MetaClient implements InsightsClient {
     return out;
   }
 
-  async getAccounts(businessId: string): Promise<GraphNode[]> {
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  async getAccounts(_businessId: string): Promise<GraphNode[]> {
     const fields = ["account_id", "name", "currency", "account_status"];
-    // /me/adaccounts is the source of truth for "what this (system-user) token can
-    // access" — it never misses partner/shared accounts that aren't under the BM's
-    // owned/client edges. We always include it, then union the BM edges when a
-    // numeric business id is configured. allSettled so a bad/non-numeric business
-    // id (e.g. an email pasted into Settings) can't drop the /me/adaccounts list.
-    const sources: Promise<GraphNode[]>[] = [
-      this.getPaged("me/adaccounts", { fields, limit: 200 }),
-    ];
-    if (businessId && /^\d+$/.test(businessId)) {
-      sources.push(
-        this.getPaged(`${businessId}/owned_ad_accounts`, { fields, limit: 200 }),
-        this.getPaged(`${businessId}/client_ad_accounts`, { fields, limit: 200 }),
-      );
-    } else if (businessId) {
-      console.warn(
-        `[meta] business id ${JSON.stringify(businessId)} is not numeric; enumerating via /me/adaccounts only`,
-      );
-    }
-    const results = await Promise.allSettled(sources);
-    const byId = new Map<string, GraphNode>();
-    for (const r of results) {
-      if (r.status === "fulfilled") for (const a of r.value) byId.set(String(a.id), a);
-      else console.warn("[meta] ad-account enumeration source failed:", r.reason);
-    }
-    return [...byId.values()];
+    // A system-user token can read exactly the accounts assigned to it, which is
+    // precisely what /me/adaccounts returns (spanning owned + client). The BM's
+    // owned_ad_accounts/client_ad_accounts edges are a superset that includes
+    // accounts the token isn't assigned to — syncing those only produces
+    // permission errors. So /me/adaccounts is the authoritative, complete source.
+    return this.getPaged("me/adaccounts", { fields, limit: 200 });
   }
 
   getChildren(

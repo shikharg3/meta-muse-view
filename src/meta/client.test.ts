@@ -47,53 +47,26 @@ test("retries on 429 then succeeds", async () => {
   expect(n).toBe(2);
 });
 
-test("getAccounts merges owned + client ad accounts and dedupes by id", async () => {
-  const fetchImpl = async (url: string | URL) => {
-    const u = String(url);
-    if (u.includes("owned_ad_accounts"))
-      return jsonResponse({ data: [{ id: "act_1" }, { id: "act_2" }] });
-    if (u.includes("client_ad_accounts"))
-      return jsonResponse({ data: [{ id: "act_2" }, { id: "act_3" }] });
-    return jsonResponse({ data: [] });
-  };
-  const client = new MetaClient(
-    { appId: "1", appSecret: "s", token: "t", version: "v25.0" },
-    { fetchImpl: fetchImpl as unknown as typeof fetch, sleep: async () => {} },
-  );
-  const ids = (await client.getAccounts("12345")).map((a) => a.id).sort();
-  expect(ids).toEqual(["act_1", "act_2", "act_3"]);
-});
-
-test("getAccounts falls back to /me/adaccounts for empty or non-numeric business ids", async () => {
+test("getAccounts enumerates strictly via /me/adaccounts (token's assigned set), ignoring BM edges", async () => {
   const calls: string[] = [];
   const fetchImpl = async (url: string | URL) => {
-    calls.push(String(url));
-    return jsonResponse({ data: [{ id: "act_9" }] });
-  };
-  const client = new MetaClient(
-    { appId: "1", appSecret: "s", token: "t", version: "v25.0" },
-    { fetchImpl: fetchImpl as unknown as typeof fetch, sleep: async () => {} },
-  );
-  // an email pasted into the BM field must not 400 every sync cycle
-  expect((await client.getAccounts("admin@example.com")).map((a) => a.id)).toEqual(["act_9"]);
-  expect((await client.getAccounts("")).map((a) => a.id)).toEqual(["act_9"]);
-  expect(calls).toHaveLength(2);
-  for (const u of calls) expect(u).toContain("me/adaccounts");
-});
-
-test("getAccounts unions /me/adaccounts with BM edges so token-accessible accounts aren't missed", async () => {
-  const fetchImpl = async (url: string | URL) => {
     const u = String(url);
-    if (u.includes("me/adaccounts")) return jsonResponse({ data: [{ id: "act_shared" }] });
-    if (u.includes("owned_ad_accounts")) return jsonResponse({ data: [{ id: "act_1" }] });
-    if (u.includes("client_ad_accounts")) return jsonResponse({ data: [] });
-    return jsonResponse({ data: [] });
+    calls.push(u);
+    if (u.includes("me/adaccounts"))
+      return jsonResponse({ data: [{ id: "act_1" }, { id: "act_2" }] });
+    // owned/client edges must NOT be queried — they include unassigned accounts.
+    return jsonResponse({ data: [{ id: "act_should_not_appear" }] });
   };
   const client = new MetaClient(
     { appId: "1", appSecret: "s", token: "t", version: "v25.0" },
     { fetchImpl: fetchImpl as unknown as typeof fetch, sleep: async () => {} },
   );
-  // act_shared is only visible via /me/adaccounts (not under the BM edges).
-  const ids = (await client.getAccounts("12345")).map((a) => a.id).sort();
-  expect(ids).toEqual(["act_1", "act_shared"]);
+  // Numeric BM id present, but enumeration still only uses /me/adaccounts.
+  const ids = (await client.getAccounts("696773192960095")).map((a) => a.id).sort();
+  expect(ids).toEqual(["act_1", "act_2"]);
+  expect(calls).toHaveLength(1);
+  expect(calls[0]).toContain("me/adaccounts");
+  expect(
+    calls.some((u) => u.includes("owned_ad_accounts") || u.includes("client_ad_accounts")),
+  ).toBe(false);
 });
