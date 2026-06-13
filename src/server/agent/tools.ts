@@ -2,6 +2,7 @@ import { fetchClients, fetchClientDetail } from "@/server/fns/clients";
 import { fetchOverview, searchEntities } from "@/server/fns/dashboard";
 import { getClientRow, effectiveAccountIds } from "@/sync/jobs/clients";
 import { runReport, resolveRange, normalizeColumns, normalizeBreakdown } from "./report";
+import { analyzeCreatives, normalizeMetric } from "./creative-analysis";
 import type { AnthropicTool } from "./anthropic";
 
 // Insights are only backfilled ~90 days; clamp so the model can't ask beyond data.
@@ -84,6 +85,37 @@ export const TOOLS: AnthropicTool[] = [
           enum: ["none", "day", "platform", "placement", "age", "gender", "country", "region"],
           description:
             "Row breakdown dimension. 'day' = one row per day. Default none (single total row).",
+        },
+      },
+      required: ["subject"],
+    },
+  },
+  {
+    name: "analyze_creatives",
+    description:
+      "Analyze a client's top ad creatives over a window — for the /creativeanalysis command or any question about top/best/worst creatives, creative performance, or what's working visually. Returns each top creative's metrics AND its image so you can analyze visual + copy patterns. After calling, give a concise analysis: which creatives win, what they have in common (format, hook, faces, CTA, colors, text density), and concrete recommendations (scale/pause/test). Requires a subject (client/account); date range defaults to last 7 days.",
+    input_schema: {
+      type: "object",
+      properties: {
+        subject: {
+          type: "string",
+          description: "Client or ad-account name, e.g. 'PlayW3'. Fuzzy-matched.",
+        },
+        days: {
+          type: "integer",
+          description: "Trailing window in days (default 7). Use this OR since+until.",
+        },
+        since: { type: "string", description: "Start date YYYY-MM-DD (with until)." },
+        until: { type: "string", description: "End date YYYY-MM-DD (with since)." },
+        metric: {
+          type: "string",
+          enum: ["results", "spend", "impressions", "ctr", "cpc", "cpm", "roas", "cost_per_result"],
+          description:
+            "What 'top' means (default results). Use cpc/cpm/cost_per_result for cheapest, ctr/roas for most efficient.",
+        },
+        limit: {
+          type: "integer",
+          description: "How many top creatives to analyze (default 6, max 12).",
         },
       },
       required: ["subject"],
@@ -180,53 +212,68 @@ export async function runTool(name: string, input: Record<string, unknown>): Pro
       return await searchEntities(String(input.query ?? ""));
     case "generate_report":
       return await generateReportTool(input);
+    case "analyze_creatives":
+      return await analyzeCreativesTool(input);
     default:
       return { error: `Unknown tool: ${name}` };
   }
 }
 
-/**
- * Resolve a report request: subject → account ids (client mapping first, then
- * account search), validate the date range, normalize columns/breakdown, then
- * pull live from Meta. Missing/ambiguous inputs return error data so the model
- * can ask the user.
- */
-async function generateReportTool(input: Record<string, unknown>): Promise<unknown> {
-  const subject = String(input.subject ?? "").trim();
-  if (!subject) return { error: "Which client or ad account is the report for?" };
-
-  let name: string;
-  let accountIds: string[];
-  const client = await resolveClient(subject);
+/** Resolve a subject string to a client (preferred) or single ad account. */
+type SubjectResolution = { name: string; accountIds: string[] } | ResolveError;
+async function resolveSubject(subject: string): Promise<SubjectResolution> {
+  const s = subject.trim();
+  if (!s) return { error: "Which client or ad account?" };
+  const client = await resolveClient(s);
   if (!("error" in client)) {
     const row = await getClientRow(client.id);
-    name = client.name;
-    accountIds = row ? effectiveAccountIds(row) : [];
-  } else {
-    const ents = await searchEntities(subject);
-    if (ents.accounts.length === 1) {
-      name = ents.accounts[0].name;
-      accountIds = [ents.accounts[0].id];
-    } else if (ents.accounts.length > 1) {
-      return {
-        error: `Multiple accounts match "${subject}". Ask the user which one.`,
-        candidates: ents.accounts.map((a) => a.name).slice(0, 10),
-      };
-    } else {
-      return client; // client-resolution error + candidates
-    }
+    return { name: client.name, accountIds: row ? effectiveAccountIds(row) : [] };
   }
+  const ents = await searchEntities(s);
+  if (ents.accounts.length === 1)
+    return { name: ents.accounts[0].name, accountIds: [ents.accounts[0].id] };
+  if (ents.accounts.length > 1)
+    return {
+      error: `Multiple accounts match "${s}". Ask the user which one.`,
+      candidates: ents.accounts.map((a) => a.name).slice(0, 10),
+    };
+  return client; // client-resolution error + candidates
+}
 
+/**
+ * Resolve a report request, validate the date range, normalize columns/breakdown,
+ * then pull live from Meta. Missing/ambiguous inputs return error data so the
+ * model can ask the user.
+ */
+async function generateReportTool(input: Record<string, unknown>): Promise<unknown> {
+  const subject = await resolveSubject(String(input.subject ?? ""));
+  if ("error" in subject) return subject;
   const range = resolveRange(input);
   if (!range)
     return { error: "What date range? e.g. 'last 7 days' or specific since/until dates." };
-
   return await runReport({
-    name,
-    accountIds,
+    name: subject.name,
+    accountIds: subject.accountIds,
     since: range.since,
     until: range.until,
     columns: normalizeColumns(Array.isArray(input.columns) ? input.columns.map(String) : []),
     breakdown: normalizeBreakdown(input.breakdown),
+  });
+}
+
+/** Resolve a creative-analysis request (defaults: last 7 days, top 6 by results). */
+async function analyzeCreativesTool(input: Record<string, unknown>): Promise<unknown> {
+  const subject = await resolveSubject(String(input.subject ?? ""));
+  if ("error" in subject) return subject;
+  const hasDates = typeof input.since === "string" && typeof input.until === "string";
+  const range = hasDates
+    ? { since: String(input.since), until: String(input.until) }
+    : { days: input.days != null ? Number(input.days) : 7 };
+  return await analyzeCreatives({
+    name: subject.name,
+    accountIds: subject.accountIds,
+    ...range,
+    metric: normalizeMetric(input.metric),
+    limit: input.limit != null ? Number(input.limit) : 6,
   });
 }

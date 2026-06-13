@@ -4,12 +4,25 @@
 const URL = "https://api.anthropic.com/v1/messages";
 const VERSION = "2023-06-01";
 
+export type ImageSource =
+  | { type: "base64"; media_type: string; data: string }
+  | { type: "url"; url: string };
+
+/** Blocks allowed inside a tool_result's content array (text + images). */
+export type ResultBlock = { type: "text"; text: string } | { type: "image"; source: ImageSource };
+
 export type ContentBlock =
   | { type: "text"; text: string }
   | { type: "thinking"; thinking: string; signature?: string }
   | { type: "redacted_thinking"; data: string }
   | { type: "tool_use"; id: string; name: string; input: Record<string, unknown> }
-  | { type: "tool_result"; tool_use_id: string; content: string; is_error?: boolean };
+  | { type: "image"; source: ImageSource }
+  | {
+      type: "tool_result";
+      tool_use_id: string;
+      content: string | ResultBlock[];
+      is_error?: boolean;
+    };
 
 export interface AnthropicMessage {
   role: "user" | "assistant";
