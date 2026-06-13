@@ -12,7 +12,7 @@ import {
   readCookie,
 } from "./session";
 import { googleConfigured, googleAuthUrl, exchangeCodeForUser } from "./google";
-import { loginWithPassword, signupWithPassword, upsertGoogleUser } from "./users";
+import { loginWithPassword, signupWithPassword, upsertGoogleUser, findUserById } from "./users";
 
 /** Public origin as seen by the browser (behind nginx: honor forwarded headers). */
 function publicOrigin(request: Request, url: URL): string {
@@ -107,13 +107,32 @@ async function authEndpoint(request: Request, url: URL, path: string): Promise<R
 export async function handleAuth(request: Request): Promise<Response | null> {
   const url = new URL(request.url);
   const path = url.pathname;
-
   if (path.startsWith("/auth/")) return authEndpoint(request, url, path);
   if (isPublicPath(path)) return null;
-  if (verifySession(readCookie(request, SESSION_COOKIE))) return null;
+  const wantsHtml =
+    request.method === "GET" && (request.headers.get("accept") ?? "").includes("text/html");
+  const denied = (clear: boolean): Response => {
+    const cookies = clear ? [sessionClearCookie()] : [];
+    // Page loads → login; data/server-fn calls → status code (no redirect to confuse fetch).
+    return wantsHtml
+      ? redirect("/login", cookies)
+      : new Response("Unauthorized", { status: 401, headers: headersWith(cookies) });
+  };
+  const session = verifySession(readCookie(request, SESSION_COOKIE));
+  if (!session) return denied(false);
+  // Resolve approval status fresh from the DB so revocation takes effect immediately
+  // and a pending user's valid session can't pull data via direct server-fn calls.
+  const user = await findUserById(session.uid);
+  if (!user || user.status === "rejected") return denied(true);
+  if (user.status === "approved") return null;
+  // Pending: let page loads through (the app renders the "awaiting approval" screen),
+  // but block all data/API/server-fn calls.
+  if (wantsHtml) return null;
+  return new Response("Forbidden", { status: 403 });
+}
 
-  // Unauthenticated: send page loads to /login, fail API/server-fn calls with 401.
-  const accept = request.headers.get("accept") ?? "";
-  if (request.method === "GET" && accept.includes("text/html")) return redirect("/login");
-  return new Response("Unauthorized", { status: 401 });
+function headersWith(cookies: string[]): Headers {
+  const h = new Headers();
+  for (const c of cookies) h.append("set-cookie", c);
+  return h;
 }
