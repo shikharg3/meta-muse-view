@@ -1,4 +1,4 @@
-import { fetchClients, fetchClientDetail } from "@/server/fns/clients";
+import { fetchClients, fetchClientsRanked, fetchClientDetail } from "@/server/fns/clients";
 import { fetchOverview, searchEntities } from "@/server/fns/dashboard";
 import { getClientRow, effectiveAccountIds } from "@/sync/jobs/clients";
 import { runReport, resolveRange, normalizeColumns, normalizeBreakdown } from "./report";
@@ -17,8 +17,16 @@ export const TOOLS: AnthropicTool[] = [
   {
     name: "list_clients",
     description:
-      "List all clients with their status and how many ad accounts each has. Use to discover or disambiguate client names.",
-    input_schema: { type: "object", properties: {} },
+      "List all clients with status, ad-account count, spend, and objective-aware results over the last N days (default 30), sorted by spend (highest first). Use this single call to answer ranking questions like 'which client spent/performed the most/least' — do NOT call get_client_stats for every client.",
+    input_schema: {
+      type: "object",
+      properties: {
+        days: {
+          type: "integer",
+          description: "Trailing window in days for spend/results (default 30, max 90).",
+        },
+      },
+    },
   },
   {
     name: "get_client_stats",
@@ -162,8 +170,15 @@ export async function resolveClient(query: string): Promise<ResolvedClient | Res
 export async function runTool(name: string, input: Record<string, unknown>): Promise<unknown> {
   switch (name) {
     case "list_clients": {
-      const clients = await fetchClients();
-      return clients.map((c) => ({ name: c.name, status: c.status, accounts: c.accountCount }));
+      const clients = await fetchClientsRanked(clampDays(input.days));
+      return clients.map((c) => ({
+        name: c.name,
+        status: c.status,
+        accounts: c.accountCount,
+        spend: c.spend,
+        results: c.results,
+        resultLabel: c.resultLabel,
+      }));
     }
     case "get_client_stats": {
       const resolved = await resolveClient(String(input.client ?? ""));

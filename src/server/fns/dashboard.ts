@@ -69,7 +69,7 @@ function dominantLabel(m: Map<string, number>): string {
  * campaign contributes its objective's result action (reach for awareness),
  * summed from campaign-level insights — no ecommerce ROAS assumption.
  */
-async function objectiveResults(since: string): Promise<{
+export async function objectiveResults(since: string): Promise<{
   campaign: Map<string, ScopeResult>;
   account: Map<string, ScopeResult>;
   total: ScopeResult;

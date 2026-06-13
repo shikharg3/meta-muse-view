@@ -1,9 +1,11 @@
-import { and, eq, gte, inArray } from "drizzle-orm";
+import { and, eq, gte, inArray, sql } from "drizzle-orm";
 import { db, schema } from "@/db/client";
 import { deriveKpis, windowStart } from "@/server/agg";
-import { fetchCampaigns } from "./dashboard";
+import { fetchCampaigns, objectiveResults } from "./dashboard";
 import { effectiveAccountIds, getClientRow } from "@/sync/jobs/clients";
 import type { Campaign, Kpis } from "@/lib/types";
+
+const num = (v: unknown): number => Number(v ?? 0);
 
 export interface ClientSummary {
   id: string;
@@ -47,7 +49,74 @@ export async function fetchClients(): Promise<ClientSummary[]> {
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-const num = (v: unknown): number => Number(v ?? 0);
+export interface ClientRanked extends ClientSummary {
+  spend: number;
+  impressions: number;
+  results: number;
+  resultLabel: string;
+}
+
+/**
+ * All clients with spend + objective-aware results over the window, sorted by
+ * spend. Computed in a constant number of queries (NOT per-client) so ranking
+ * questions ("which client spent the most") never fan out into many calls.
+ */
+export async function fetchClientsRanked(days: number): Promise<ClientRanked[]> {
+  const rows = await db.select().from(schema.clients);
+  if (rows.length === 0) return [];
+  const since = windowStart(days);
+  const [acct, results] = await Promise.all([
+    db
+      .select({
+        entityId: schema.insightsDaily.entityId,
+        spend: sql<number>`coalesce(sum(${schema.insightsDaily.spend}),0)`,
+        impressions: sql<number>`coalesce(sum(${schema.insightsDaily.impressions}),0)`,
+      })
+      .from(schema.insightsDaily)
+      .where(and(eq(schema.insightsDaily.level, "account"), gte(schema.insightsDaily.date, since)))
+      .groupBy(schema.insightsDaily.entityId),
+    objectiveResults(since).then((r) => r.account),
+  ]);
+  const spendBy = new Map(acct.map((a) => [a.entityId, a]));
+  return rows
+    .map((r) => {
+      const ids = effectiveAccountIds(r);
+      let spend = 0;
+      let impressions = 0;
+      let resultVal = 0;
+      const labelSpend = new Map<string, number>();
+      for (const id of ids) {
+        const t = spendBy.get(id);
+        const s = num(t?.spend);
+        spend += s;
+        impressions += num(t?.impressions);
+        const rr = results.get(id);
+        if (rr) {
+          resultVal += rr.value;
+          labelSpend.set(rr.label, (labelSpend.get(rr.label) ?? 0) + s);
+        }
+      }
+      let resultLabel = "Results";
+      let best = -1;
+      for (const [l, sp] of labelSpend)
+        if (sp > best) {
+          best = sp;
+          resultLabel = l;
+        }
+      return {
+        id: r.id,
+        name: r.name,
+        status: r.status,
+        accountCount: ids.length,
+        syncedAt: r.syncedAt?.toISOString() ?? null,
+        spend,
+        impressions,
+        results: resultVal,
+        resultLabel,
+      };
+    })
+    .sort((a, b) => b.spend - a.spend);
+}
 
 export async function fetchClientDetail(id: string, days: number): Promise<ClientDetail | null> {
   const row = await getClientRow(id);
