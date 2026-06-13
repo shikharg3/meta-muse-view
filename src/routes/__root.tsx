@@ -1,6 +1,12 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
-  Outlet, Link, createRootRouteWithContext, useRouter, HeadContent, Scripts,
+  Outlet,
+  Link,
+  createRootRouteWithContext,
+  useRouter,
+  useRouterState,
+  HeadContent,
+  Scripts,
 } from "@tanstack/react-router";
 import { useEffect, type ReactNode } from "react";
 
@@ -10,6 +16,8 @@ import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/layout/AppSidebar";
 import { TopBar } from "@/components/layout/TopBar";
 import { getAccountOptions, getBusinessSummary } from "@/lib/api/dashboard";
+import { getCurrentUser } from "@/lib/api/auth";
+import type { PublicUser } from "@/lib/auth/users";
 
 function NotFoundComponent() {
   return (
@@ -21,7 +29,10 @@ function NotFoundComponent() {
           The page you're looking for doesn't exist or has been moved.
         </p>
         <div className="mt-6">
-          <Link to="/overview" className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90">
+          <Link
+            to="/overview"
+            className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+          >
             Go to Overview
           </Link>
         </div>
@@ -40,16 +51,26 @@ function ErrorComponent({ error, reset }: { error: Error; reset: () => void }) {
   return (
     <div className="flex min-h-screen items-center justify-center bg-background px-4">
       <div className="max-w-md text-center">
-        <h1 className="text-xl font-semibold tracking-tight text-foreground">This page didn't load</h1>
-        <p className="mt-2 text-sm text-muted-foreground">Something went wrong. Try refreshing or head back to Overview.</p>
+        <h1 className="text-xl font-semibold tracking-tight text-foreground">
+          This page didn't load
+        </h1>
+        <p className="mt-2 text-sm text-muted-foreground">
+          Something went wrong. Try refreshing or head back to Overview.
+        </p>
         <div className="mt-6 flex flex-wrap justify-center gap-2">
           <button
-            onClick={() => { router.invalidate(); reset(); }}
+            onClick={() => {
+              router.invalidate();
+              reset();
+            }}
             className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
           >
             Try again
           </button>
-          <a href="/" className="inline-flex items-center justify-center rounded-md border border-input bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-accent">
+          <a
+            href="/"
+            className="inline-flex items-center justify-center rounded-md border border-input bg-background px-4 py-2 text-sm font-medium text-foreground hover:bg-accent"
+          >
             Go home
           </a>
         </div>
@@ -69,8 +90,16 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       { name: "twitter:title", content: "DOT — Meta Ads Analytics" },
       { property: "og:description", content: "Internal analytics dashboard for Meta Ads." },
       { name: "twitter:description", content: "Internal analytics dashboard for Meta Ads." },
-      { property: "og:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/dd0428a6-3e83-4a35-918e-e3a23cefc008/id-preview-2b73375a--74063724-e362-4cd5-8273-08ce7112ab98.lovable.app-1780933254786.png" },
-      { name: "twitter:image", content: "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/dd0428a6-3e83-4a35-918e-e3a23cefc008/id-preview-2b73375a--74063724-e362-4cd5-8273-08ce7112ab98.lovable.app-1780933254786.png" },
+      {
+        property: "og:image",
+        content:
+          "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/dd0428a6-3e83-4a35-918e-e3a23cefc008/id-preview-2b73375a--74063724-e362-4cd5-8273-08ce7112ab98.lovable.app-1780933254786.png",
+      },
+      {
+        name: "twitter:image",
+        content:
+          "https://pub-bb2e103a32db4e198524a2e9ed8f35b4.r2.dev/dd0428a6-3e83-4a35-918e-e3a23cefc008/id-preview-2b73375a--74063724-e362-4cd5-8273-08ce7112ab98.lovable.app-1780933254786.png",
+      },
       { name: "twitter:card", content: "summary_large_image" },
       { property: "og:type", content: "website" },
     ],
@@ -86,8 +115,13 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     ],
   }),
   loader: async () => {
+    const user = await getCurrentUser();
+    // Only the approved app shell needs business/account data.
+    if (!user || user.status !== "approved") {
+      return { user, business: null, accounts: [] as { id: string; name: string }[] };
+    }
     const [business, accounts] = await Promise.all([getBusinessSummary(), getAccountOptions()]);
-    return { business, accounts };
+    return { user, business, accounts };
   },
   shellComponent: RootShell,
   component: RootComponent,
@@ -109,21 +143,49 @@ function RootShell({ children }: { children: ReactNode }) {
   );
 }
 
+function PendingScreen({ user }: { user: PublicUser }) {
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-background px-4">
+      <div className="max-w-sm w-full rounded-xl border border-border bg-card p-6 text-center space-y-3">
+        <h1 className="text-lg font-semibold">Awaiting approval</h1>
+        <p className="text-sm text-muted-foreground">
+          Your account (<span className="font-medium text-foreground">{user.email}</span>) is
+          pending an administrator's approval. You'll have access once it's approved.
+        </p>
+        <a
+          href="/auth/logout"
+          className="inline-flex h-9 items-center justify-center rounded-md border border-border px-4 text-sm font-medium hover:bg-accent"
+        >
+          Sign out
+        </a>
+      </div>
+    </div>
+  );
+}
+
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
-  const { business, accounts } = Route.useLoaderData();
+  const { user, business, accounts } = Route.useLoaderData();
+  const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const bare = pathname === "/login" || pathname === "/signup";
 
   return (
     <QueryClientProvider client={queryClient}>
-      <SidebarProvider>
-        <AppSidebar />
-        <SidebarInset>
-          <TopBar business={business} accounts={accounts} />
-          <main className="flex-1 overflow-x-hidden">
-            <Outlet />
-          </main>
-        </SidebarInset>
-      </SidebarProvider>
+      {bare || !user ? (
+        <Outlet />
+      ) : user.status !== "approved" ? (
+        <PendingScreen user={user} />
+      ) : (
+        <SidebarProvider>
+          <AppSidebar user={user} />
+          <SidebarInset>
+            <TopBar business={business!} accounts={accounts} />
+            <main className="flex-1 overflow-x-hidden">
+              <Outlet />
+            </main>
+          </SidebarInset>
+        </SidebarProvider>
+      )}
     </QueryClientProvider>
   );
 }

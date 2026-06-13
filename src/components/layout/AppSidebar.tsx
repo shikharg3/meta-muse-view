@@ -9,6 +9,8 @@ import {
   Activity,
   Briefcase,
   Sparkles,
+  UserCog,
+  LogOut,
 } from "lucide-react";
 import {
   Sidebar,
@@ -22,6 +24,7 @@ import {
   SidebarMenuItem,
   SidebarFooter,
 } from "@/components/ui/sidebar";
+import type { PublicUser } from "@/lib/auth/users";
 
 const main = [
   { title: "Ask", url: "/", icon: Sparkles },
@@ -34,9 +37,11 @@ const main = [
 ];
 const system = [{ title: "Settings", url: "/settings", icon: Settings }];
 
-export function AppSidebar() {
+export function AppSidebar({ user }: { user: PublicUser }) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const isActive = (url: string) => (url === "/" ? pathname === "/" : pathname.startsWith(url));
+  const systemItems =
+    user.role === "admin" ? [{ title: "Users", url: "/users", icon: UserCog }, ...system] : system;
 
   return (
     <Sidebar collapsible="icon">
@@ -75,7 +80,7 @@ export function AppSidebar() {
           <SidebarGroupLabel>System</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
-              {system.map((item) => (
+              {systemItems.map((item) => (
                 <SidebarMenuItem key={item.url}>
                   <SidebarMenuButton asChild isActive={isActive(item.url)} tooltip={item.title}>
                     <Link to={item.url}>
@@ -91,13 +96,20 @@ export function AppSidebar() {
       </SidebarContent>
       <SidebarFooter>
         <div className="flex items-center gap-2.5 rounded-md bg-sidebar-accent/40 p-2 group-data-[collapsible=icon]:bg-transparent group-data-[collapsible=icon]:p-0">
-          <div className="size-8 rounded-full bg-muted grid place-items-center text-[10px] font-semibold shrink-0">
-            JD
+          <div className="size-8 rounded-full bg-muted grid place-items-center text-[10px] font-semibold shrink-0 uppercase">
+            {(user.name || user.email).slice(0, 2)}
           </div>
-          <div className="text-xs leading-tight overflow-hidden group-data-[collapsible=icon]:hidden">
-            <div className="font-semibold truncate">Jordan Dash</div>
-            <div className="text-muted-foreground truncate text-[10px]">Ad Ops · Admin</div>
+          <div className="text-xs leading-tight overflow-hidden flex-1 group-data-[collapsible=icon]:hidden">
+            <div className="font-semibold truncate">{user.name || user.email}</div>
+            <div className="text-muted-foreground truncate text-[10px] capitalize">{user.role}</div>
           </div>
+          <a
+            href="/auth/logout"
+            title="Sign out"
+            className="size-7 grid place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground shrink-0 group-data-[collapsible=icon]:hidden"
+          >
+            <LogOut className="size-4" />
+          </a>
         </div>
       </SidebarFooter>
     </Sidebar>

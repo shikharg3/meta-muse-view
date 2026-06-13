@@ -9,9 +9,27 @@ const schema = z.object({
   META_AD_ACCOUNT_IDS: z
     .string()
     .default("")
-    .transform((s) => s.split(",").map((x) => x.trim()).filter(Boolean)),
+    .transform((s) =>
+      s
+        .split(",")
+        .map((x) => x.trim())
+        .filter(Boolean),
+    ),
   APP_ENCRYPTION_KEY: z.string().length(64, "APP_ENCRYPTION_KEY must be 64 hex chars (32 bytes)"),
   DATABASE_URL: z.string().min(1),
+  // Auth (Google OAuth optional; email/password works without it).
+  GOOGLE_CLIENT_ID: z.string().optional(),
+  GOOGLE_CLIENT_SECRET: z.string().optional(),
+  // Emails auto-approved as admins on first sign-up/login (comma-separated, lowercased).
+  AUTH_BOOTSTRAP_ADMINS: z
+    .string()
+    .default("")
+    .transform((s) =>
+      s
+        .split(",")
+        .map((x) => x.trim().toLowerCase())
+        .filter(Boolean),
+    ),
 });
 
 export type Env = z.infer<typeof schema>;

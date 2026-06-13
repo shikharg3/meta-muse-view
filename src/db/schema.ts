@@ -156,3 +156,17 @@ export const clients = pgTable("clients", {
   raw: jsonb("raw"), // contributing Notion rows (page ids, titles)
   syncedAt: timestamp("synced_at", { withTimezone: true }),
 });
+
+// App users for Google / email-password auth. New accounts are "pending" until
+// an admin approves; the bootstrap-admin email(s) are auto-approved as admins.
+export const users = pgTable("users", {
+  id: text("id").primaryKey(), // crypto.randomUUID()
+  email: text("email").notNull().unique(), // lowercased
+  name: text("name"),
+  passwordHash: text("password_hash"), // null for Google-only accounts
+  role: text("role").notNull().default("member"), // "admin" | "member"
+  status: text("status").notNull().default("pending"), // "pending" | "approved" | "rejected"
+  googleSub: text("google_sub"), // Google account id, set on first Google login
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
+});

@@ -9,8 +9,11 @@
 // Additionally, you should also exclude this file from your linter and/or formatter to prevent it from being checked or modified.
 
 import { Route as rootRouteImport } from './routes/__root'
+import { Route as UsersRouteImport } from './routes/users'
+import { Route as SignupRouteImport } from './routes/signup'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as OverviewRouteImport } from './routes/overview'
+import { Route as LoginRouteImport } from './routes/login'
 import { Route as CreativesRouteImport } from './routes/creatives'
 import { Route as ClientsRouteImport } from './routes/clients'
 import { Route as CampaignsRouteImport } from './routes/campaigns'
@@ -19,6 +22,16 @@ import { Route as IndexRouteImport } from './routes/index'
 import { Route as AccountsIndexRouteImport } from './routes/accounts.index'
 import { Route as AccountsIdRouteImport } from './routes/accounts.$id'
 
+const UsersRoute = UsersRouteImport.update({
+  id: '/users',
+  path: '/users',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SignupRoute = SignupRouteImport.update({
+  id: '/signup',
+  path: '/signup',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const SettingsRoute = SettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
@@ -27,6 +40,11 @@ const SettingsRoute = SettingsRouteImport.update({
 const OverviewRoute = OverviewRouteImport.update({
   id: '/overview',
   path: '/overview',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LoginRoute = LoginRouteImport.update({
+  id: '/login',
+  path: '/login',
   getParentRoute: () => rootRouteImport,
 } as any)
 const CreativesRoute = CreativesRouteImport.update({
@@ -71,8 +89,11 @@ export interface FileRoutesByFullPath {
   '/campaigns': typeof CampaignsRoute
   '/clients': typeof ClientsRoute
   '/creatives': typeof CreativesRoute
+  '/login': typeof LoginRoute
   '/overview': typeof OverviewRoute
   '/settings': typeof SettingsRoute
+  '/signup': typeof SignupRoute
+  '/users': typeof UsersRoute
   '/accounts/$id': typeof AccountsIdRoute
   '/accounts/': typeof AccountsIndexRoute
 }
@@ -82,8 +103,11 @@ export interface FileRoutesByTo {
   '/campaigns': typeof CampaignsRoute
   '/clients': typeof ClientsRoute
   '/creatives': typeof CreativesRoute
+  '/login': typeof LoginRoute
   '/overview': typeof OverviewRoute
   '/settings': typeof SettingsRoute
+  '/signup': typeof SignupRoute
+  '/users': typeof UsersRoute
   '/accounts/$id': typeof AccountsIdRoute
   '/accounts': typeof AccountsIndexRoute
 }
@@ -94,8 +118,11 @@ export interface FileRoutesById {
   '/campaigns': typeof CampaignsRoute
   '/clients': typeof ClientsRoute
   '/creatives': typeof CreativesRoute
+  '/login': typeof LoginRoute
   '/overview': typeof OverviewRoute
   '/settings': typeof SettingsRoute
+  '/signup': typeof SignupRoute
+  '/users': typeof UsersRoute
   '/accounts/$id': typeof AccountsIdRoute
   '/accounts/': typeof AccountsIndexRoute
 }
@@ -107,8 +134,11 @@ export interface FileRouteTypes {
     | '/campaigns'
     | '/clients'
     | '/creatives'
+    | '/login'
     | '/overview'
     | '/settings'
+    | '/signup'
+    | '/users'
     | '/accounts/$id'
     | '/accounts/'
   fileRoutesByTo: FileRoutesByTo
@@ -118,8 +148,11 @@ export interface FileRouteTypes {
     | '/campaigns'
     | '/clients'
     | '/creatives'
+    | '/login'
     | '/overview'
     | '/settings'
+    | '/signup'
+    | '/users'
     | '/accounts/$id'
     | '/accounts'
   id:
@@ -129,8 +162,11 @@ export interface FileRouteTypes {
     | '/campaigns'
     | '/clients'
     | '/creatives'
+    | '/login'
     | '/overview'
     | '/settings'
+    | '/signup'
+    | '/users'
     | '/accounts/$id'
     | '/accounts/'
   fileRoutesById: FileRoutesById
@@ -141,14 +177,31 @@ export interface RootRouteChildren {
   CampaignsRoute: typeof CampaignsRoute
   ClientsRoute: typeof ClientsRoute
   CreativesRoute: typeof CreativesRoute
+  LoginRoute: typeof LoginRoute
   OverviewRoute: typeof OverviewRoute
   SettingsRoute: typeof SettingsRoute
+  SignupRoute: typeof SignupRoute
+  UsersRoute: typeof UsersRoute
   AccountsIdRoute: typeof AccountsIdRoute
   AccountsIndexRoute: typeof AccountsIndexRoute
 }
 
 declare module '@tanstack/react-router' {
   interface FileRoutesByPath {
+    '/users': {
+      id: '/users'
+      path: '/users'
+      fullPath: '/users'
+      preLoaderRoute: typeof UsersRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/signup': {
+      id: '/signup'
+      path: '/signup'
+      fullPath: '/signup'
+      preLoaderRoute: typeof SignupRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/settings': {
       id: '/settings'
       path: '/settings'
@@ -161,6 +214,13 @@ declare module '@tanstack/react-router' {
       path: '/overview'
       fullPath: '/overview'
       preLoaderRoute: typeof OverviewRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/creatives': {
@@ -221,8 +281,11 @@ const rootRouteChildren: RootRouteChildren = {
   CampaignsRoute: CampaignsRoute,
   ClientsRoute: ClientsRoute,
   CreativesRoute: CreativesRoute,
+  LoginRoute: LoginRoute,
   OverviewRoute: OverviewRoute,
   SettingsRoute: SettingsRoute,
+  SignupRoute: SignupRoute,
+  UsersRoute: UsersRoute,
   AccountsIdRoute: AccountsIdRoute,
   AccountsIndexRoute: AccountsIndexRoute,
 }
