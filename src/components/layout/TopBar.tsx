@@ -55,7 +55,8 @@ function RefreshButton() {
     if (refreshing) return;
     setRefreshing(true);
     try {
-      await router.invalidate();
+      // Guarantee a visible spinner even when the refetch is near-instant.
+      await Promise.all([router.invalidate(), new Promise((r) => setTimeout(r, 600))]);
     } finally {
       setRefreshing(false);
     }
