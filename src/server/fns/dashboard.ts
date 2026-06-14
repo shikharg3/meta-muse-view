@@ -11,6 +11,7 @@ import type {
   KpiDeltas,
   TrendPoint,
 } from "@/lib/types";
+import { isCycleRunning } from "@/sync/cycle";
 
 const num = (v: unknown): number => Number(v ?? 0);
 
@@ -494,6 +495,7 @@ export async function fetchBusinessSummary(): Promise<{
   businessId: string;
   accountCount: number;
   lastSyncAt: string | null;
+  syncRunning: boolean;
 }> {
   const [cred] = await db
     .select({ businessId: schema.metaCredentials.businessId })
@@ -508,6 +510,7 @@ export async function fetchBusinessSummary(): Promise<{
     businessId: cred?.businessId ?? "",
     accountCount: num(counted?.count),
     lastSyncAt: last && !Number.isNaN(last.getTime()) ? last.toISOString() : null,
+    syncRunning: isCycleRunning(),
   };
 }
 

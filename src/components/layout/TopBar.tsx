@@ -1,12 +1,13 @@
 import { Link, useRouter, useRouterState, useSearch } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
-import { Download, RefreshCw } from "lucide-react";
+import { CloudDownload, Download, RefreshCw } from "lucide-react";
 import { AccountSwitcher } from "./AccountSwitcher";
 import { GlobalSearch } from "./GlobalSearch";
 import { RangePicker } from "./RangePicker";
 import { getExportCsv } from "@/lib/api/dashboard";
+import { syncNow } from "@/lib/api/settings";
 import { toRange } from "@/lib/range";
 import { fmtRelTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -75,12 +76,58 @@ function RefreshButton() {
   );
 }
 
+/** Admin-only: triggers a real Meta Marketing API sync in the background. */
+function SyncNowButton({ running }: { running: boolean }) {
+  const router = useRouter();
+  const [triggering, setTriggering] = useState(false);
+  const busy = running || triggering;
+  // While a cycle is in flight, keep loader data fresh so the freshness chip and
+  // this button's state update as accounts finish syncing.
+  useEffect(() => {
+    if (!running) return;
+    const t = setInterval(() => void router.invalidate(), 5000);
+    return () => clearInterval(t);
+  }, [running, router]);
+  const onSync = async () => {
+    if (busy) return;
+    setTriggering(true);
+    try {
+      await syncNow();
+      await router.invalidate();
+    } finally {
+      setTriggering(false);
+    }
+  };
+  return (
+    <Button
+      variant="outline"
+      size="sm"
+      className="hidden sm:inline-flex h-9 text-xs"
+      onClick={() => void onSync()}
+      disabled={busy}
+      title="Pull the latest data from Meta now (runs in the background)"
+    >
+      {busy ? (
+        <RefreshCw className="size-3.5 animate-spin" />
+      ) : (
+        <CloudDownload className="size-3.5" />
+      )}
+      {busy ? "Syncing…" : "Sync now"}
+    </Button>
+  );
+}
+
 export function TopBar({
   business,
   accounts,
   isAdmin = false,
 }: {
-  business: { businessId: string; accountCount: number; lastSyncAt: string | null };
+  business: {
+    businessId: string;
+    accountCount: number;
+    lastSyncAt: string | null;
+    syncRunning: boolean;
+  };
   accounts: { id: string; name: string }[];
   isAdmin?: boolean;
 }) {
@@ -116,6 +163,7 @@ export function TopBar({
       <SyncFreshness lastSyncAt={business.lastSyncAt} isAdmin={isAdmin} />
       <RangePicker />
 
+      {isAdmin && <SyncNowButton running={business.syncRunning} />}
       <RefreshButton />
       <Button size="sm" className="h-9 text-xs" onClick={onExport} disabled={!kind}>
         <Download className="size-3.5" /> Export
