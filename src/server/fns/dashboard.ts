@@ -1,6 +1,14 @@
 import { and, eq, gte, ilike, inArray, lt, or, sql } from "drizzle-orm";
 import { db, schema } from "@/db/client";
-import { accountStatus, deriveKpis, pctDelta, windowStart, type Totals } from "@/server/agg";
+import {
+  accountStatus,
+  canonicalEvents,
+  deriveKpis,
+  pctDelta,
+  windowStart,
+  type ClientEvent,
+  type Totals,
+} from "@/server/agg";
 import { creativeFormat, creativeImageUrl, hueFromId, resultSpec } from "@/server/creative";
 import type {
   AdAccount,
@@ -281,6 +289,19 @@ export async function fetchOverview(days: number): Promise<{
     topCampaigns: [...campaigns].sort((a, b) => b.spend - a.spend).slice(0, 5),
     trend,
   };
+}
+
+/** All de-duplicated conversion/engagement events across every ad account (chat get_overview). */
+export async function fetchOverviewEvents(days: number): Promise<ClientEvent[]> {
+  const since = windowStart(days);
+  const rows = await db
+    .select({
+      actions: schema.insightsDaily.actions,
+      actionValues: schema.insightsDaily.actionValues,
+    })
+    .from(schema.insightsDaily)
+    .where(and(eq(schema.insightsDaily.level, "account"), gte(schema.insightsDaily.date, since)));
+  return canonicalEvents(rows);
 }
 
 export async function fetchCampaigns(days: number, accountIds?: string[]): Promise<Campaign[]> {

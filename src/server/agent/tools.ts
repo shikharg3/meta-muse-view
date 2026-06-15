@@ -1,5 +1,5 @@
 import { fetchClients, fetchClientsRanked, fetchClientDetail } from "@/server/fns/clients";
-import { fetchOverview, searchEntities } from "@/server/fns/dashboard";
+import { fetchOverview, fetchOverviewEvents, searchEntities } from "@/server/fns/dashboard";
 import { getClientRow, effectiveAccountIds } from "@/sync/jobs/clients";
 import { runReport, resolveRange, normalizeColumns, normalizeBreakdown } from "./report";
 import type { AnthropicTool } from "./anthropic";
@@ -181,10 +181,12 @@ export async function runTool(name: string, input: Record<string, unknown>): Pro
       };
     }
     case "get_overview": {
-      const o = await fetchOverview(clampDays(input.days));
+      const days = clampDays(input.days);
+      const [o, events] = await Promise.all([fetchOverview(days), fetchOverviewEvents(days)]);
       return {
         kpis: o.kpis,
         deltas: o.deltas,
+        events,
         topAccounts: o.topAccounts.slice(0, 10).map((a) => ({
           name: a.name,
           spend: a.spend,
