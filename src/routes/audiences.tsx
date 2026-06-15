@@ -1,7 +1,7 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { BreakdownBar } from "@/components/dashboard/BreakdownBar";
-import { getBreakdowns } from "@/lib/api/dashboard";
+import { getBreakdowns, getCampaignOptions } from "@/lib/api/dashboard";
 import { listClients } from "@/lib/api/clients";
 import { fmtCurrency, fmtCompact } from "@/lib/format";
 import { rangeSearch, toRange, type RangeDays } from "@/lib/range";
@@ -16,17 +16,33 @@ export const Route = createFileRoute("/audiences")({
       },
     ],
   }),
-  validateSearch: (search: Record<string, unknown>): { range?: RangeDays; client?: string } => ({
+  validateSearch: (
+    search: Record<string, unknown>,
+  ): { range?: RangeDays; client?: string; campaign?: string } => ({
     ...rangeSearch(search),
     ...(typeof search.client === "string" && search.client ? { client: search.client } : {}),
+    ...(typeof search.campaign === "string" && search.campaign
+      ? { campaign: search.campaign }
+      : {}),
   }),
-  loaderDeps: ({ search }) => ({ range: toRange(search.range), client: search.client }),
-  loader: async ({ deps: { range, client } }) => {
-    const [breakdowns, clients] = await Promise.all([
-      getBreakdowns({ data: { days: range, clientId: client } }),
+  loaderDeps: ({ search }) => ({
+    range: toRange(search.range),
+    client: search.client,
+    campaign: search.campaign,
+  }),
+  loader: async ({ deps: { range, client, campaign } }) => {
+    const [breakdowns, clients, campaigns] = await Promise.all([
+      getBreakdowns({ data: { days: range, clientId: client, campaignId: campaign } }),
       listClients(),
+      client ? getCampaignOptions({ data: { clientId: client } }) : Promise.resolve([]),
     ]);
-    return { breakdowns, clients, client: client ?? null };
+    return {
+      breakdowns,
+      clients,
+      campaigns,
+      client: client ?? null,
+      campaign: campaign ?? null,
+    };
   },
   component: Audiences,
 });
@@ -41,7 +57,7 @@ function Panel({ title, children }: { title: string; children: React.ReactNode }
 }
 
 function Audiences() {
-  const { breakdowns, clients, client } = Route.useLoaderData();
+  const { breakdowns, clients, campaigns, client, campaign } = Route.useLoaderData();
   const navigate = useNavigate();
   const sorted = [...clients].sort((a, b) => a.name.localeCompare(b.name));
   return (
@@ -58,7 +74,11 @@ function Audiences() {
           onChange={(e) =>
             navigate({
               to: ".",
-              search: (prev) => ({ ...prev, client: e.target.value || undefined }),
+              search: (prev) => ({
+                ...prev,
+                client: e.target.value || undefined,
+                campaign: undefined,
+              }),
             })
           }
           className="h-9 rounded-md border border-border bg-card px-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
@@ -70,6 +90,28 @@ function Audiences() {
             </option>
           ))}
         </select>
+        {client && (
+          <>
+            <span className="ml-2 text-xs font-medium text-muted-foreground">Campaign</span>
+            <select
+              value={campaign ?? ""}
+              onChange={(e) =>
+                navigate({
+                  to: ".",
+                  search: (prev) => ({ ...prev, campaign: e.target.value || undefined }),
+                })
+              }
+              className="h-9 max-w-[280px] rounded-md border border-border bg-card px-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
+            >
+              <option value="">All campaigns</option>
+              {campaigns.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name ?? c.id}
+                </option>
+              ))}
+            </select>
+          </>
+        )}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

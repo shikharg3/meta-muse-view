@@ -7,6 +7,7 @@ import {
   fetchBreakdowns,
   fetchBusinessSummary,
   fetchCampaigns,
+  fetchCampaignOptions,
   fetchCreatives,
   fetchOverview,
   searchEntities,
@@ -35,14 +36,21 @@ export const listCreatives = createServerFn({ method: "GET" })
   .handler(({ data }) => fetchCreatives(data));
 
 export const getBreakdowns = createServerFn({ method: "GET" })
-  .inputValidator((input: { days: number; clientId?: string }) => input)
+  .inputValidator((input: { days: number; clientId?: string; campaignId?: string }) => input)
   .handler(async ({ data }) => {
-    let accountIds: string[] | undefined;
+    if (data.campaignId) return fetchBreakdowns(data.days, { campaignId: data.campaignId });
     if (data.clientId) {
       const row = await getClientRow(data.clientId);
-      accountIds = row ? effectiveAccountIds(row) : [];
+      return fetchBreakdowns(data.days, { accountIds: row ? effectiveAccountIds(row) : [] });
     }
-    return fetchBreakdowns(data.days, accountIds);
+    return fetchBreakdowns(data.days);
+  });
+
+export const getCampaignOptions = createServerFn({ method: "GET" })
+  .inputValidator((input: { clientId: string }) => input)
+  .handler(async ({ data }) => {
+    const row = await getClientRow(data.clientId);
+    return fetchCampaignOptions(row ? effectiveAccountIds(row) : []);
   });
 
 export const getBusinessSummary = createServerFn({ method: "GET" }).handler(() =>

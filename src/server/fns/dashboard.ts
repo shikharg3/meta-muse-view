@@ -472,7 +472,7 @@ export async function fetchCreatives(days: number): Promise<CreativeCard[]> {
 
 export async function fetchBreakdowns(
   days: number,
-  accountIds?: string[],
+  scope?: { accountIds?: string[]; campaignId?: string },
 ): Promise<
   Record<"age" | "gender" | "publisher_platform" | "device_platform" | "country", BreakdownRow[]>
 > {
@@ -489,15 +489,22 @@ export async function fetchBreakdowns(
       BreakdownRow[]
     >;
   // A client scoped to zero mapped accounts has nothing to show.
-  if (accountIds && accountIds.length === 0) return shaped();
+  if (!scope?.campaignId && scope?.accountIds && scope.accountIds.length === 0) return shaped();
   const since = windowStart(days);
-  // Account-level only: campaign-level rows (phase 2) live in the same table and
-  // must not be summed in here, or every metric would double-count.
-  const conds = [
-    eq(schema.insightsBreakdownDaily.level, "account"),
-    gte(schema.insightsBreakdownDaily.date, since),
-  ];
-  if (accountIds) conds.push(inArray(schema.insightsBreakdownDaily.accountId, accountIds));
+  // Campaign scope reads campaign-level rows; otherwise account-level (the all-accounts /
+  // client view). Both levels coexist in the table, so the level filter is required.
+  const conds = scope?.campaignId
+    ? [
+        eq(schema.insightsBreakdownDaily.level, "campaign"),
+        eq(schema.insightsBreakdownDaily.entityId, scope.campaignId),
+        gte(schema.insightsBreakdownDaily.date, since),
+      ]
+    : [
+        eq(schema.insightsBreakdownDaily.level, "account"),
+        gte(schema.insightsBreakdownDaily.date, since),
+      ];
+  if (!scope?.campaignId && scope?.accountIds)
+    conds.push(inArray(schema.insightsBreakdownDaily.accountId, scope.accountIds));
   const rows = await db
     .select({
       breakdownType: schema.insightsBreakdownDaily.breakdownType,
@@ -522,6 +529,18 @@ export async function fetchBreakdowns(
   }
   for (const k of Object.keys(empty)) empty[k].sort((a, b) => b.spend - a.spend);
   return shaped();
+}
+
+/** Lightweight {id,name} list of the given accounts' campaigns, for filter dropdowns. */
+export async function fetchCampaignOptions(
+  accountIds: string[],
+): Promise<{ id: string; name: string | null }[]> {
+  if (accountIds.length === 0) return [];
+  return db
+    .select({ id: schema.campaigns.id, name: schema.campaigns.name })
+    .from(schema.campaigns)
+    .where(inArray(schema.campaigns.accountId, accountIds))
+    .orderBy(schema.campaigns.name);
 }
 
 export async function fetchBusinessSummary(): Promise<{
