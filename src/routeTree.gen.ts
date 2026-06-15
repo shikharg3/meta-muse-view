@@ -18,6 +18,7 @@ import { Route as CreativesRouteImport } from './routes/creatives'
 import { Route as ClientsRouteImport } from './routes/clients'
 import { Route as CampaignsRouteImport } from './routes/campaigns'
 import { Route as AudiencesRouteImport } from './routes/audiences'
+import { Route as AlertsRouteImport } from './routes/alerts'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AccountsIndexRouteImport } from './routes/accounts.index'
 import { Route as AccountsIdRouteImport } from './routes/accounts.$id'
@@ -67,6 +68,11 @@ const AudiencesRoute = AudiencesRouteImport.update({
   path: '/audiences',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AlertsRoute = AlertsRouteImport.update({
+  id: '/alerts',
+  path: '/alerts',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
@@ -85,6 +91,7 @@ const AccountsIdRoute = AccountsIdRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/alerts': typeof AlertsRoute
   '/audiences': typeof AudiencesRoute
   '/campaigns': typeof CampaignsRoute
   '/clients': typeof ClientsRoute
@@ -99,6 +106,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/alerts': typeof AlertsRoute
   '/audiences': typeof AudiencesRoute
   '/campaigns': typeof CampaignsRoute
   '/clients': typeof ClientsRoute
@@ -114,6 +122,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/alerts': typeof AlertsRoute
   '/audiences': typeof AudiencesRoute
   '/campaigns': typeof CampaignsRoute
   '/clients': typeof ClientsRoute
@@ -130,6 +139,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/alerts'
     | '/audiences'
     | '/campaigns'
     | '/clients'
@@ -144,6 +154,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/alerts'
     | '/audiences'
     | '/campaigns'
     | '/clients'
@@ -158,6 +169,7 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/'
+    | '/alerts'
     | '/audiences'
     | '/campaigns'
     | '/clients'
@@ -173,6 +185,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AlertsRoute: typeof AlertsRoute
   AudiencesRoute: typeof AudiencesRoute
   CampaignsRoute: typeof CampaignsRoute
   ClientsRoute: typeof ClientsRoute
@@ -251,6 +264,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AudiencesRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/alerts': {
+      id: '/alerts'
+      path: '/alerts'
+      fullPath: '/alerts'
+      preLoaderRoute: typeof AlertsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
@@ -277,6 +297,7 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AlertsRoute: AlertsRoute,
   AudiencesRoute: AudiencesRoute,
   CampaignsRoute: CampaignsRoute,
   ClientsRoute: ClientsRoute,

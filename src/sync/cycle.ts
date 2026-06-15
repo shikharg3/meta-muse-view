@@ -6,6 +6,7 @@ import { syncBreakdowns, BREAKDOWNS } from "./jobs/breakdowns";
 import { syncClients } from "./jobs/clients";
 import { isFirstInsightsSync, markSync, recordTokenHealth } from "./state";
 import { runOnce, type Jobs } from "./run";
+import { detectSpendDropAlerts } from "./alerts";
 
 // First sync of an account backfills as much history as Meta retains; later cycles
 // only refresh the trailing edge. Meta caps plain insights at 37 months but
@@ -114,6 +115,12 @@ export async function runCycle(): Promise<void> {
     const ids = creds.accountIds.length ? owned.filter((a) => creds.accountIds.includes(a)) : owned;
     console.log(`[sync] cycle: ${ids.length} accounts`);
     await runOnce({ client, accountIds: ids, jobs: buildJobs() });
+    try {
+      const n = await detectSpendDropAlerts();
+      if (n > 0) console.log(`[sync] alerts: ${n} new spend-drop alert(s)`);
+    } catch (e) {
+      console.error("[sync] alert detection failed:", e);
+    }
     console.log("[sync] cycle done");
   } finally {
     running = false;

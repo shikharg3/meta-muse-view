@@ -7,6 +7,7 @@ import {
   Users,
   Settings,
   Activity,
+  Bell,
   Briefcase,
   Sparkles,
   UserCog,
@@ -34,6 +35,7 @@ const main = [
   { title: "Creatives", url: "/creatives", icon: Images },
   { title: "Audiences", url: "/audiences", icon: Users },
   { title: "Clients", url: "/clients", icon: Briefcase },
+  { title: "Alerts", url: "/alerts", icon: Bell },
 ];
 
 export function AppSidebar({ user }: { user: PublicUser }) {

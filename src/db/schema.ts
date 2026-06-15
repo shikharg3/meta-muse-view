@@ -186,3 +186,21 @@ export const auditLog = pgTable("audit_log", {
   detail: text("detail").notNull(), // human-readable summary
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+// Detected anomalies surfaced in-app (and, when configured, pushed to Telegram).
+export const alerts = pgTable(
+  "alerts",
+  {
+    id: text("id").primaryKey(), // dedupe key, e.g. `spend_drop:<accountId>:<date>`
+    type: text("type").notNull(), // "spend_drop"
+    accountId: text("account_id").notNull(),
+    accountName: text("account_name"),
+    message: text("message").notNull(),
+    metric: doublePrecision("metric"), // drop fraction 0..1
+    severity: text("severity").notNull().default("warning"), // "warning" | "critical"
+    status: text("status").notNull().default("open"), // "open" | "acknowledged"
+    date: date("date").notNull(), // the day evaluated
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("alerts_status_created_idx").on(t.status, t.createdAt)],
+);
