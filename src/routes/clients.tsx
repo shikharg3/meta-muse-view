@@ -48,11 +48,21 @@ function Clients() {
   const [filter, setFilter] = useState("");
   const [newAccount, setNewAccount] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [clientStatus, setClientStatus] = useState("active");
 
   const shown = useMemo(() => {
     const q = filter.trim().toLowerCase();
-    return q ? clients.filter((c) => c.name.toLowerCase().includes(q)) : clients;
-  }, [clients, filter]);
+    return clients.filter((c) => {
+      if (q && !c.name.toLowerCase().includes(q)) return false;
+      if (clientStatus === "all") return true;
+      if (clientStatus === "active") return c.status !== "Full Budget Finished";
+      return c.status === clientStatus;
+    });
+  }, [clients, filter, clientStatus]);
+  const clientStatuses = useMemo(
+    () => Array.from(new Set(clients.map((c) => c.status).filter((s): s is string => !!s))),
+    [clients],
+  );
 
   // Objective-aware client total (leads/purchases/…), summed from its campaigns.
   const clientResults = useMemo(() => {
@@ -120,6 +130,19 @@ function Clients() {
               className="w-full h-9 rounded-md border border-border bg-card pl-8 pr-3 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
             />
           </div>
+          <select
+            value={clientStatus}
+            onChange={(e) => setClientStatus(e.target.value)}
+            className="w-full h-9 rounded-md border border-border bg-card px-2.5 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
+          >
+            <option value="active">Active (hide Full Budget Finished)</option>
+            <option value="all">All statuses</option>
+            {clientStatuses.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </select>
           <div className="rounded-xl border border-border bg-card overflow-hidden divide-y divide-border max-h-[68vh] overflow-y-auto">
             {shown.map((c) => {
               const active = detail?.id === c.id;
@@ -157,7 +180,7 @@ function Clients() {
             )}
           </div>
           <div className="px-1 text-[10px] text-muted-foreground">
-            {clients.length} clients · synced from Notion
+            {shown.length} of {clients.length} clients · synced from Notion
           </div>
         </aside>
 
