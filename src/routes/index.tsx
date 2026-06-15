@@ -9,15 +9,13 @@ import {
   FileText,
   Download,
   Plus,
-  Images,
 } from "lucide-react";
 import { sendChat } from "@/lib/api/chat";
 import { generateClientReport } from "@/lib/api/report";
 import { listClients } from "@/lib/api/clients";
-import type { ChatResult, ToolTrace, CreativeCards } from "@/server/agent/chat";
+import type { ChatResult, ToolTrace } from "@/server/agent/chat";
 import type { ReportPayload, ReportColumn } from "@/server/agent/report";
 import { ReportBuilder, type ReportRequest } from "@/components/chat/ReportBuilder";
-import { CreativeBuilder } from "@/components/chat/CreativeBuilder";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { fmtCurrency, fmtCompact, fmtNumber, fmtPct } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -41,7 +39,6 @@ interface UiMessage {
   content: string;
   cards?: ChatResult["cards"];
   report?: ReportPayload | null;
-  creatives?: CreativeCards | null;
   toolCalls?: ToolTrace[];
   error?: string;
 }
@@ -62,7 +59,6 @@ const TOOL_LABEL: Record<string, string> = {
   get_overview: "fetched overview",
   search_entities: "searched entities",
   generate_report: "generated report",
-  analyze_creatives: "analyzed creatives",
 };
 
 function Ask() {
@@ -71,7 +67,6 @@ function Ask() {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [builderOpen, setBuilderOpen] = useState(false);
-  const [creativeOpen, setCreativeOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -97,7 +92,6 @@ function Ask() {
           content: res.reply,
           cards: res.cards,
           report: res.report,
-          creatives: res.creatives,
           toolCalls: res.toolCalls,
           error: res.error,
         },
@@ -180,20 +174,6 @@ function Ask() {
                     <div className="text-xs text-muted-foreground">Build a CSV/PDF report</div>
                   </div>
                 </button>
-                <button
-                  onClick={() => setCreativeOpen(true)}
-                  className="flex items-center gap-3 text-left rounded-lg border border-primary/30 bg-primary/5 hover:bg-primary/10 px-4 py-3 transition-colors"
-                >
-                  <div className="size-8 rounded-md bg-primary/15 grid place-items-center shrink-0">
-                    <Images className="size-4 text-primary" />
-                  </div>
-                  <div className="min-w-0">
-                    <div className="text-sm font-medium">/creativeanalysis</div>
-                    <div className="text-xs text-muted-foreground">
-                      Analyze top creatives visually
-                    </div>
-                  </div>
-                </button>
               </div>
               <div className="grid sm:grid-cols-2 gap-2.5 mt-8 w-full">
                 {SUGGESTIONS.map((s) => (
@@ -237,19 +217,6 @@ function Ask() {
               />
             </div>
           )}
-          {creativeOpen && (
-            <div className="mb-3">
-              <CreativeBuilder
-                clients={clients}
-                busy={loading}
-                onSubmit={(prompt) => {
-                  setCreativeOpen(false);
-                  void send(prompt);
-                }}
-                onClose={() => setCreativeOpen(false)}
-              />
-            </div>
-          )}
           <form
             onSubmit={(e) => {
               e.preventDefault();
@@ -288,19 +255,6 @@ function Ask() {
                   <div>
                     <div className="text-xs font-medium">/reports</div>
                     <div className="text-[11px] text-muted-foreground">Build a CSV/PDF report</div>
-                  </div>
-                </button>
-                <button
-                  onClick={() => {
-                    setMenuOpen(false);
-                    setCreativeOpen(true);
-                  }}
-                  className="w-full flex items-center gap-2.5 text-left rounded-md hover:bg-accent px-2 py-2"
-                >
-                  <Images className="size-4 text-primary shrink-0" />
-                  <div>
-                    <div className="text-xs font-medium">/creativeanalysis</div>
-                    <div className="text-[11px] text-muted-foreground">Analyze top creatives</div>
                   </div>
                 </button>
               </PopoverContent>
@@ -366,7 +320,6 @@ function Message({ message }: { message: UiMessage }) {
         )}
         {message.cards && <KpiStrip title={message.cards.title} kpis={message.cards.kpis} />}
         {message.report && <ReportBlock report={message.report} />}
-        {message.creatives && <CreativeGrid data={message.creatives} />}
         {message.toolCalls && message.toolCalls.length > 0 && (
           <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
             <Wrench className="size-3 text-muted-foreground" />
@@ -575,68 +528,6 @@ function ReportBlock({ report }: { report: ReportPayload }) {
             </tfoot>
           )}
         </table>
-      </div>
-    </div>
-  );
-}
-
-function CreativeGrid({ data }: { data: CreativeCards }) {
-  const fmtTone: Record<string, string> = {
-    Video: "bg-purple-500/15 text-purple-600 dark:text-purple-400",
-    Carousel: "bg-blue-500/15 text-blue-600 dark:text-blue-400",
-    Image: "bg-muted text-muted-foreground",
-  };
-  return (
-    <div className="rounded-lg border border-border bg-card p-3">
-      <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold mb-2.5">
-        Top creatives · {data.name} · {data.since} → {data.until} · by {data.metricLabel}
-      </div>
-      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
-        {data.rows.map((c, i) => (
-          <div key={c.id} className="rounded-lg border border-border overflow-hidden bg-background">
-            <div className="relative aspect-square bg-muted">
-              {c.thumbnailUrl ? (
-                <img
-                  src={c.thumbnailUrl}
-                  alt={c.name}
-                  loading="lazy"
-                  className="absolute inset-0 size-full object-cover"
-                />
-              ) : (
-                <div
-                  className="absolute inset-0"
-                  style={{ background: `hsl(${(i * 67) % 360} 60% 85%)` }}
-                />
-              )}
-              <span className="absolute top-1.5 left-1.5 size-5 grid place-items-center rounded bg-black/70 text-white text-[10px] font-semibold">
-                {i + 1}
-              </span>
-              <span
-                className={cn(
-                  "absolute top-1.5 right-1.5 rounded px-1.5 py-0.5 text-[9px] font-medium",
-                  fmtTone[c.format] ?? fmtTone.Image,
-                )}
-              >
-                {c.format}
-              </span>
-            </div>
-            <div className="p-2 space-y-1.5">
-              <div className="text-[11px] font-medium truncate" title={c.name}>
-                {c.name}
-              </div>
-              <div className="grid grid-cols-2 gap-x-2 gap-y-0.5 text-[10px] font-mono">
-                <span className="text-muted-foreground">Spend</span>
-                <span className="text-right">{fmtCurrency(c.spend)}</span>
-                <span className="text-muted-foreground">{c.resultLabel}</span>
-                <span className="text-right">{fmtCompact(c.results)}</span>
-                <span className="text-muted-foreground">CTR</span>
-                <span className="text-right">{fmtPct(c.ctr)}</span>
-                <span className="text-muted-foreground">CPC</span>
-                <span className="text-right">{fmtCurrency(c.cpc)}</span>
-              </div>
-            </div>
-          </div>
-        ))}
       </div>
     </div>
   );
