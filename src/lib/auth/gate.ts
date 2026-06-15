@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import {
   SESSION_COOKIE,
   OAUTH_STATE_COOKIE,
@@ -12,7 +12,14 @@ import {
   readCookie,
 } from "./session";
 import { googleConfigured, googleAuthUrl, exchangeCodeForUser } from "./google";
-import { loginWithPassword, signupWithPassword, upsertGoogleUser, findUserById } from "./users";
+import {
+  loginWithPassword,
+  signupWithPassword,
+  upsertGoogleUser,
+  findUserById,
+  ensureBasicAuthUser,
+} from "./users";
+import { env } from "@/lib/env";
 
 /** Public origin as seen by the browser (behind nginx: honor forwarded headers). */
 function publicOrigin(request: Request, url: URL): string {
@@ -42,11 +49,83 @@ async function readJson(request: Request): Promise<Record<string, unknown>> {
   }
 }
 
+// Static assets reachable without a session (also served during basic-auth test mode).
+function isStaticAsset(path: string): boolean {
+  if (path.startsWith("/assets/")) return true;
+  return /\.(js|css|map|svg|png|jpe?g|ico|webp|woff2?|ttf|json|txt)$/.test(path);
+}
+
 // Pages + static assets reachable without a session.
 function isPublicPath(path: string): boolean {
   if (path === "/login" || path === "/signup") return true;
-  if (path.startsWith("/assets/")) return true;
-  return /\.(js|css|map|svg|png|jpe?g|ico|webp|woff2?|ttf|json|txt)$/.test(path);
+  return isStaticAsset(path);
+}
+
+const BASIC_REALM = 'Basic realm="MetaConsole (testing)", charset="UTF-8"';
+
+/** Test-mode credentials: when both env vars are set, HTTP Basic Auth replaces login. */
+function basicAuthCreds(): { user: string; pass: string } | null {
+  const e = env();
+  if (e.BASIC_AUTH_USER && e.BASIC_AUTH_PASS) {
+    return { user: e.BASIC_AUTH_USER, pass: e.BASIC_AUTH_PASS };
+  }
+  return null;
+}
+
+function parseBasicAuth(header: string | null): { user: string; pass: string } | null {
+  if (!header || !header.startsWith("Basic ")) return null;
+  let decoded: string;
+  try {
+    decoded = Buffer.from(header.slice(6), "base64").toString("utf8");
+  } catch {
+    return null;
+  }
+  const i = decoded.indexOf(":");
+  if (i < 0) return null;
+  return { user: decoded.slice(0, i), pass: decoded.slice(i + 1) };
+}
+
+function safeEqual(a: string, b: string): boolean {
+  const ab = Buffer.from(a);
+  const bb = Buffer.from(b);
+  return ab.length === bb.length && timingSafeEqual(ab, bb);
+}
+
+/**
+ * Test-mode gate: a single shared HTTP Basic Auth credential stands in for the
+ * Google/email login. A valid challenge seeds (once) and signs in a shared admin,
+ * so the rest of the app (loaders, requireAdmin) is unchanged. Reverts the moment
+ * the BASIC_AUTH_* env vars are unset.
+ */
+async function handleBasicAuth(
+  request: Request,
+  url: URL,
+  path: string,
+  creds: { user: string; pass: string },
+): Promise<Response | null> {
+  if (isStaticAsset(path)) return null;
+  if (path === "/auth/logout") return redirect("/", [sessionClearCookie()]);
+  if (path.startsWith("/auth/")) return new Response("Not found", { status: 404 });
+  // The Google/email pages are replaced by the browser's basic-auth prompt.
+  if (path === "/login" || path === "/signup") return redirect("/");
+
+  // Already signed in via the seeded test session → let it through.
+  const session = verifySession(readCookie(request, SESSION_COOKIE));
+  if (session) {
+    const u = await findUserById(session.uid);
+    if (u && u.status === "approved") return null;
+  }
+
+  const provided = parseBasicAuth(request.headers.get("authorization"));
+  if (!provided || !safeEqual(provided.user, creds.user) || !safeEqual(provided.pass, creds.pass)) {
+    return new Response("Authentication required.", {
+      status: 401,
+      headers: { "WWW-Authenticate": BASIC_REALM },
+    });
+  }
+  // Valid credentials → start the shared admin session, then reload via the cookie.
+  const user = await ensureBasicAuthUser();
+  return redirect(url.pathname + url.search, [sessionCookieFor(user)]);
 }
 
 async function authEndpoint(request: Request, url: URL, path: string): Promise<Response> {
@@ -107,6 +186,8 @@ async function authEndpoint(request: Request, url: URL, path: string): Promise<R
 export async function handleAuth(request: Request): Promise<Response | null> {
   const url = new URL(request.url);
   const path = url.pathname;
+  const basic = basicAuthCreds();
+  if (basic) return handleBasicAuth(request, url, path, basic);
   if (path.startsWith("/auth/")) return authEndpoint(request, url, path);
   if (isPublicPath(path)) return null;
   const wantsHtml =

@@ -20,6 +20,11 @@ const schema = z.object({
   // Auth (Google OAuth optional; email/password works without it).
   GOOGLE_CLIENT_ID: z.string().optional(),
   GOOGLE_CLIENT_SECRET: z.string().optional(),
+  // Basic-auth test gate: when BOTH are set, the Google/email login is replaced by
+  // HTTP Basic Auth (a single shared credential) for testing. Unset both to restore
+  // the normal Google/email login — no code change needed.
+  BASIC_AUTH_USER: z.string().optional(),
+  BASIC_AUTH_PASS: z.string().optional(),
   // Emails auto-approved as admins on first sign-up/login (comma-separated, lowercased).
   AUTH_BOOTSTRAP_ADMINS: z
     .string()

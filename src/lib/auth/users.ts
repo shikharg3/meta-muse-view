@@ -138,6 +138,30 @@ export async function upsertGoogleUser(g: {
   return { ok: true, user: u };
 }
 
+/** Stable id/email for the shared HTTP Basic Auth test admin (see lib/auth/gate). */
+export const BASIC_AUTH_USER_ID = "basic-auth-test";
+const BASIC_AUTH_EMAIL = "basic-auth@test.local";
+
+/** Idempotently ensure the shared test-admin row exists; returns it (approved admin). */
+export async function ensureBasicAuthUser(): Promise<UserRow> {
+  const [u] = await db
+    .insert(schema.users)
+    .values({
+      id: BASIC_AUTH_USER_ID,
+      email: BASIC_AUTH_EMAIL,
+      name: "Basic Auth (test)",
+      role: "admin",
+      status: "approved",
+      lastLoginAt: new Date(),
+    })
+    .onConflictDoUpdate({
+      target: schema.users.id,
+      set: { role: "admin", status: "approved", lastLoginAt: new Date() },
+    })
+    .returning();
+  return u;
+}
+
 export interface AdminUser extends PublicUser {
   lastLoginAt: string | null;
   createdAt: string;
