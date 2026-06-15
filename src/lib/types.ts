@@ -79,6 +79,7 @@ export interface Campaign {
 export interface CreativeCard extends Ad {
   campaign: string;
   account: string;
+  accountId: string;
 }
 export interface BreakdownRow {
   label: string;

@@ -464,7 +464,8 @@ export async function fetchCreatives(days: number): Promise<CreativeCard[]> {
   const out: CreativeCard[] = [];
   for (const c of campaigns) {
     for (const s of c.adSets) {
-      for (const ad of s.ads) out.push({ ...ad, campaign: c.name, account: c.accountName });
+      for (const ad of s.ads)
+        out.push({ ...ad, campaign: c.name, account: c.accountName, accountId: c.accountId });
     }
   }
   return out.sort((a, b) => b.spend - a.spend).slice(0, 36);

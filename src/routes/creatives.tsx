@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { StatusPill } from "@/components/dashboard/StatusPill";
@@ -107,7 +107,13 @@ function Creatives() {
             </div>
             <div className="p-3 space-y-1.5">
               <div className="text-xs font-medium truncate">{c.name}</div>
-              <div className="text-[10px] text-muted-foreground truncate">{c.campaign}</div>
+              <Link
+                to="/campaigns"
+                search={{ account: c.accountId }}
+                className="block text-[10px] text-muted-foreground truncate hover:text-primary hover:underline"
+              >
+                {c.campaign}
+              </Link>
               <div className="flex items-center justify-between pt-1 text-[10px] font-mono text-muted-foreground">
                 <span>{fmtCompact(c.impressions)} impr</span>
                 <span className={c.results > 0 ? "text-success" : ""}>
