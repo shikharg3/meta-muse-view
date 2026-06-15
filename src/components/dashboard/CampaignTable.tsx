@@ -29,7 +29,9 @@ export function CampaignTable({ campaigns }: { campaigns: Campaign[] }) {
       spend: (c) => c.spend,
       ctr: (c) => c.ctr,
       cpc: (c) => c.cpc,
+      cpm: (c) => c.cpm,
       conversions: (c) => c.conversions,
+      cpa: (c) => (c.conversions > 0 ? c.spend / c.conversions : 0),
       results: (c) => c.results,
     },
     "spend",
@@ -77,8 +79,24 @@ export function CampaignTable({ campaigns }: { campaigns: Campaign[] }) {
                   align="right"
                 />
                 <SortHeader
+                  label="CPM"
+                  sortKey="cpm"
+                  active={key}
+                  dir={dir}
+                  onSort={toggleSort}
+                  align="right"
+                />
+                <SortHeader
                   label="Conv."
                   sortKey="conversions"
+                  active={key}
+                  dir={dir}
+                  onSort={toggleSort}
+                  align="right"
+                />
+                <SortHeader
+                  label="Cost/Conv"
+                  sortKey="cpa"
                   active={key}
                   dir={dir}
                   onSort={toggleSort}
@@ -131,7 +149,13 @@ export function CampaignTable({ campaigns }: { campaigns: Campaign[] }) {
                         {fmtCurrency(c.cpc)}
                       </td>
                       <td className="px-3 py-3 text-right font-mono text-muted-foreground">
+                        {fmtCurrency(c.cpm)}
+                      </td>
+                      <td className="px-3 py-3 text-right font-mono text-muted-foreground">
                         {fmtCompact(c.conversions)}
+                      </td>
+                      <td className="px-3 py-3 text-right font-mono text-muted-foreground">
+                        {c.conversions > 0 ? fmtCurrency(c.spend / c.conversions) : "—"}
                       </td>
                       <td className="px-5 py-3 text-right font-mono">
                         {fmtCompact(c.results)}{" "}
@@ -168,6 +192,8 @@ export function CampaignTable({ campaigns }: { campaigns: Campaign[] }) {
                               <td className="px-3 py-2.5 text-right font-mono text-xs text-muted-foreground">
                                 {fmtPct(s.ctr)}
                               </td>
+                              <td />
+                              <td />
                               <td />
                               <td />
                               <td className="px-5 py-2.5 text-right font-mono text-xs">
@@ -219,8 +245,14 @@ export function CampaignTable({ campaigns }: { campaigns: Campaign[] }) {
                                   <td className="px-3 py-2 text-right font-mono text-xs text-muted-foreground">
                                     {fmtCurrency(ad.cpc)}
                                   </td>
+                                  <td />
                                   <td className="px-3 py-2 text-right font-mono text-xs text-muted-foreground">
                                     {fmtCompact(ad.conversions)}
+                                  </td>
+                                  <td className="px-3 py-2 text-right font-mono text-xs text-muted-foreground">
+                                    {ad.conversions > 0
+                                      ? fmtCurrency(ad.spend / ad.conversions)
+                                      : "—"}
                                   </td>
                                   <td className="px-5 py-2 text-right font-mono text-xs">
                                     {fmtCompact(ad.results)}
@@ -235,7 +267,7 @@ export function CampaignTable({ campaigns }: { campaigns: Campaign[] }) {
               })}
               {campaigns.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="px-5 py-8 text-center text-muted-foreground text-xs">
+                  <td colSpan={9} className="px-5 py-8 text-center text-muted-foreground text-xs">
                     No campaigns match.
                   </td>
                 </tr>

@@ -145,6 +145,7 @@ function Accounts() {
                   active={sort === "conversions"}
                   dir={dir}
                 />
+                <Th label="Cost/Conv" align="right" />
                 <Th label="Reach" align="right" />
                 <Th label="14d trend" align="right" />
               </tr>
@@ -180,6 +181,9 @@ function Accounts() {
                   </td>
                   <td className="px-3 py-3 text-right font-mono">{fmtCompact(a.conversions)}</td>
                   <td className="px-3 py-3 text-right font-mono text-muted-foreground">
+                    {a.conversions > 0 ? fmtCurrency(a.spend / a.conversions) : "—"}
+                  </td>
+                  <td className="px-3 py-3 text-right font-mono text-muted-foreground">
                     {fmtCompact(a.reach)}
                   </td>
                   <td className="px-5 py-3">
@@ -191,7 +195,7 @@ function Accounts() {
               ))}
               {filtered.length === 0 && (
                 <tr>
-                  <td colSpan={9} className="px-5 py-12 text-center text-sm text-muted-foreground">
+                  <td colSpan={10} className="px-5 py-12 text-center text-sm text-muted-foreground">
                     No accounts match your filters.
                   </td>
                 </tr>
