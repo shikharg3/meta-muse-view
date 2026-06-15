@@ -1,7 +1,7 @@
 import { test, expect, beforeEach } from "bun:test";
 import { sql } from "drizzle-orm";
 import { db, schema } from "@/db/client";
-import { syncInsights, trailingRange } from "./insights";
+import { syncInsights, trailingRange, chunkRange } from "./insights";
 import type { InsightRow, InsightsClient } from "@/meta/types";
 
 function makeClient(rows: InsightRow[]): InsightsClient {
@@ -47,4 +47,49 @@ test("trailingRange covers `days` inclusive of today", () => {
   const { since, until } = trailingRange(3, new Date("2026-06-08T12:00:00Z"));
   expect(until).toBe("2026-06-08");
   expect(since).toBe("2026-06-06");
+});
+
+test("chunkRange splits a long range into contiguous <=90-day windows", () => {
+  const windows = chunkRange("2024-01-01", "2024-12-31", 90);
+  expect(windows[0].since).toBe("2024-01-01");
+  expect(windows[windows.length - 1].until).toBe("2024-12-31");
+  const day = 86_400_000;
+  for (let i = 1; i < windows.length; i++) {
+    const prevUntil = new Date(`${windows[i - 1].until}T00:00:00Z`).getTime();
+    const since = new Date(`${windows[i].since}T00:00:00Z`).getTime();
+    expect((since - prevUntil) / day).toBe(1); // contiguous: no gap, no overlap
+  }
+  for (const w of windows) {
+    const span =
+      (new Date(`${w.until}T00:00:00Z`).getTime() - new Date(`${w.since}T00:00:00Z`).getTime()) /
+        day +
+      1;
+    expect(span).toBeLessThanOrEqual(90);
+  }
+});
+
+test("chunkRange returns a single window when the range already fits", () => {
+  expect(chunkRange("2026-06-01", "2026-06-10", 90)).toEqual([
+    { since: "2026-06-01", until: "2026-06-10" },
+  ]);
+});
+
+test("syncInsights issues one request per chunk across a long backfill", async () => {
+  let calls = 0;
+  const client: InsightsClient = {
+    getAccounts: async () => [],
+    getChildren: async () => [],
+    debugToken: async () => ({ is_valid: true, scopes: [] }),
+    getInsights: async () => {
+      calls++;
+      return [];
+    },
+  };
+  // 365-day window at 90-day chunks → 90+90+90+90+5 = 5 requests.
+  await syncInsights(client, "act_1", {
+    level: "account",
+    days: 365,
+    today: new Date("2026-06-08T00:00:00Z"),
+  });
+  expect(calls).toBe(5);
 });

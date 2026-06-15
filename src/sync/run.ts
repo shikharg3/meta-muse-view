@@ -4,7 +4,6 @@ export interface Jobs {
   structure: (client: InsightsClient, accountId: string) => Promise<void>;
   insights: (client: InsightsClient, accountId: string) => Promise<void>;
   breakdowns: (client: InsightsClient, accountId: string) => Promise<void>;
-  tokenHealth: (client: InsightsClient) => Promise<void>;
 }
 
 export interface RunOpts {
@@ -14,9 +13,8 @@ export interface RunOpts {
   onError?: (accountId: string, err: unknown) => void;
 }
 
-/** One full sync cycle: token health once, then each account sequentially (rate-limit safe). */
+/** One full sync cycle: each account sequentially (rate-limit safe). */
 export async function runOnce({ client, accountIds, jobs, onError }: RunOpts): Promise<void> {
-  await jobs.tokenHealth(client);
   for (const id of accountIds) {
     // Each job is isolated: a structure failure (e.g. a 500 on one heavy edge)
     // must NOT skip insights/breakdowns for the same account.

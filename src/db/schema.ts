@@ -8,6 +8,7 @@ import {
   date,
   boolean,
   primaryKey,
+  index,
 } from "drizzle-orm/pg-core";
 
 export const accounts = pgTable("accounts", {
@@ -85,7 +86,11 @@ export const insightsDaily = pgTable(
     actionValues: jsonb("action_values"),
     syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [primaryKey({ columns: [t.level, t.entityId, t.date] })],
+  (t) => [
+    primaryKey({ columns: [t.level, t.entityId, t.date] }),
+    index("insights_daily_level_date_idx").on(t.level, t.date),
+    index("insights_daily_account_date_idx").on(t.accountId, t.date),
+  ],
 );
 
 export const insightsBreakdownDaily = pgTable(
@@ -108,6 +113,8 @@ export const insightsBreakdownDaily = pgTable(
     primaryKey({
       columns: [t.level, t.entityId, t.date, t.breakdownType, t.breakdownValue],
     }),
+    index("insights_breakdown_daily_date_idx").on(t.date),
+    index("insights_breakdown_daily_account_date_idx").on(t.accountId, t.date),
   ],
 );
 

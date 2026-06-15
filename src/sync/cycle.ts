@@ -7,11 +7,13 @@ import { syncClients } from "./jobs/clients";
 import { isFirstInsightsSync, markSync, recordTokenHealth } from "./state";
 import { runOnce, type Jobs } from "./run";
 
-// First sync of an account backfills the full UI range (90d presets); later cycles
-// only refresh the trailing edge, since older days are immutable in the API.
-export const BACKFILL_DAYS = 90;
-export const INSIGHTS_REFRESH_DAYS = 3;
-export const BREAKDOWN_REFRESH_DAYS = 7;
+// First sync of an account backfills as much history as Meta retains; later cycles
+// only refresh the trailing edge. Meta caps plain insights at 37 months but
+// breakdown queries at 13 months, so the two backfills use different ceilings.
+export const BACKFILL_DAYS = 1125; // ~37 months: Meta's max insights retention
+export const BREAKDOWN_BACKFILL_DAYS = 394; // 13 months: Meta's breakdown retention cap
+export const INSIGHTS_REFRESH_DAYS = 28; // trailing refresh >= the 28-day attribution window
+export const BREAKDOWN_REFRESH_DAYS = 28;
 
 function buildJobs(): Jobs {
   // Cycle-scoped memo: insights marks the account synced before breakdowns runs,
@@ -53,14 +55,13 @@ function buildJobs(): Jobs {
       try {
         await syncBreakdowns(client, id, {
           breakdowns: [...BREAKDOWNS],
-          days: (await isFirst(id)) ? BACKFILL_DAYS : BREAKDOWN_REFRESH_DAYS,
+          days: (await isFirst(id)) ? BREAKDOWN_BACKFILL_DAYS : BREAKDOWN_REFRESH_DAYS,
         });
       } catch (e) {
         await markSync(id, "insights", e instanceof Error ? e.message : String(e));
         throw e;
       }
     },
-    tokenHealth: async (client) => recordTokenHealth(client),
   };
 }
 
@@ -105,6 +106,9 @@ export async function runCycle(): Promise<void> {
       token: creds.token,
       version: creds.apiVersion,
     });
+    // Record token health up front so a deleted/expired app is captured even when
+    // the account enumeration below throws (otherwise the badge stays stale-green).
+    await recordTokenHealth(client);
     const owned = await syncAccounts(client, creds.businessId);
     const ids = creds.accountIds.length ? owned.filter((a) => creds.accountIds.includes(a)) : owned;
     console.log(`[sync] cycle: ${ids.length} accounts`);

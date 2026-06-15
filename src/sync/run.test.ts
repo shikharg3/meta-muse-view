@@ -2,7 +2,7 @@ import { test, expect } from "bun:test";
 import { runOnce } from "./run";
 import type { InsightsClient } from "@/meta/types";
 
-test("runOnce calls each job for each account and records token health", async () => {
+test("runOnce calls each job for each account in order", async () => {
   const order: string[] = [];
   const fakeClient = {
     debugToken: async () => ({ is_valid: true, scopes: [] }),
@@ -21,14 +21,10 @@ test("runOnce calls each job for each account and records token health", async (
       breakdowns: async (_c, id) => {
         order.push(`bd:${id}`);
       },
-      tokenHealth: async () => {
-        order.push("token");
-      },
     },
   });
 
   expect(order).toEqual([
-    "token",
     "struct:act_1",
     "ins:act_1",
     "bd:act_1",
@@ -53,7 +49,6 @@ test("runOnce continues to the next account when one account throws", async () =
       },
       insights: async () => {},
       breakdowns: async () => {},
-      tokenHealth: async () => {},
     },
   });
   expect(seen).toEqual(["act_2"]);
@@ -77,7 +72,6 @@ test("an account's structure failure does not skip its insights or breakdowns", 
       breakdowns: async (_c, id) => {
         ran.push(`bd:${id}`);
       },
-      tokenHealth: async () => {},
     },
   });
   expect(ran).toEqual(["ins:act_1", "bd:act_1"]);
