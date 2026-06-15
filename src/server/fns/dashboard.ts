@@ -472,10 +472,32 @@ export async function fetchCreatives(days: number): Promise<CreativeCard[]> {
 
 export async function fetchBreakdowns(
   days: number,
+  accountIds?: string[],
 ): Promise<
   Record<"age" | "gender" | "publisher_platform" | "device_platform" | "country", BreakdownRow[]>
 > {
+  const empty = {
+    age: [],
+    gender: [],
+    publisher_platform: [],
+    device_platform: [],
+    country: [],
+  } as Record<string, BreakdownRow[]>;
+  const shaped = () =>
+    empty as Record<
+      "age" | "gender" | "publisher_platform" | "device_platform" | "country",
+      BreakdownRow[]
+    >;
+  // A client scoped to zero mapped accounts has nothing to show.
+  if (accountIds && accountIds.length === 0) return shaped();
   const since = windowStart(days);
+  // Account-level only: campaign-level rows (phase 2) live in the same table and
+  // must not be summed in here, or every metric would double-count.
+  const conds = [
+    eq(schema.insightsBreakdownDaily.level, "account"),
+    gte(schema.insightsBreakdownDaily.date, since),
+  ];
+  if (accountIds) conds.push(inArray(schema.insightsBreakdownDaily.accountId, accountIds));
   const rows = await db
     .select({
       breakdownType: schema.insightsBreakdownDaily.breakdownType,
@@ -485,18 +507,11 @@ export async function fetchBreakdowns(
       revenue: sql<number>`coalesce(sum(${schema.insightsBreakdownDaily.conversionValues}),0)`,
     })
     .from(schema.insightsBreakdownDaily)
-    .where(gte(schema.insightsBreakdownDaily.date, since))
+    .where(and(...conds))
     .groupBy(
       schema.insightsBreakdownDaily.breakdownType,
       schema.insightsBreakdownDaily.breakdownValue,
     );
-  const empty = {
-    age: [],
-    gender: [],
-    publisher_platform: [],
-    device_platform: [],
-    country: [],
-  } as Record<string, BreakdownRow[]>;
   for (const r of rows) {
     (empty[r.breakdownType] ??= []).push({
       label: r.breakdownValue,
@@ -506,10 +521,7 @@ export async function fetchBreakdowns(
     });
   }
   for (const k of Object.keys(empty)) empty[k].sort((a, b) => b.spend - a.spend);
-  return empty as Record<
-    "age" | "gender" | "publisher_platform" | "device_platform" | "country",
-    BreakdownRow[]
-  >;
+  return shaped();
 }
 
 export async function fetchBusinessSummary(): Promise<{

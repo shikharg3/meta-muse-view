@@ -12,6 +12,7 @@ import {
   searchEntities,
   type CsvKind,
 } from "@/server/fns/dashboard";
+import { getClientRow, effectiveAccountIds } from "@/sync/jobs/clients";
 
 export const listAccounts = createServerFn({ method: "GET" })
   .inputValidator((days: number) => days)
@@ -34,12 +35,23 @@ export const listCreatives = createServerFn({ method: "GET" })
   .handler(({ data }) => fetchCreatives(data));
 
 export const getBreakdowns = createServerFn({ method: "GET" })
-  .inputValidator((days: number) => days)
-  .handler(({ data }) => fetchBreakdowns(data));
+  .inputValidator((input: { days: number; clientId?: string }) => input)
+  .handler(async ({ data }) => {
+    let accountIds: string[] | undefined;
+    if (data.clientId) {
+      const row = await getClientRow(data.clientId);
+      accountIds = row ? effectiveAccountIds(row) : [];
+    }
+    return fetchBreakdowns(data.days, accountIds);
+  });
 
-export const getBusinessSummary = createServerFn({ method: "GET" }).handler(() => fetchBusinessSummary());
+export const getBusinessSummary = createServerFn({ method: "GET" }).handler(() =>
+  fetchBusinessSummary(),
+);
 
-export const getAccountOptions = createServerFn({ method: "GET" }).handler(() => fetchAccountOptions());
+export const getAccountOptions = createServerFn({ method: "GET" }).handler(() =>
+  fetchAccountOptions(),
+);
 
 export const runSearch = createServerFn({ method: "GET" })
   .inputValidator((q: string) => q)

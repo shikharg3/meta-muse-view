@@ -53,10 +53,11 @@ function buildJobs(): Jobs {
     },
     breakdowns: async (client, id) => {
       try {
-        await syncBreakdowns(client, id, {
-          breakdowns: [...BREAKDOWNS],
-          days: (await isFirst(id)) ? BREAKDOWN_BACKFILL_DAYS : BREAKDOWN_REFRESH_DAYS,
-        });
+        const days = (await isFirst(id)) ? BREAKDOWN_BACKFILL_DAYS : BREAKDOWN_REFRESH_DAYS;
+        // Account-level powers the all-accounts/client Audiences view; campaign-level
+        // is captured so a future per-campaign audience filter has data (phase 2).
+        await syncBreakdowns(client, id, { breakdowns: [...BREAKDOWNS], days, level: "account" });
+        await syncBreakdowns(client, id, { breakdowns: [...BREAKDOWNS], days, level: "campaign" });
       } catch (e) {
         await markSync(id, "insights", e instanceof Error ? e.message : String(e));
         throw e;

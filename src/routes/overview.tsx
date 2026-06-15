@@ -23,7 +23,7 @@ export const Route = createFileRoute("/overview")({
   loader: async ({ deps: { range } }) => {
     const [overview, breakdowns] = await Promise.all([
       getOverview({ data: range }),
-      getBreakdowns({ data: range }),
+      getBreakdowns({ data: { days: range } }),
     ]);
     return { ...overview, placements: breakdowns.publisher_platform };
   },

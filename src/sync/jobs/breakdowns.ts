@@ -17,27 +17,35 @@ const n = (v: unknown) => (v == null ? 0 : Number(v) || 0);
 export async function syncBreakdowns(
   client: InsightsClient,
   accountId: string,
-  opts: { breakdowns: BreakdownType[]; days: number; today?: Date },
+  opts: { breakdowns: BreakdownType[]; days: number; level?: "account" | "campaign"; today?: Date },
 ): Promise<number> {
+  const level = opts.level ?? "account";
   const { since, until } = trailingRange(opts.days, opts.today);
+  // Campaign-level rows need campaign_id so each row maps back to its campaign.
+  const fields =
+    level === "campaign"
+      ? ["spend", "impressions", "clicks", "actions", "action_values", "campaign_id"]
+      : ["spend", "impressions", "clicks", "actions", "action_values"];
   let written = 0;
 
   for (const breakdown of opts.breakdowns) {
     for (const window of chunkRange(since, until)) {
       const rows = await client.getInsights(accountId, {
-        level: "account",
+        level,
         time_range: { since: window.since, until: window.until },
         time_increment: 1,
         breakdowns: [breakdown],
-        fields: ["spend", "impressions", "clicks", "actions", "action_values"],
+        fields,
         use_unified_attribution_setting: true,
       });
 
       for (const r of rows) {
-        const value = String((r as Record<string, unknown>)[breakdown] ?? "unknown");
+        const rec = r as Record<string, unknown>;
+        const entityId = level === "account" ? accountId : String(rec.campaign_id ?? accountId);
+        const value = String(rec[breakdown] ?? "unknown");
         const v = {
-          level: "account",
-          entityId: accountId,
+          level,
+          entityId,
           accountId,
           date: r.date_start,
           breakdownType: breakdown,

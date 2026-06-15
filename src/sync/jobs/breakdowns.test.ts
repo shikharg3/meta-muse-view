@@ -21,8 +21,15 @@ beforeEach(async () => {
 test("writes one row per (breakdown_type, value, date) for the age breakdown", async () => {
   const client = clientFor({
     age: [
-      { date_start: "2026-06-01", date_stop: "2026-06-01", account_id: "act_1", age: "25-34", spend: "50", impressions: "5",
-        actions: [{ action_type: "omni_purchase", value: "2" }] },
+      {
+        date_start: "2026-06-01",
+        date_stop: "2026-06-01",
+        account_id: "act_1",
+        age: "25-34",
+        spend: "50",
+        impressions: "5",
+        actions: [{ action_type: "omni_purchase", value: "2" }],
+      },
     ],
   });
   await syncBreakdowns(client, "act_1", { breakdowns: ["age"], days: 7 });
@@ -31,6 +38,39 @@ test("writes one row per (breakdown_type, value, date) for the age breakdown", a
   expect(rows[0].breakdownType).toBe("age");
   expect(rows[0].breakdownValue).toBe("25-34");
   expect(rows[0].conversions).toBe(2);
+});
+
+test("campaign-level breakdowns key on campaign_id, not the account", async () => {
+  const client = clientFor({
+    age: [
+      {
+        date_start: "2026-06-01",
+        date_stop: "2026-06-01",
+        account_id: "act_1",
+        campaign_id: "c1",
+        age: "25-34",
+        spend: "30",
+        impressions: "3",
+        actions: [{ action_type: "omni_purchase", value: "1" }],
+      },
+      {
+        date_start: "2026-06-01",
+        date_stop: "2026-06-01",
+        account_id: "act_1",
+        campaign_id: "c2",
+        age: "25-34",
+        spend: "20",
+        impressions: "2",
+        actions: [{ action_type: "omni_purchase", value: "1" }],
+      },
+    ],
+  });
+  await syncBreakdowns(client, "act_1", { breakdowns: ["age"], days: 7, level: "campaign" });
+  const rows = await db.select().from(schema.insightsBreakdownDaily);
+  expect(rows).toHaveLength(2); // one row per campaign
+  expect(rows.every((r) => r.level === "campaign")).toBe(true);
+  expect(rows.every((r) => r.accountId === "act_1")).toBe(true);
+  expect(new Set(rows.map((r) => r.entityId))).toEqual(new Set(["c1", "c2"]));
 });
 
 test("BREAKDOWNS lists the dashboard's audience dimensions", () => {
