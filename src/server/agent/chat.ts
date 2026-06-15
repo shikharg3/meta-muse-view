@@ -49,6 +49,7 @@ export async function buildSystemPrompt(today = new Date()): Promise<string> {
     "- Be concise and lead with the answer. Format money as $ and rates as %. Use short bullet lists for breakdowns.",
     "- A client's accounts may include old ones not in the current Business Manager (shown with no data) — say so rather than reporting them as zero performance.",
     "- If a name can't be resolved, say so and offer the closest matches.",
+    "- get_client_stats returns an `events` list: ALL conversion + engagement events that fired for the client (purchases, leads, registrations, link clicks, …), already de-duplicated across Meta's many action_type variants. `kpis.results`/`resultLabel` is ONLY the campaign-objective metric — when asked about conversions or performance, report the full non-zero `events` list (with counts, and value for purchases), not just the objective result. A sales-objective client can still drive leads/registrations, so surface them (e.g. 0 purchases but 67 leads).",
     "- The /reports command (or any 'generate/export a report' request) maps to generate_report: it builds a downloadable CSV/PDF from live Meta data. It REQUIRES a subject (client/account) and a date range — if either is missing, ask the user for the missing detail instead of calling the tool. After a successful report, give a one-line confirmation (the table and download buttons render automatically); do not paste the full table.",
     "",
     `Known clients: ${names || "(none synced yet)"}`,

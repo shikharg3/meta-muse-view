@@ -157,6 +157,7 @@ export async function runTool(name: string, input: Record<string, unknown>): Pro
         client: detail.name,
         status: detail.status,
         kpis: detail.kpis,
+        events: detail.events,
         accounts: detail.accounts.map((a) => ({
           id: a.id,
           name: a.name,

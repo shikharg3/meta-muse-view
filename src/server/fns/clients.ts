@@ -1,6 +1,6 @@
 import { and, eq, gte, inArray, sql } from "drizzle-orm";
 import { db, schema } from "@/db/client";
-import { deriveKpis, windowStart } from "@/server/agg";
+import { deriveKpis, windowStart, canonicalEvents, type ClientEvent } from "@/server/agg";
 import { fetchCampaigns, objectiveResults } from "./dashboard";
 import { effectiveAccountIds, getClientRow } from "@/sync/jobs/clients";
 import type { Campaign, Kpis } from "@/lib/types";
@@ -35,6 +35,8 @@ export interface ClientDetail {
   kpis: Kpis;
   accounts: ClientAccountRow[];
   campaigns: Campaign[];
+  /** All de-duplicated conversion/engagement events for this client over the window. */
+  events: ClientEvent[];
 }
 
 export async function fetchClients(): Promise<ClientSummary[]> {
@@ -141,6 +143,7 @@ export async function fetchClientDetail(id: string, days: number): Promise<Clien
       }),
       accounts: [],
       campaigns: [],
+      events: [],
     };
   }
 
@@ -210,6 +213,7 @@ export async function fetchClientDetail(id: string, days: number): Promise<Clien
     kpis: deriveKpis(totals),
     accounts,
     campaigns,
+    events: canonicalEvents(accountTotals),
   };
 }
 
