@@ -262,3 +262,65 @@ export async function updateClientAccounts(
   );
   return { ok: true };
 }
+
+export interface CampaignBudget {
+  id: string;
+  name: string | null;
+  status: string | null;
+  spent: number; // lifetime spend, $
+  dailyBudget: number | null; // $/day, null if not set on the campaign
+  recentDaily: number; // avg $/day over the last 7 days
+}
+
+/**
+ * Per-campaign budget + pacing for a client's accounts (the recurring "basic
+ * questions"). Meta-derivable fields only — campaigns here use daily budgets with
+ * no lifetime cap or stop date, so "remaining"/"end date" aren't computable from Meta.
+ */
+export async function fetchClientBudgets(clientId: string): Promise<CampaignBudget[]> {
+  const row = await getClientRow(clientId);
+  const ids = row ? effectiveAccountIds(row) : [];
+  if (ids.length === 0) return [];
+  const camps = await db
+    .select({
+      id: schema.campaigns.id,
+      name: schema.campaigns.name,
+      status: schema.campaigns.status,
+      dailyBudget: schema.campaigns.dailyBudget,
+    })
+    .from(schema.campaigns)
+    .where(inArray(schema.campaigns.accountId, ids));
+  if (camps.length === 0) return [];
+  const since = windowStart(7);
+  const spend = await db
+    .select({
+      entityId: schema.insightsDaily.entityId,
+      total: sql<number>`coalesce(sum(${schema.insightsDaily.spend}),0)`,
+      recent: sql<number>`coalesce(sum(${schema.insightsDaily.spend}) filter (where ${schema.insightsDaily.date} >= ${since}),0)`,
+    })
+    .from(schema.insightsDaily)
+    .where(
+      and(
+        eq(schema.insightsDaily.level, "campaign"),
+        inArray(
+          schema.insightsDaily.entityId,
+          camps.map((c) => c.id),
+        ),
+      ),
+    )
+    .groupBy(schema.insightsDaily.entityId);
+  const byId = new Map(spend.map((s) => [s.entityId, s]));
+  return camps
+    .map((c) => {
+      const s = byId.get(c.id);
+      return {
+        id: c.id,
+        name: c.name,
+        status: c.status,
+        spent: num(s?.total),
+        dailyBudget: c.dailyBudget != null ? Number(c.dailyBudget) / 100 : null,
+        recentDaily: num(s?.recent) / 7,
+      };
+    })
+    .sort((a, b) => b.spent - a.spent);
+}

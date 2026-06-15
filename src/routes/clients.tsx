@@ -1,7 +1,12 @@
 import { createFileRoute, useNavigate, useRouter } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { PageHeader } from "@/components/dashboard/PageHeader";
-import { getClientDetail, listClients, mutateClientAccounts } from "@/lib/api/clients";
+import {
+  getClientBudgets,
+  getClientDetail,
+  listClients,
+  mutateClientAccounts,
+} from "@/lib/api/clients";
 import { getCurrentUser } from "@/lib/api/auth";
 import { fmtCurrency, fmtPct, fmtCompact } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -22,10 +27,13 @@ export const Route = createFileRoute("/clients")({
   loader: async ({ deps }) => {
     const [clients, me] = await Promise.all([listClients(), getCurrentUser()]);
     const selected = deps.client ?? clients[0]?.id;
-    const detail = selected
-      ? await getClientDetail({ data: { id: selected, days: deps.range } })
-      : null;
-    return { clients, detail, isAdmin: me?.role === "admin" };
+    const [detail, budgets] = selected
+      ? await Promise.all([
+          getClientDetail({ data: { id: selected, days: deps.range } }),
+          getClientBudgets({ data: selected }),
+        ])
+      : [null, []];
+    return { clients, detail, budgets, isAdmin: me?.role === "admin" };
   },
   component: Clients,
 });
@@ -42,7 +50,7 @@ const STATUS_DOT: Record<string, string> = {
 };
 
 function Clients() {
-  const { clients, detail, isAdmin } = Route.useLoaderData();
+  const { clients, detail, budgets, isAdmin } = Route.useLoaderData();
   const navigate = useNavigate({ from: "/clients" });
   const router = useRouter();
   const [filter, setFilter] = useState("");
@@ -384,6 +392,82 @@ function Clients() {
                   )}
                 </div>
                 <CampaignTable campaigns={visibleCampaigns} />
+              </section>
+
+              <section className="rounded-xl border border-border bg-card overflow-hidden">
+                <div className="px-5 py-4 border-b border-border">
+                  <h3 className="text-sm font-semibold">Budget &amp; Pacing</h3>
+                  <p className="text-[11px] text-muted-foreground mt-0.5">
+                    Daily budgets &amp; recent spend pace. These campaigns run on daily budgets (no
+                    lifetime cap or end date in Meta), so &ldquo;remaining&rdquo; isn&rsquo;t shown.
+                  </p>
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider bg-muted/30">
+                        <th className="text-left px-5 py-2.5">Campaign</th>
+                        <th className="text-left px-3 py-2.5">Status</th>
+                        <th className="text-right px-3 py-2.5">Spent</th>
+                        <th className="text-right px-3 py-2.5">Daily budget</th>
+                        <th className="text-right px-3 py-2.5">~ $/day (7d)</th>
+                        <th className="text-right px-5 py-2.5">Pace</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border">
+                      {budgets.map((b) => {
+                        const pace =
+                          b.dailyBudget && b.dailyBudget > 0 ? b.recentDaily / b.dailyBudget : null;
+                        return (
+                          <tr key={b.id} className="hover:bg-accent/40">
+                            <td className="px-5 py-2.5 font-medium truncate max-w-[360px]">
+                              {b.name ?? b.id}
+                            </td>
+                            <td className="px-3 py-2.5 font-mono text-[10px] uppercase text-muted-foreground">
+                              {b.status ?? "—"}
+                            </td>
+                            <td className="px-3 py-2.5 text-right font-mono">
+                              {fmtCurrency(b.spent)}
+                            </td>
+                            <td className="px-3 py-2.5 text-right font-mono">
+                              {b.dailyBudget != null ? fmtCurrency(b.dailyBudget) : "—"}
+                            </td>
+                            <td className="px-3 py-2.5 text-right font-mono text-muted-foreground">
+                              {fmtCurrency(b.recentDaily)}
+                            </td>
+                            <td className="px-5 py-2.5 text-right font-mono">
+                              {pace != null ? (
+                                <span
+                                  className={cn(
+                                    pace > 1.1
+                                      ? "text-warning"
+                                      : pace < 0.1
+                                        ? "text-muted-foreground"
+                                        : "text-success",
+                                  )}
+                                >
+                                  {Math.round(pace * 100)}%
+                                </span>
+                              ) : (
+                                "—"
+                              )}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                      {budgets.length === 0 && (
+                        <tr>
+                          <td
+                            colSpan={6}
+                            className="px-5 py-8 text-center text-xs text-muted-foreground"
+                          >
+                            No campaigns.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
               </section>
             </>
           )}
