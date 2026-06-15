@@ -6,6 +6,7 @@ import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { fmtCurrency, fmtPct, fmtCompact } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { Ad, Campaign } from "@/lib/types";
+import { Link } from "@tanstack/react-router";
 
 type Selected = { ad: Ad; campaign: string } | null;
 
@@ -133,7 +134,16 @@ export function CampaignTable({ campaigns }: { campaigns: Campaign[] }) {
                               {c.name}
                             </div>
                             <div className="text-[10px] text-muted-foreground truncate max-w-[420px]">
-                              {c.accountName} · <span className="font-mono">{c.objective}</span>
+                              <Link
+                                to="/accounts/$id"
+                                params={{ id: c.accountId }}
+                                onClick={(e) => e.stopPropagation()}
+                                className="hover:text-primary hover:underline"
+                              >
+                                {c.accountName}
+                              </Link>
+                              {" · "}
+                              <span className="font-mono">{c.objective}</span>
                             </div>
                           </div>
                         </div>

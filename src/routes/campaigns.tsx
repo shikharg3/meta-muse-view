@@ -1,11 +1,11 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { CampaignTable } from "@/components/dashboard/CampaignTable";
 import { listCampaigns } from "@/lib/api/dashboard";
-import { Search } from "lucide-react";
+import { Search, X } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { rangeSearch, toRange } from "@/lib/range";
+import { rangeSearch, toRange, type RangeDays } from "@/lib/range";
 
 export const Route = createFileRoute("/campaigns")({
   head: () => ({
@@ -14,7 +14,10 @@ export const Route = createFileRoute("/campaigns")({
       { name: "description", content: "Hierarchical campaign, ad set, and ad explorer." },
     ],
   }),
-  validateSearch: rangeSearch,
+  validateSearch: (s: Record<string, unknown>): { range?: RangeDays; account?: string } => ({
+    ...rangeSearch(s),
+    ...(typeof s.account === "string" && s.account ? { account: s.account } : {}),
+  }),
   loaderDeps: ({ search }) => ({ range: toRange(search.range) }),
   loader: async ({ deps: { range } }) => ({ campaigns: await listCampaigns({ data: range }) }),
   component: CampaignsExplorer,
@@ -22,6 +25,8 @@ export const Route = createFileRoute("/campaigns")({
 
 function CampaignsExplorer() {
   const { campaigns } = Route.useLoaderData();
+  const { account } = Route.useSearch();
+  const navigate = useNavigate({ from: "/campaigns" });
   const [q, setQ] = useState("");
   const [objective, setObjective] = useState("ALL");
 
@@ -29,16 +34,21 @@ function CampaignsExplorer() {
     () => ["ALL", ...Array.from(new Set(campaigns.map((c) => c.objective)))],
     [campaigns],
   );
+  const accountName = useMemo(
+    () => campaigns.find((c) => c.accountId === account)?.accountName ?? account,
+    [campaigns, account],
+  );
   const filtered = useMemo(
     () =>
       campaigns.filter(
         (c) =>
+          (!account || c.accountId === account) &&
           (objective === "ALL" || c.objective === objective) &&
           (q.trim() === "" ||
             c.name.toLowerCase().includes(q.toLowerCase()) ||
             c.accountName.toLowerCase().includes(q.toLowerCase())),
       ),
-    [campaigns, q, objective],
+    [campaigns, q, objective, account],
   );
 
   return (
@@ -49,6 +59,14 @@ function CampaignsExplorer() {
       />
 
       <div className="flex flex-wrap items-center gap-2">
+        {account && (
+          <button
+            onClick={() => navigate({ search: (s) => ({ ...s, account: undefined }) })}
+            className="inline-flex items-center gap-1 h-9 rounded-md border border-border bg-accent px-2.5 text-xs font-medium"
+          >
+            {accountName} <X className="size-3" />
+          </button>
+        )}
         <div className="relative flex-1 min-w-[220px] max-w-sm">
           <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
           <input

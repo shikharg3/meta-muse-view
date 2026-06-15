@@ -115,7 +115,11 @@ function AccountDetail() {
       <section className="rounded-xl border border-border bg-card overflow-hidden">
         <div className="px-5 py-4 border-b border-border flex items-center justify-between">
           <h3 className="text-sm font-semibold">Campaigns ({accountCampaigns.length})</h3>
-          <Link to="/campaigns" className="text-xs text-primary hover:underline">
+          <Link
+            to="/campaigns"
+            search={{ account: account.id }}
+            className="text-xs text-primary hover:underline"
+          >
             Open explorer
           </Link>
         </div>
