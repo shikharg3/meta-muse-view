@@ -98,7 +98,8 @@ test("syncInsights issues one request per chunk across a long backfill", async (
     days: 365,
     today: new Date("2026-06-08T00:00:00Z"),
   });
-  expect(calls).toBe(5 * INSIGHT_METRIC_GROUPS.length);
+  // Each chunk: one request per metric group + one attribution-window request (refresh path).
+  expect(calls).toBe(5 * (INSIGHT_METRIC_GROUPS.length + 1));
 });
 
 test("merges metric groups into one row and captures the full set in raw", async () => {
@@ -124,4 +125,30 @@ test("merges metric groups into one row and captures the full set in raw", async
   const raw = row.raw as Record<string, unknown>;
   expect(raw.spend).toBe("100");
   expect(raw.frequency).toBe("2.5");
+}, 20000);
+
+test("captures attribution-window splits in a separate column on refresh", async () => {
+  const client: InsightsClient = {
+    getAccounts: async () => [],
+    getChildren: async () => [],
+    debugToken: async () => ({ is_valid: true, scopes: [] }),
+    getInsights: async (_id, params) => {
+      const base = { date_start: "2026-06-01", date_stop: "2026-06-01", campaign_id: "c1" };
+      if (params.action_attribution_windows)
+        return [
+          {
+            ...base,
+            actions: [{ action_type: "purchase", value: "5", "7d_click": "4", "1d_view": "1" }],
+          },
+        ];
+      if ((params.fields as string[]).includes("spend")) return [{ ...base, spend: "10" }];
+      return [base];
+    },
+  };
+  await syncInsights(client, "act_1", { level: "campaign", days: 1 });
+  const [row] = await db.select().from(schema.insightsDaily);
+  expect(row.spend).toBeCloseTo(10);
+  expect(row.actionsByWindow).toEqual([
+    { action_type: "purchase", value: "5", "7d_click": "4", "1d_view": "1" },
+  ]);
 }, 20000);

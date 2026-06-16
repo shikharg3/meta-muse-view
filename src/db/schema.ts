@@ -136,6 +136,8 @@ export const insightsDaily = pgTable(
     purchaseRoas: doublePrecision("purchase_roas").notNull().default(0),
     actions: jsonb("actions"),
     actionValues: jsonb("action_values"),
+    actionsByWindow: jsonb("actions_by_window"), // conversions split by attribution window (1d/7d/28d view/click)
+    actionValuesByWindow: jsonb("action_values_by_window"),
     raw: jsonb("raw"),
     frequency: doublePrecision("frequency"),
     qualityRanking: text("quality_ranking"),

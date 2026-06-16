@@ -1,7 +1,7 @@
 import { db, schema } from "@/db/client";
 import type { InsightRow, InsightsClient } from "@/meta/types";
 import { normalizeInsightRow } from "@/meta/insights";
-import { INSIGHT_METRIC_GROUPS } from "@/meta/fieldsets";
+import { INSIGHT_METRIC_GROUPS, ATTRIBUTION_WINDOWS } from "@/meta/fieldsets";
 
 export type Level = "account" | "campaign" | "adset" | "ad";
 
@@ -53,6 +53,7 @@ export async function syncInsightsRange(
   level: Level,
   since: string,
   until: string,
+  attributionWindows = false,
 ): Promise<number> {
   let written = 0;
   // Long ranges are chunked so each request stays within Meta's per-call data limits.
@@ -76,20 +77,49 @@ export async function syncInsightsRange(
         byKey.set(key, merged);
       }
     }
+    // Optionally capture conversions split by attribution window — a dedicated request stored in a
+    // separate column, so the dashboards' unified-attribution conversion numbers are unchanged.
+    const winMap = new Map<string, { actions: unknown; action_values: unknown }>();
+    if (attributionWindows) {
+      const winRows = await client.getInsights(accountId, {
+        level,
+        time_range: { since: window.since, until: window.until },
+        time_increment: 1,
+        fields: ["actions", "action_values", "account_id", "campaign_id", "adset_id", "ad_id"],
+        action_attribution_windows: ATTRIBUTION_WINDOWS,
+      });
+      for (const r of winRows) {
+        const entityId = level === "account" ? accountId : String(r[ID_FIELD[level]] ?? accountId);
+        winMap.set(`${entityId}:${String(r.date_start)}`, {
+          actions: r.actions ?? null,
+          action_values: r.action_values ?? null,
+        });
+      }
+    }
     for (const merged of byKey.values()) {
       const entityId =
         level === "account" ? accountId : String(merged[ID_FIELD[level]] ?? accountId);
-      const v = normalizeInsightRow(merged, level, entityId, accountId);
+      const base = normalizeInsightRow(merged, level, entityId, accountId);
+      const win = attributionWindows ? winMap.get(`${entityId}:${base.date}`) : undefined;
+      // When not capturing windows (backfill), omit the columns so an older chunk never nulls out
+      // the windowed data a recent refresh wrote for overlapping dates.
+      const values = attributionWindows
+        ? {
+            ...base,
+            actionsByWindow: win?.actions ?? null,
+            actionValuesByWindow: win?.action_values ?? null,
+          }
+        : base;
       await db
         .insert(schema.insightsDaily)
-        .values(v)
+        .values(values)
         .onConflictDoUpdate({
           target: [
             schema.insightsDaily.level,
             schema.insightsDaily.entityId,
             schema.insightsDaily.date,
           ],
-          set: { ...v, syncedAt: new Date() },
+          set: { ...values, syncedAt: new Date() },
         });
       written++;
     }
@@ -104,5 +134,6 @@ export async function syncInsights(
   opts: { level: Level; days: number; today?: Date },
 ): Promise<number> {
   const { since, until } = trailingRange(opts.days, opts.today);
-  return syncInsightsRange(client, accountId, opts.level, since, until);
+  // The recurring refresh captures attribution-window splits for recent (still-attributing) data.
+  return syncInsightsRange(client, accountId, opts.level, since, until, true);
 }
