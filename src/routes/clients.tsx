@@ -13,6 +13,7 @@ import { cn } from "@/lib/utils";
 import { Plus, Search, X } from "lucide-react";
 import { useSort, SortHeader } from "@/components/dashboard/SortableTable";
 import { CampaignTable } from "@/components/dashboard/CampaignTable";
+import { StatusPill } from "@/components/dashboard/StatusPill";
 import { rangeSearch, toRange, type RangeDays } from "@/lib/range";
 
 type ClientSearch = { client?: string; range?: RangeDays };
@@ -341,6 +342,11 @@ function Clients() {
                             <div className="font-mono text-[10px] text-muted-foreground">
                               {a.id}
                             </div>
+                            {a.status && (
+                              <div className="mt-1">
+                                <StatusPill status={a.status} />
+                              </div>
+                            )}
                           </td>
                           <td className="px-3 py-2.5">
                             <span

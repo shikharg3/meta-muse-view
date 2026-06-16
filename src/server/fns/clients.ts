@@ -1,9 +1,15 @@
 import { and, eq, gte, inArray, sql } from "drizzle-orm";
 import { db, schema } from "@/db/client";
-import { deriveKpis, windowStart, canonicalEvents, type ClientEvent } from "@/server/agg";
+import {
+  deriveKpis,
+  windowStart,
+  canonicalEvents,
+  accountStatus,
+  type ClientEvent,
+} from "@/server/agg";
 import { fetchCampaigns, objectiveResults } from "./dashboard";
 import { effectiveAccountIds, getClientRow } from "@/sync/jobs/clients";
-import type { Campaign, Kpis } from "@/lib/types";
+import type { Campaign, Kpis, AccountStatus } from "@/lib/types";
 import { currentUser, audit } from "@/server/fns/auth";
 
 const num = (v: unknown): number => Number(v ?? 0);
@@ -26,6 +32,7 @@ export interface ClientAccountRow {
   ctr: number;
   cpc: number;
   hasData: boolean;
+  status: AccountStatus | null; // Meta account_status; null = account not in the current BM sync
 }
 
 export interface ClientDetail {
@@ -177,6 +184,7 @@ export async function fetchClientDetail(id: string, days: number): Promise<Clien
   ]);
 
   const accName = new Map(accountRows.map((a) => [a.id, a.name]));
+  const accStatus = new Map(accountRows.map((a) => [a.id, accountStatus(a.status)]));
 
   // Per-account sums + overall KPI totals.
   const perAccount = new Map<string, { spend: number; impressions: number; clicks: number }>();
@@ -215,6 +223,7 @@ export async function fetchClientDetail(id: string, days: number): Promise<Clien
       ctr: k.ctr,
       cpc: k.cpc,
       hasData: Boolean(t),
+      status: accStatus.get(aid) ?? null,
     };
   });
 

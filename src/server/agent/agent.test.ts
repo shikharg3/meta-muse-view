@@ -1,5 +1,5 @@
 import { test, expect, beforeEach } from "bun:test";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { db, schema } from "@/db/client";
 import { resolveClient, runTool } from "./tools";
 import { runAgentLoop, type ChatResult } from "./chat";
@@ -79,6 +79,16 @@ test("get_client_stats returns grounded KPIs across the client's accounts", asyn
   expect(r.kpis.spend).toBeCloseTo(200);
   expect(r.kpis.ctr).toBeCloseTo(5); // 100/2000*100
   expect(r.accounts).toHaveLength(2); // current + old
+}, 20000);
+
+test("get_client_stats reports each account's Meta status (disabled flagged, not active)", async () => {
+  // act_111 is disabled in Meta (account_status 2). The chat previously omitted
+  // account status entirely and the model guessed "active" — regression guard.
+  await db.update(schema.accounts).set({ status: "2" }).where(eq(schema.accounts.id, "act_111"));
+  const r = (await runTool("get_client_stats", { client: "wild", days: 7 })) as {
+    accounts: { id: string; status: string | null }[];
+  };
+  expect(r.accounts.find((a) => a.id === "act_111")?.status).toBe("DISABLED");
 }, 20000);
 
 test("runTool returns error data for unknown tools rather than throwing", async () => {

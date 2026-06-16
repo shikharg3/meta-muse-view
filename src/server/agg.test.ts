@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { canonicalEvents } from "./agg";
+import { canonicalEvents, accountStatus } from "./agg";
 
 test("canonicalEvents collapses Meta's variant action_types into one event", () => {
   const events = canonicalEvents([
@@ -62,4 +62,15 @@ test("canonicalEvents prefers the unified omni_* value within a family", () => {
     },
   ]);
   expect(events[0]).toEqual({ label: "Purchases", count: 12, value: 0 });
+});
+
+test("accountStatus maps Meta codes + labels; disabled codes are never ACTIVE", () => {
+  expect(accountStatus("1")).toBe("ACTIVE");
+  expect(accountStatus("2")).toBe("DISABLED"); // the CereBree case (account_status 2)
+  expect(accountStatus("100")).toBe("DISABLED");
+  expect(accountStatus("101")).toBe("DISABLED");
+  expect(accountStatus("7")).toBe("PENDING");
+  expect(accountStatus("DISABLED")).toBe("DISABLED"); // already-mapped label passthrough
+  expect(accountStatus("999")).toBe("PENDING"); // unknown code → PENDING, not ACTIVE
+  expect(accountStatus(null)).toBe("ACTIVE"); // documents the no-data default
 });
