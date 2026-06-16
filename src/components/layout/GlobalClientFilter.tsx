@@ -8,6 +8,7 @@ import {
   CommandInput,
   CommandItem,
   CommandList,
+  CommandSeparator,
 } from "@/components/ui/command";
 import { cn } from "@/lib/utils";
 
@@ -18,28 +19,41 @@ export interface FilterClient {
 }
 
 /**
- * Global header filter: multi-select clients → writes their accounts to `?accounts=`,
- * which (via retainSearchParams on the root) persists across pages and scopes the
- * Accounts / Campaigns / Creatives lists.
+ * Global header filter: pick whole clients (→ all their ad accounts) and/or
+ * individual ad accounts. Both write the selected accounts to `?accounts=`,
+ * which (via retainSearchParams on the root) persists across pages and scopes
+ * the Accounts / Campaigns / Creatives / Audiences views.
  */
-export function GlobalClientFilter({ clients }: { clients: FilterClient[] }) {
+export function GlobalClientFilter({
+  clients,
+  accounts,
+}: {
+  clients: FilterClient[];
+  accounts: { id: string; name: string }[];
+}) {
   const navigate = useNavigate();
   const search = useSearch({ strict: false }) as { accounts?: string };
   const selected = new Set((search.accounts ?? "").split(",").filter(Boolean));
+  const count = selected.size;
 
-  const isOn = (c: FilterClient) =>
+  const clientOn = (c: FilterClient) =>
     c.accountIds.length > 0 && c.accountIds.every((id) => selected.has(id));
-  const onCount = clients.filter(isOn).length;
 
   const apply = (next: Set<string>) =>
     navigate({
       to: ".",
       search: (prev) => ({ ...prev, accounts: [...next].join(",") || undefined }),
     });
-  const toggle = (c: FilterClient) => {
+  const toggleClient = (c: FilterClient) => {
     const next = new Set(selected);
-    if (isOn(c)) c.accountIds.forEach((id) => next.delete(id));
+    if (clientOn(c)) c.accountIds.forEach((id) => next.delete(id));
     else c.accountIds.forEach((id) => next.add(id));
+    apply(next);
+  };
+  const toggleAccount = (id: string) => {
+    const next = new Set(selected);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
     apply(next);
   };
 
@@ -49,18 +63,18 @@ export function GlobalClientFilter({ clients }: { clients: FilterClient[] }) {
         <button className="hidden md:flex items-center gap-2 rounded-md border border-border bg-card hover:bg-accent px-3 h-9 text-xs transition-colors">
           <Filter className="size-3.5 text-muted-foreground" />
           <span className="font-medium">
-            {onCount === 0 ? "All clients" : `${onCount} client${onCount > 1 ? "s" : ""}`}
+            {count === 0 ? "All accounts" : `${count} account${count > 1 ? "s" : ""}`}
           </span>
           <ChevronDown className="size-3.5 text-muted-foreground" />
         </button>
       </PopoverTrigger>
       <PopoverContent align="start" className="p-0 w-72">
         <Command>
-          <CommandInput placeholder="Filter by client…" className="text-xs" />
+          <CommandInput placeholder="Filter by client or account…" className="text-xs" />
           <CommandList>
-            <CommandEmpty>No clients found.</CommandEmpty>
-            <CommandGroup>
-              {onCount > 0 && (
+            <CommandEmpty>No matches.</CommandEmpty>
+            {count > 0 && (
+              <CommandGroup>
                 <CommandItem
                   value="__clear__"
                   onSelect={() =>
@@ -68,21 +82,39 @@ export function GlobalClientFilter({ clients }: { clients: FilterClient[] }) {
                   }
                   className="text-xs text-muted-foreground"
                 >
-                  Clear filter ({onCount})
+                  Clear filter ({count})
                 </CommandItem>
-              )}
+              </CommandGroup>
+            )}
+            <CommandGroup heading="Clients">
               {clients.map((c) => (
                 <CommandItem
                   key={c.id}
-                  value={c.name}
+                  value={`client ${c.name}`}
                   className="text-xs gap-2"
-                  onSelect={() => toggle(c)}
+                  onSelect={() => toggleClient(c)}
                 >
-                  <Check className={cn("size-3.5", isOn(c) ? "opacity-100" : "opacity-0")} />
+                  <Check className={cn("size-3.5", clientOn(c) ? "opacity-100" : "opacity-0")} />
                   <span className="truncate">{c.name}</span>
                   <span className="ml-auto font-mono text-[10px] text-muted-foreground">
                     {c.accountIds.length}
                   </span>
+                </CommandItem>
+              ))}
+            </CommandGroup>
+            <CommandSeparator />
+            <CommandGroup heading="Ad accounts">
+              {accounts.map((a) => (
+                <CommandItem
+                  key={a.id}
+                  value={`account ${a.name} ${a.id}`}
+                  className="text-xs gap-2"
+                  onSelect={() => toggleAccount(a.id)}
+                >
+                  <Check
+                    className={cn("size-3.5", selected.has(a.id) ? "opacity-100" : "opacity-0")}
+                  />
+                  <span className="truncate">{a.name}</span>
                 </CommandItem>
               ))}
             </CommandGroup>

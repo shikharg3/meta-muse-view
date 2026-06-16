@@ -159,7 +159,7 @@ export function TopBar({
       <div className="h-6 w-px bg-border mx-1" />
 
       <AccountSwitcher business={business} accounts={accounts} />
-      <GlobalClientFilter clients={filterClients} />
+      <GlobalClientFilter clients={filterClients} accounts={accounts} />
       <GlobalSearch />
 
       <div className="flex-1 lg:hidden" />

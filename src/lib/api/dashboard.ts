@@ -36,13 +36,18 @@ export const listCreatives = createServerFn({ method: "GET" })
   .handler(({ data }) => fetchCreatives(data));
 
 export const getBreakdowns = createServerFn({ method: "GET" })
-  .inputValidator((input: { days: number; clientId?: string; campaignId?: string }) => input)
+  .inputValidator(
+    (input: { days: number; clientId?: string; campaignId?: string; accountIds?: string[] }) =>
+      input,
+  )
   .handler(async ({ data }) => {
     if (data.campaignId) return fetchBreakdowns(data.days, { campaignId: data.campaignId });
     if (data.clientId) {
       const row = await getClientRow(data.clientId);
       return fetchBreakdowns(data.days, { accountIds: row ? effectiveAccountIds(row) : [] });
     }
+    if (data.accountIds && data.accountIds.length > 0)
+      return fetchBreakdowns(data.days, { accountIds: data.accountIds });
     return fetchBreakdowns(data.days);
   });
 
