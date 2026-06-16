@@ -3,6 +3,7 @@ import { sql } from "drizzle-orm";
 import { db, schema } from "@/db/client";
 import { syncInsights, trailingRange, chunkRange } from "./insights";
 import type { InsightRow, InsightsClient } from "@/meta/types";
+import { INSIGHT_METRIC_GROUPS } from "@/meta/fieldsets";
 
 function makeClient(rows: InsightRow[]): InsightsClient {
   return {
@@ -19,8 +20,14 @@ beforeEach(async () => {
 
 test("upserts one row per (level, entity, date) and is idempotent on re-pull", async () => {
   const rows: InsightRow[] = [
-    { date_start: "2026-06-01", date_stop: "2026-06-01", campaign_id: "c1", spend: "100", impressions: "10",
-      actions: [{ action_type: "omni_purchase", value: "3" }] },
+    {
+      date_start: "2026-06-01",
+      date_stop: "2026-06-01",
+      campaign_id: "c1",
+      spend: "100",
+      impressions: "10",
+      actions: [{ action_type: "omni_purchase", value: "3" }],
+    },
   ];
   const client = makeClient(rows);
   await syncInsights(client, "act_1", { level: "campaign", days: 3 });
@@ -85,11 +92,36 @@ test("syncInsights issues one request per chunk across a long backfill", async (
       return [];
     },
   };
-  // 365-day window at 90-day chunks → 90+90+90+90+5 = 5 requests.
+  // 365-day window at 90-day chunks → 5 chunks, each requested once per metric group.
   await syncInsights(client, "act_1", {
     level: "account",
     days: 365,
     today: new Date("2026-06-08T00:00:00Z"),
   });
-  expect(calls).toBe(5);
+  expect(calls).toBe(5 * INSIGHT_METRIC_GROUPS.length);
 });
+
+test("merges metric groups into one row and captures the full set in raw", async () => {
+  const client: InsightsClient = {
+    getAccounts: async () => [],
+    getChildren: async () => [],
+    debugToken: async () => ({ is_valid: true, scopes: [] }),
+    getInsights: async (_id, params) => {
+      const fields = (params.fields as string[]) ?? [];
+      const base = { date_start: "2026-06-01", date_stop: "2026-06-01", campaign_id: "c1" };
+      // Simulate Meta returning only the requested group's metrics.
+      if (fields.includes("spend")) return [{ ...base, spend: "100", impressions: "10" }];
+      if (fields.includes("frequency"))
+        return [{ ...base, frequency: "2.5", quality_ranking: "ABOVE_AVERAGE" }];
+      return [base];
+    },
+  };
+  await syncInsights(client, "act_1", { level: "campaign", days: 1 });
+  const [row] = await db.select().from(schema.insightsDaily);
+  expect(row.spend).toBeCloseTo(100);
+  expect(row.frequency).toBeCloseTo(2.5);
+  expect(row.qualityRanking).toBe("ABOVE_AVERAGE");
+  const raw = row.raw as Record<string, unknown>;
+  expect(raw.spend).toBe("100");
+  expect(raw.frequency).toBe("2.5");
+}, 20000);

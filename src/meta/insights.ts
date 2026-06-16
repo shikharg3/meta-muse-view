@@ -13,6 +13,12 @@ export function pickAction(actions: ActionArr, type: string): number {
 }
 
 const n = (v: unknown): number => (v == null ? 0 : Number(v) || 0);
+const sOrNull = (v: unknown): string | null => (v == null ? null : String(v));
+const numOrNull = (v: unknown): number | null => {
+  if (v == null || v === "") return null;
+  const x = Number(v);
+  return Number.isFinite(x) ? x : null;
+};
 
 export interface NormalizedInsight {
   level: string;
@@ -32,6 +38,17 @@ export interface NormalizedInsight {
   purchaseRoas: number;
   actions: unknown;
   actionValues: unknown;
+  raw: unknown;
+  frequency: number | null;
+  qualityRanking: string | null;
+  engagementRateRanking: string | null;
+  conversionRateRanking: string | null;
+  estimatedAdRecallRate: number | null;
+  uniqueClicks: number | null;
+  uniqueCtr: number | null;
+  inlinePostEngagement: number | null;
+  fullViewImpressions: number | null;
+  fullViewReach: number | null;
 }
 
 export function normalizeInsightRow(
@@ -58,6 +75,17 @@ export function normalizeInsightRow(
     purchaseRoas: pickAction(row.purchase_roas, DEFAULT_CONVERSION_TYPE),
     actions: row.actions ?? null,
     actionValues: row.action_values ?? null,
+    raw: row,
+    frequency: numOrNull(row.frequency),
+    qualityRanking: sOrNull(row.quality_ranking),
+    engagementRateRanking: sOrNull(row.engagement_rate_ranking),
+    conversionRateRanking: sOrNull(row.conversion_rate_ranking),
+    estimatedAdRecallRate: numOrNull(row.estimated_ad_recall_rate),
+    uniqueClicks: numOrNull(row.unique_clicks),
+    uniqueCtr: numOrNull(row.unique_ctr),
+    inlinePostEngagement: numOrNull(row.inline_post_engagement),
+    fullViewImpressions: numOrNull(row.full_view_impressions),
+    fullViewReach: numOrNull(row.full_view_reach),
   };
 }
 

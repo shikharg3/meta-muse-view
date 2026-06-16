@@ -1,6 +1,7 @@
 import { db, schema } from "@/db/client";
 import type { InsightRow, InsightsClient } from "@/meta/types";
 import { normalizeInsightRow } from "@/meta/insights";
+import { INSIGHT_METRIC_GROUPS } from "@/meta/fieldsets";
 
 export type Level = "account" | "campaign" | "adset" | "ad";
 
@@ -54,33 +55,30 @@ export async function syncInsights(
   let written = 0;
   // Long backfills are chunked so each request stays within Meta's per-call data limits.
   for (const window of chunkRange(since, until)) {
-    const rows = await client.getInsights(accountId, {
-      level: opts.level,
-      time_range: { since: window.since, until: window.until },
-      time_increment: 1,
-      fields: [
-        "spend",
-        "impressions",
-        "reach",
-        "clicks",
-        "inline_link_clicks",
-        "ctr",
-        "cpc",
-        "cpm",
-        "actions",
-        "action_values",
-        "purchase_roas",
-        "account_id",
-        "campaign_id",
-        "adset_id",
-        "ad_id",
-      ],
-      use_unified_attribution_setting: true,
-    });
-    for (const r of rows) {
+    // Request every metric in compatible groups, merged by (entity, date) so each daily row carries
+    // the full metric set. The merged row is stored in `raw`; high-value metrics are promoted.
+    const byKey = new Map<string, InsightRow>();
+    for (const group of INSIGHT_METRIC_GROUPS) {
+      const rows = await client.getInsights(accountId, {
+        level: opts.level,
+        time_range: { since: window.since, until: window.until },
+        time_increment: 1,
+        fields: [...group, "account_id", "campaign_id", "adset_id", "ad_id"],
+        use_unified_attribution_setting: true,
+      });
+      for (const r of rows) {
+        const entityId =
+          opts.level === "account" ? accountId : String(r[ID_FIELD[opts.level]] ?? accountId);
+        const key = `${entityId}:${String(r.date_start)}`;
+        const merged = byKey.get(key) ?? ({ date_start: String(r.date_start) } as InsightRow);
+        Object.assign(merged, r);
+        byKey.set(key, merged);
+      }
+    }
+    for (const merged of byKey.values()) {
       const entityId =
-        opts.level === "account" ? accountId : String(r[ID_FIELD[opts.level]] ?? accountId);
-      const v = normalizeInsightRow(r, opts.level, entityId, accountId);
+        opts.level === "account" ? accountId : String(merged[ID_FIELD[opts.level]] ?? accountId);
+      const v = normalizeInsightRow(merged, opts.level, entityId, accountId);
       await db
         .insert(schema.insightsDaily)
         .values(v)
