@@ -1,4 +1,5 @@
 import { MetaClient } from "@/meta/client";
+import { Limiter } from "@/meta/limiter";
 import { getCredentials } from "@/lib/credentials";
 import { syncStructure, syncAccounts } from "./jobs/structure";
 import { syncInsights } from "./jobs/insights";
@@ -102,12 +103,17 @@ export async function runCycle(): Promise<void> {
       );
       return;
     }
-    const client = new MetaClient({
-      appId: creds.appId,
-      appSecret: creds.appSecret,
-      token: creds.token,
-      version: creds.apiVersion,
-    });
+    const client = new MetaClient(
+      {
+        appId: creds.appId,
+        appSecret: creds.appSecret,
+        token: creds.token,
+        version: creds.apiVersion,
+      },
+      // Pace all requests: the full-field/full-metric extraction is request-heavy, so a single
+      // in-flight call every 250ms keeps us under Meta's user/app limits (#17/#4).
+      { limiter: new Limiter(1, 250) },
+    );
     // Record token health up front so a deleted/expired app is captured even when
     // the account enumeration below throws (otherwise the badge stays stale-green).
     await recordTokenHealth(client);

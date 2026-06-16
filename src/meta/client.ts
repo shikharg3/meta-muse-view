@@ -73,8 +73,26 @@ export class MetaClient implements InsightsClient {
         continue;
       }
       const body = (await res.json()) as Record<string, unknown>;
-      const error = body?.error as { code?: unknown; message?: unknown } | undefined;
-      if (error) throw new Error(`Meta error ${error.code}: ${error.message}`);
+      const error = body?.error as
+        | { code?: unknown; message?: unknown; is_transient?: unknown }
+        | undefined;
+      if (error) {
+        const code = Number(error.code);
+        // #4 app limit, #17 user limit, #32 page limit, #613 custom, #80000-80014 BUC throttles.
+        const rateLimited =
+          error.is_transient === true ||
+          code === 4 ||
+          code === 17 ||
+          code === 32 ||
+          code === 613 ||
+          (code >= 80000 && code <= 80014);
+        if (rateLimited && attempt < this.maxRetries) {
+          attempt++;
+          await this.sleep(Math.min(60_000, backoffMs(attempt) * 4));
+          continue;
+        }
+        throw new Error(`Meta error ${error.code}: ${error.message}`);
+      }
       if (accountId) {
         const usage = parseUsage(res.headers, accountId);
         if (shouldBackoff(usage))

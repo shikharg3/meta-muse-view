@@ -126,3 +126,20 @@ test("isolates an unnamed permission-gated field by bisection, then remembers it
   expect(urls).toHaveLength(1);
   expect(urls.every((u) => !u.includes("gated"))).toBe(true);
 });
+
+test("retries Meta rate-limit error codes (#17) then succeeds", async () => {
+  let n = 0;
+  const fetchImpl = async () => {
+    n++;
+    if (n === 1)
+      return jsonResponse({ error: { code: 17, message: "(#17) User request limit reached" } });
+    return jsonResponse({ data: [{ id: "ok" }] });
+  };
+  const client = new MetaClient(
+    { appId: "1", appSecret: "s", token: "t", version: "v25.0" },
+    { fetchImpl: fetchImpl as unknown as typeof fetch, sleep: async () => {} },
+  );
+  const rows = await client.getChildren("act_1", "campaigns", ["id"]);
+  expect(rows[0].id).toBe("ok");
+  expect(n).toBe(2);
+});
