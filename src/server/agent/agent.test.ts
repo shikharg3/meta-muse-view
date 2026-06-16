@@ -84,11 +84,16 @@ test("get_client_stats returns grounded KPIs across the client's accounts", asyn
 test("get_client_stats reports each account's Meta status (disabled flagged, not active)", async () => {
   // act_111 is disabled in Meta (account_status 2). The chat previously omitted
   // account status entirely and the model guessed "active" — regression guard.
-  await db.update(schema.accounts).set({ status: "2" }).where(eq(schema.accounts.id, "act_111"));
+  await db
+    .update(schema.accounts)
+    .set({ status: "2", disableReason: 1 })
+    .where(eq(schema.accounts.id, "act_111"));
   const r = (await runTool("get_client_stats", { client: "wild", days: 7 })) as {
-    accounts: { id: string; status: string | null }[];
+    accounts: { id: string; status: string | null; disableReason: string | null }[];
   };
-  expect(r.accounts.find((a) => a.id === "act_111")?.status).toBe("DISABLED");
+  const acct = r.accounts.find((a) => a.id === "act_111");
+  expect(acct?.status).toBe("DISABLED");
+  expect(acct?.disableReason).toBe("Ads integrity policy");
 }, 20000);
 
 test("runTool returns error data for unknown tools rather than throwing", async () => {

@@ -23,6 +23,23 @@ export interface ClientSummary {
   syncedAt: string | null;
 }
 
+const DISABLE_REASONS: Record<number, string> = {
+  1: "Ads integrity policy",
+  2: "Advertiser IP review",
+  3: "Risk payment",
+  4: "Gray account shutdown",
+  5: "AFC review",
+  6: "Business integrity review",
+  7: "Permanently closed",
+  8: "Unused reseller account",
+  9: "Unused account",
+};
+/** Human label for a Meta account disable_reason; null when active (0) or unknown. */
+function disableReasonLabel(code: number | null): string | null {
+  if (code == null || code === 0) return null;
+  return DISABLE_REASONS[code] ?? `Disabled (reason ${code})`;
+}
+
 export interface ClientAccountRow {
   id: string;
   name: string | null; // null = not in the current BM sync (old/external account)
@@ -34,6 +51,8 @@ export interface ClientAccountRow {
   cpc: number;
   hasData: boolean;
   status: AccountStatus | null; // Meta account_status; null = account not in the current BM sync
+  disableReason: string | null; // human-readable Meta disable_reason; null when active/unknown
+  amountSpent: number | null; // lifetime spend (account currency, minor units)
 }
 
 export interface ClientDetail {
@@ -191,6 +210,7 @@ export async function fetchClientDetail(id: string, w: DateWindow): Promise<Clie
 
   const accName = new Map(accountRows.map((a) => [a.id, a.name]));
   const accStatus = new Map(accountRows.map((a) => [a.id, accountStatus(a.status)]));
+  const accInfo = new Map(accountRows.map((a) => [a.id, a]));
 
   // Per-account sums + overall KPI totals.
   const perAccount = new Map<string, { spend: number; impressions: number; clicks: number }>();
@@ -230,6 +250,8 @@ export async function fetchClientDetail(id: string, w: DateWindow): Promise<Clie
       cpc: k.cpc,
       hasData: Boolean(t),
       status: accStatus.get(aid) ?? null,
+      disableReason: disableReasonLabel(accInfo.get(aid)?.disableReason ?? null),
+      amountSpent: accInfo.get(aid)?.amountSpent ?? null,
     };
   });
 

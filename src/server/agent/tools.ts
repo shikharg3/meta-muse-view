@@ -168,6 +168,8 @@ export async function runTool(name: string, input: Record<string, unknown>): Pro
           ctr: a.ctr,
           cpc: a.cpc,
           status: a.status,
+          disableReason: a.disableReason,
+          amountSpent: a.amountSpent,
         })),
         // Bound tokens: spend-sorted, top 25, compact (drop the ad-set/ad tree).
         campaigns: detail.campaigns.slice(0, 25).map((c) => ({
