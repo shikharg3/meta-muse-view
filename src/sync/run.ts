@@ -4,6 +4,7 @@ export interface Jobs {
   structure: (client: InsightsClient, accountId: string) => Promise<void>;
   insights: (client: InsightsClient, accountId: string) => Promise<void>;
   breakdowns: (client: InsightsClient, accountId: string) => Promise<void>;
+  objects: (client: InsightsClient, accountId: string) => Promise<void>;
 }
 
 export interface RunOpts {
@@ -21,6 +22,7 @@ export async function runOnce({ client, accountIds, jobs, onError }: RunOpts): P
     await runJob(() => jobs.structure(client, id), id, onError);
     await runJob(() => jobs.insights(client, id), id, onError);
     await runJob(() => jobs.breakdowns(client, id), id, onError);
+    await runJob(() => jobs.objects(client, id), id, onError);
   }
 }
 

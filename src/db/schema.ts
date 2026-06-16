@@ -296,3 +296,39 @@ export const metaFieldBlocklist = pgTable("meta_field_blocklist", {
   fields: jsonb("fields").notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+// Generic store for account-level reference objects (custom/saved audiences, pixels, custom
+// conversions, image/video/label libraries, automated rules, IG accounts, conversion goals).
+// Everything is captured in `raw`; object_type discriminates. New edges need no new table.
+export const metaObjects = pgTable(
+  "meta_objects",
+  {
+    objectType: text("object_type").notNull(),
+    id: text("id").notNull(),
+    accountId: text("account_id").notNull(),
+    name: text("name"),
+    raw: jsonb("raw"),
+    syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.objectType, t.id] }),
+    index("meta_objects_account_idx").on(t.accountId, t.objectType),
+  ],
+);
+
+// Ad-account change history (who changed budgets/status/etc. and when). Activities have no stable
+// id, so we synthesize one from time+type+object to dedupe re-pulls of the same event.
+export const metaActivities = pgTable(
+  "meta_activities",
+  {
+    id: text("id").primaryKey(),
+    accountId: text("account_id").notNull(),
+    eventTime: timestamp("event_time", { withTimezone: true }),
+    eventType: text("event_type"),
+    objectId: text("object_id"),
+    actorName: text("actor_name"),
+    raw: jsonb("raw"),
+    syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("meta_activities_account_time_idx").on(t.accountId, t.eventTime)],
+);

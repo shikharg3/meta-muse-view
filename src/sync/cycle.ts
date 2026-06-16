@@ -6,6 +6,7 @@ import { syncInsights } from "./jobs/insights";
 import { syncBreakdowns } from "./jobs/breakdowns";
 import { BREAKDOWN_GROUPS } from "@/meta/fieldsets";
 import { syncClients } from "./jobs/clients";
+import { syncEdges, syncActivities } from "./jobs/objects";
 import {
   isFirstInsightsSync,
   markSync,
@@ -78,6 +79,16 @@ function buildJobs(): Jobs {
       } catch (e) {
         await markSync(id, "insights", e instanceof Error ? e.message : String(e));
         throw e;
+      }
+    },
+    objects: async (client, id) => {
+      // Reference objects + change history are supplementary; per-edge errors are already
+      // isolated inside the jobs, so a failure here never fails the account's core sync.
+      try {
+        await syncEdges(client, id);
+        await syncActivities(client, id, { days: 90 });
+      } catch (e) {
+        console.error(`[sync] objects ${id} failed:`, e instanceof Error ? e.message : e);
       }
     },
   };

@@ -21,6 +21,9 @@ test("runOnce calls each job for each account in order", async () => {
       breakdowns: async (_c, id) => {
         order.push(`bd:${id}`);
       },
+      objects: async (_c, id) => {
+        order.push(`obj:${id}`);
+      },
     },
   });
 
@@ -28,9 +31,11 @@ test("runOnce calls each job for each account in order", async () => {
     "struct:act_1",
     "ins:act_1",
     "bd:act_1",
+    "obj:act_1",
     "struct:act_2",
     "ins:act_2",
     "bd:act_2",
+    "obj:act_2",
   ]);
 });
 
@@ -49,6 +54,7 @@ test("runOnce continues to the next account when one account throws", async () =
       },
       insights: async () => {},
       breakdowns: async () => {},
+      objects: async () => {},
     },
   });
   expect(seen).toEqual(["act_2"]);
@@ -72,7 +78,10 @@ test("an account's structure failure does not skip its insights or breakdowns", 
       breakdowns: async (_c, id) => {
         ran.push(`bd:${id}`);
       },
+      objects: async (_c, id) => {
+        ran.push(`obj:${id}`);
+      },
     },
   });
-  expect(ran).toEqual(["ins:act_1", "bd:act_1"]);
+  expect(ran).toEqual(["ins:act_1", "bd:act_1", "obj:act_1"]);
 });
