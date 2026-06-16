@@ -131,3 +131,32 @@ test("promotes campaign/adset/ad config fields into columns", async () => {
   expect(ad.previewShareableLink).toBe("https://fb.me/x");
   expect(ad.trackingSpecs).toEqual([{ "action.type": ["offsite_conversion"] }]);
 }, 30000);
+
+test("promotes creative copy from object_story_spec when not at the root", async () => {
+  const client: Partial<InsightsClient> = {
+    async getChildren(_p, edge): Promise<GraphNode[]> {
+      if (edge === "adcreatives")
+        return [
+          {
+            id: "cr1",
+            name: "Cr",
+            object_story_spec: {
+              link_data: {
+                message: "Body copy here",
+                name: "Headline here",
+                call_to_action: { type: "PLAY_GAME" },
+              },
+            },
+            asset_feed_spec: { bodies: [{ text: "v1" }] },
+          },
+        ];
+      return [];
+    },
+  };
+  await syncStructure(client as InsightsClient, "act_1");
+  const [cr] = await db.select().from(schema.adCreatives);
+  expect(cr.body).toBe("Body copy here");
+  expect(cr.title).toBe("Headline here");
+  expect(cr.callToActionType).toBe("PLAY_GAME");
+  expect(cr.assetFeedSpec).toEqual({ bodies: [{ text: "v1" }] });
+}, 30000);
