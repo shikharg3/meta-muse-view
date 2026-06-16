@@ -25,3 +25,20 @@ export function fmtRelTime(iso: string, now = new Date()): string {
   if (hours < 24) return `${hours}h ago`;
   return `${Math.floor(hours / 24)}d ago`;
 }
+
+const DISABLE_REASONS: Record<number, string> = {
+  1: "Ads integrity policy",
+  2: "Advertiser IP review",
+  3: "Risk payment",
+  4: "Gray account shutdown",
+  5: "AFC review",
+  6: "Business integrity review",
+  7: "Permanently closed",
+  8: "Unused reseller account",
+  9: "Unused account",
+};
+/** Human label for a Meta account disable_reason; null when active (0) or unknown. */
+export function disableReasonLabel(code: number | null | undefined): string | null {
+  if (code == null || code === 0) return null;
+  return DISABLE_REASONS[code] ?? `Disabled (reason ${code})`;
+}

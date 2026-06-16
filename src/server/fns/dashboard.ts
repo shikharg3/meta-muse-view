@@ -1,4 +1,5 @@
 import { and, eq, gte, ilike, inArray, lt, lte, or, sql } from "drizzle-orm";
+import { disableReasonLabel } from "@/lib/format";
 import { db, schema } from "@/db/client";
 import {
   accountStatus,
@@ -446,6 +447,16 @@ export async function fetchCampaigns(w: DateWindow, accountIds?: string[]): Prom
   });
 }
 
+export interface AccountMeta {
+  amountSpent: number | null;
+  balance: number | null;
+  spendCap: number | null;
+  timezoneName: string | null;
+  disableReason: string | null;
+  businessName: string | null;
+  createdTime: string | null;
+}
+
 export async function fetchAccount(
   id: string,
   w: DateWindow,
@@ -454,20 +465,45 @@ export async function fetchAccount(
   deltas: KpiDeltas;
   campaigns: Campaign[];
   trend: TrendPoint[];
+  meta: AccountMeta | null;
 } | null> {
   const accounts = await fetchAccounts(w);
   const account = accounts.find((a) => a.id === id);
   if (!account) return null;
-  const [allCampaigns, trend, deltas] = await Promise.all([
+  const [allCampaigns, trend, deltas, metaRows] = await Promise.all([
     fetchCampaigns(w),
     fetchTrend(w, id),
     windowDeltas(w, id),
+    db
+      .select({
+        amountSpent: schema.accounts.amountSpent,
+        balance: schema.accounts.balance,
+        spendCap: schema.accounts.spendCap,
+        timezoneName: schema.accounts.timezoneName,
+        disableReason: schema.accounts.disableReason,
+        businessName: schema.accounts.businessName,
+        createdTime: schema.accounts.createdTime,
+      })
+      .from(schema.accounts)
+      .where(eq(schema.accounts.id, id)),
   ]);
+  const m = metaRows[0];
   return {
     account,
     deltas,
     campaigns: allCampaigns.filter((c) => c.accountId === id),
     trend,
+    meta: m
+      ? {
+          amountSpent: m.amountSpent,
+          balance: m.balance,
+          spendCap: m.spendCap,
+          timezoneName: m.timezoneName,
+          disableReason: disableReasonLabel(m.disableReason),
+          businessName: m.businessName,
+          createdTime: m.createdTime ? new Date(m.createdTime).toISOString().slice(0, 10) : null,
+        }
+      : null,
   };
 }
 

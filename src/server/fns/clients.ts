@@ -11,6 +11,7 @@ import { type DateWindow } from "@/lib/range";
 import { fetchCampaigns, objectiveResults } from "./dashboard";
 import { effectiveAccountIds, getClientRow } from "@/sync/jobs/clients";
 import type { Campaign, Kpis, AccountStatus } from "@/lib/types";
+import { disableReasonLabel } from "@/lib/format";
 import { currentUser, audit } from "@/server/fns/auth";
 
 const num = (v: unknown): number => Number(v ?? 0);
@@ -21,23 +22,6 @@ export interface ClientSummary {
   status: string | null;
   accountCount: number;
   syncedAt: string | null;
-}
-
-const DISABLE_REASONS: Record<number, string> = {
-  1: "Ads integrity policy",
-  2: "Advertiser IP review",
-  3: "Risk payment",
-  4: "Gray account shutdown",
-  5: "AFC review",
-  6: "Business integrity review",
-  7: "Permanently closed",
-  8: "Unused reseller account",
-  9: "Unused account",
-};
-/** Human label for a Meta account disable_reason; null when active (0) or unknown. */
-function disableReasonLabel(code: number | null): string | null {
-  if (code == null || code === 0) return null;
-  return DISABLE_REASONS[code] ?? `Disabled (reason ${code})`;
 }
 
 export interface ClientAccountRow {

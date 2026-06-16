@@ -38,8 +38,17 @@ export const Route = createFileRoute("/accounts/$id")({
   ),
 });
 
+function Detail({ label, value }: { label: string; value: string | null }) {
+  return (
+    <div>
+      <dt className="text-xs text-muted-foreground">{label}</dt>
+      <dd className="font-medium">{value ?? "—"}</dd>
+    </div>
+  );
+}
+
 function AccountDetail() {
-  const { account, deltas, campaigns: accountCampaigns, trend } = Route.useLoaderData();
+  const { account, deltas, campaigns: accountCampaigns, trend, meta } = Route.useLoaderData();
   const { days, from, to } = Route.useLoaderDeps();
   const sparks = kpiSparks(trend);
   const { sorted, key, dir, toggle } = useSort(
@@ -103,6 +112,40 @@ function AccountDetail() {
           spark={sparks.cpm}
         />
       </section>
+
+      {meta && (
+        <section className="rounded-xl border border-border bg-card p-5">
+          <h3 className="text-sm font-semibold mb-3">Account details</h3>
+          {meta.disableReason && (
+            <div className="mb-3 rounded-md bg-destructive/10 px-3 py-2 text-xs font-medium text-destructive">
+              Account disabled — {meta.disableReason}
+            </div>
+          )}
+          <dl className="grid grid-cols-2 gap-x-6 gap-y-3 md:grid-cols-3">
+            <Detail label="Business" value={meta.businessName} />
+            <Detail label="Time zone" value={meta.timezoneName} />
+            <Detail label="Created" value={meta.createdTime} />
+            <Detail
+              label="Lifetime spend"
+              value={
+                meta.amountSpent != null
+                  ? fmtCurrency(meta.amountSpent / 100, account.currency)
+                  : null
+              }
+            />
+            <Detail
+              label="Balance"
+              value={
+                meta.balance != null ? fmtCurrency(meta.balance / 100, account.currency) : null
+              }
+            />
+            <Detail
+              label="Spend cap"
+              value={meta.spendCap ? fmtCurrency(meta.spendCap / 100, account.currency) : "None"}
+            />
+          </dl>
+        </section>
+      )}
 
       <section className="rounded-xl border border-border bg-card p-5">
         <h3 className="text-sm font-semibold mb-1">Performance Trend</h3>
