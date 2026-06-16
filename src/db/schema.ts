@@ -126,6 +126,21 @@ export const syncState = pgTable("sync_state", {
   lastError: text("last_error"),
 });
 
+// Resumable backfill progress per (account, dataset, e.g. "insights:ad" / "breakdown:account:country").
+// `backfilledThrough` = the oldest date a dataset is complete back to (a job resumes from there);
+// `cursor` holds an opaque resume token (e.g. an async report_run_id) when a pull spans runs.
+export const syncCheckpoints = pgTable(
+  "sync_checkpoints",
+  {
+    accountId: text("account_id").notNull(),
+    dataset: text("dataset").notNull(),
+    backfilledThrough: date("backfilled_through"),
+    cursor: text("cursor"),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.accountId, t.dataset] })],
+);
+
 export const tokenHealth = pgTable("token_health", {
   id: text("id").primaryKey().default("singleton"),
   checkedAt: timestamp("checked_at", { withTimezone: true }),

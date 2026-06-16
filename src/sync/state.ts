@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db, schema } from "@/db/client";
 import type { InsightsClient } from "@/meta/types";
 
@@ -60,5 +60,57 @@ export async function recordTokenHealth(client: InsightsClient): Promise<void> {
     .onConflictDoUpdate({
       target: schema.tokenHealth.id,
       set: { checkedAt: new Date(), isValid, scopes, note },
+    });
+}
+
+export interface Checkpoint {
+  backfilledThrough: string | null;
+  cursor: string | null;
+}
+
+/** Read a dataset's backfill checkpoint for an account (null = never started). */
+export async function getCheckpoint(
+  accountId: string,
+  dataset: string,
+): Promise<Checkpoint | null> {
+  const [row] = await db
+    .select({
+      backfilledThrough: schema.syncCheckpoints.backfilledThrough,
+      cursor: schema.syncCheckpoints.cursor,
+    })
+    .from(schema.syncCheckpoints)
+    .where(
+      and(
+        eq(schema.syncCheckpoints.accountId, accountId),
+        eq(schema.syncCheckpoints.dataset, dataset),
+      ),
+    );
+  return row ? { backfilledThrough: row.backfilledThrough, cursor: row.cursor } : null;
+}
+
+/** Upsert a dataset's backfill checkpoint; only the provided fields change. */
+export async function setCheckpoint(
+  accountId: string,
+  dataset: string,
+  patch: Partial<Checkpoint>,
+): Promise<void> {
+  await db
+    .insert(schema.syncCheckpoints)
+    .values({
+      accountId,
+      dataset,
+      backfilledThrough: patch.backfilledThrough ?? null,
+      cursor: patch.cursor ?? null,
+      updatedAt: new Date(),
+    })
+    .onConflictDoUpdate({
+      target: [schema.syncCheckpoints.accountId, schema.syncCheckpoints.dataset],
+      set: {
+        ...(patch.backfilledThrough !== undefined
+          ? { backfilledThrough: patch.backfilledThrough }
+          : {}),
+        ...(patch.cursor !== undefined ? { cursor: patch.cursor } : {}),
+        updatedAt: new Date(),
+      },
     });
 }

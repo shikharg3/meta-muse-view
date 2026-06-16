@@ -2,6 +2,8 @@ import { appsecretProof } from "./proof";
 import { buildQuery } from "./url";
 import { parseUsage, shouldBackoff } from "./rate-limit";
 import type { GraphNode, InsightRow, InsightsClient } from "./types";
+import { NODE_FIELDS } from "./fieldsets";
+import { Limiter } from "./limiter";
 
 export interface MetaCredentials {
   appId: string;
@@ -14,6 +16,7 @@ export interface MetaClientDeps {
   fetchImpl?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
   maxRetries?: number;
+  limiter?: Limiter;
 }
 
 const BASE = "https://graph.facebook.com";
@@ -22,6 +25,7 @@ export class MetaClient implements InsightsClient {
   private fetchImpl: typeof fetch;
   private sleep: (ms: number) => Promise<void>;
   private maxRetries: number;
+  private limiter?: Limiter;
 
   constructor(
     private creds: MetaCredentials,
@@ -36,6 +40,12 @@ export class MetaClient implements InsightsClient {
         return promise;
       });
     this.maxRetries = deps.maxRetries ?? 5;
+    this.limiter = deps.limiter;
+  }
+
+  /** Route a request through the optional limiter (concurrency + pacing); identity when unset. */
+  private gate<T>(fn: () => Promise<T>): Promise<T> {
+    return this.limiter ? this.limiter.run(fn) : fn();
   }
 
   private url(path: string, params: Record<string, unknown>): string {
@@ -55,7 +65,7 @@ export class MetaClient implements InsightsClient {
   ): Promise<Record<string, unknown>> {
     let attempt = 0;
     for (;;) {
-      const res = await this.fetchImpl(this.url(path, params));
+      const res = await this.gate(() => this.fetchImpl(this.url(path, params)));
       if (res.status === 429 || res.status >= 500) {
         if (attempt++ >= this.maxRetries)
           throw new Error(`Meta ${res.status} after ${attempt} retries`);
@@ -97,14 +107,128 @@ export class MetaClient implements InsightsClient {
     return out;
   }
 
+  private badFields = new Map<string, Set<string>>();
+
+  /** Pull field names Meta rejected out of an error message ("nonexisting field (x)"). */
+  private parseBadFields(message: string): string[] {
+    const out: string[] = [];
+    const nonexisting = message.match(/nonexisting field \(([^)]+)\)/i);
+    if (nonexisting) out.push(...nonexisting[1].split(/[\s,]+/));
+    const unknown = message.match(/[Uu]nknown fields?:?\s*([\w,\s]+)/);
+    if (unknown) out.push(...unknown[1].split(/[\s,]+/));
+    return [...new Set(out.filter(Boolean))];
+  }
+
+  /** GET a fields-bearing edge, dropping (and remembering, per memoKey) fields Meta rejects. */
+  private async pagedWithRecovery(
+    path: string,
+    params: Record<string, unknown>,
+    accountId: string,
+    memoKey: string,
+  ): Promise<GraphNode[]> {
+    const requested = Array.isArray(params.fields) ? (params.fields as string[]) : null;
+    if (!requested) return this.getPaged(path, params, accountId);
+    for (let attempt = 0; attempt < 12; attempt++) {
+      const bad = this.badFields.get(memoKey);
+      const use = bad ? requested.filter((f) => !bad.has(f)) : requested;
+      try {
+        return await this.getPaged(path, { ...params, fields: use }, accountId);
+      } catch (e) {
+        const novel = this.parseBadFields(e instanceof Error ? e.message : "").filter((f) =>
+          use.includes(f),
+        );
+        if (novel.length === 0) throw e;
+        const set = this.badFields.get(memoKey) ?? new Set<string>();
+        for (const f of novel) set.add(f);
+        this.badFields.set(memoKey, set);
+      }
+    }
+    throw new Error(`Meta: could not resolve a valid field set for ${path}`);
+  }
+
+  /** GET a single node with its full field set, dropping fields Meta rejects (memoKey = node type). */
+  async getNodeFull(
+    id: string,
+    fields: string[],
+    memoKey: string,
+    accountId = "",
+  ): Promise<GraphNode> {
+    for (let attempt = 0; attempt < 12; attempt++) {
+      const bad = this.badFields.get(memoKey);
+      const use = bad ? fields.filter((f) => !bad.has(f)) : fields;
+      try {
+        return (await this.getPage(id, { fields: use }, accountId)) as GraphNode;
+      } catch (e) {
+        const novel = this.parseBadFields(e instanceof Error ? e.message : "").filter((f) =>
+          use.includes(f),
+        );
+        if (novel.length === 0) throw e;
+        const set = this.badFields.get(memoKey) ?? new Set<string>();
+        for (const f of novel) set.add(f);
+        this.badFields.set(memoKey, set);
+      }
+    }
+    throw new Error(`Meta: could not resolve a valid field set for ${id}`);
+  }
+
+  /** Submit an async insights report; returns the report_run_id. */
+  async submitAsyncInsights(objectId: string, params: Record<string, unknown>): Promise<string> {
+    const res = await this.gate(() =>
+      this.fetchImpl(this.url(`${objectId}/insights`, params), { method: "POST" }),
+    );
+    const body = (await res.json()) as { report_run_id?: unknown; error?: { message?: unknown } };
+    if (body.error) throw new Error(`Meta async submit error: ${body.error.message}`);
+    return String(body.report_run_id);
+  }
+
+  /** Submit an async insights report, poll to completion, then page its rows. */
+  async runAsyncInsights(
+    objectId: string,
+    params: Record<string, unknown>,
+    opts: { pollMs?: number; maxPolls?: number } = {},
+  ): Promise<InsightRow[]> {
+    const runId = await this.submitAsyncInsights(objectId, params);
+    const pollMs = opts.pollMs ?? 5000;
+    const maxPolls = opts.maxPolls ?? 240;
+    for (let i = 0; i < maxPolls; i++) {
+      const status = await this.getPage(runId, {});
+      const state = String(status.async_status ?? "");
+      if (state === "Job Completed")
+        return (await this.getPaged(`${runId}/insights`, {
+          limit: 500,
+        })) as unknown as InsightRow[];
+      if (state === "Job Failed" || state === "Job Skipped")
+        throw new Error(`Meta async report ${state} for ${objectId}`);
+      await this.sleep(pollMs);
+    }
+    throw new Error(`Meta async report timed out for ${objectId}`);
+  }
+
+  /** Batched GET of relative urls (Graph caps each batch at 50); null per failed item. */
+  async batchGet(relativeUrls: string[]): Promise<(Record<string, unknown> | null)[]> {
+    const out: (Record<string, unknown> | null)[] = [];
+    for (let i = 0; i < relativeUrls.length; i += 50) {
+      const group = relativeUrls.slice(i, i + 50);
+      const form = new URLSearchParams({
+        access_token: this.creds.token,
+        batch: JSON.stringify(group.map((u) => ({ method: "GET", relative_url: u }))),
+      });
+      if (this.creds.appSecret)
+        form.set("appsecret_proof", appsecretProof(this.creds.token, this.creds.appSecret));
+      const res = await this.gate(() =>
+        this.fetchImpl(`${BASE}/${this.creds.version}`, { method: "POST", body: form }),
+      );
+      const arr = (await res.json()) as ({ code?: number; body?: string } | null)[];
+      for (const item of Array.isArray(arr) ? arr : [])
+        out.push(item && item.code === 200 && item.body ? JSON.parse(item.body) : null);
+    }
+    return out;
+  }
+
   async getAccounts(_businessId: string): Promise<GraphNode[]> {
-    const fields = ["account_id", "name", "currency", "account_status"];
-    // A system-user token can read exactly the accounts assigned to it, which is
-    // precisely what /me/adaccounts returns (spanning owned + client). The BM's
-    // owned_ad_accounts/client_ad_accounts edges are a superset that includes
-    // accounts the token isn't assigned to — syncing those only produces
-    // permission errors. So /me/adaccounts is the authoritative, complete source.
-    return this.getPaged("me/adaccounts", { fields, limit: 200 });
+    // Full account field set; getChildren drops any field this token can't read. A system-user
+    // token reads exactly its assigned accounts, which is what /me/adaccounts returns.
+    return this.getChildren("me", "adaccounts", NODE_FIELDS.account, { limit: 200 });
   }
 
   getChildren(
@@ -114,12 +238,24 @@ export class MetaClient implements InsightsClient {
     extra: Record<string, unknown> = {},
   ): Promise<GraphNode[]> {
     const accountId = parentId.startsWith("act_") ? parentId : "";
-    return this.getPaged(`${parentId}/${edge}`, { fields, limit: 200, ...extra }, accountId);
+    return this.pagedWithRecovery(
+      `${parentId}/${edge}`,
+      { fields, limit: 200, ...extra },
+      accountId,
+      edge,
+    );
   }
 
   async getInsights(objectId: string, params: Record<string, unknown>): Promise<InsightRow[]> {
     const accountId = objectId.startsWith("act_") ? objectId : "";
-    const rows = await this.getPaged(`${objectId}/insights`, { limit: 500, ...params }, accountId);
+    const bd = Array.isArray(params.breakdowns) ? (params.breakdowns as string[]).join(",") : "";
+    const key = `insights:${params.level ?? ""}:${bd}`;
+    const rows = await this.pagedWithRecovery(
+      `${objectId}/insights`,
+      { limit: 500, ...params },
+      accountId,
+      key,
+    );
     return rows as unknown as InsightRow[];
   }
 

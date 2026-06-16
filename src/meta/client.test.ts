@@ -70,3 +70,33 @@ test("getAccounts enumerates strictly via /me/adaccounts (token's assigned set),
     calls.some((u) => u.includes("owned_ad_accounts") || u.includes("client_ad_accounts")),
   ).toBe(false);
 });
+
+test("drops fields Meta rejects, then remembers them for later calls", async () => {
+  const urls: string[] = [];
+  const fetchImpl = async (url: string | URL) => {
+    const u = String(url);
+    urls.push(u);
+    const fields = (new URL(u).searchParams.get("fields") ?? "").split(",");
+    if (fields.includes("bad_field"))
+      return jsonResponse({
+        error: {
+          code: 100,
+          message: "(#100) Tried accessing nonexisting field (bad_field) on node type (Campaign)",
+        },
+      });
+    return jsonResponse({ data: [{ id: "ok" }] });
+  };
+  const client = new MetaClient(
+    { appId: "1", appSecret: "s", token: "t", version: "v25.0" },
+    { fetchImpl: fetchImpl as unknown as typeof fetch, sleep: async () => {} },
+  );
+  const rows1 = await client.getChildren("act_1", "campaigns", ["id", "bad_field", "name"]);
+  expect(rows1[0].id).toBe("ok");
+  expect(urls).toHaveLength(2); // first attempt errors, retry without bad_field succeeds
+  expect(urls[1]).not.toContain("bad_field");
+  // Same edge again: the bad field is remembered, so no wasted error round-trip.
+  urls.length = 0;
+  await client.getChildren("act_1", "campaigns", ["id", "bad_field", "name"]);
+  expect(urls).toHaveLength(1);
+  expect(urls[0]).not.toContain("bad_field");
+});

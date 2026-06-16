@@ -1,11 +1,17 @@
 import { test, expect, beforeEach } from "bun:test";
 import { sql } from "drizzle-orm";
 import { db, schema } from "@/db/client";
-import { isFirstInsightsSync, markSync, recordTokenHealth } from "./state";
+import {
+  isFirstInsightsSync,
+  markSync,
+  recordTokenHealth,
+  getCheckpoint,
+  setCheckpoint,
+} from "./state";
 import type { InsightsClient } from "@/meta/types";
 
 beforeEach(async () => {
-  await db.execute(sql`truncate table sync_state, token_health cascade`);
+  await db.execute(sql`truncate table sync_state, token_health, sync_checkpoints cascade`);
 });
 
 test("markSync advances a phase timestamp only on success", async () => {
@@ -36,4 +42,19 @@ test("isFirstInsightsSync flips only after a successful insights sync", async ()
   expect(await isFirstInsightsSync("act_1")).toBe(true);
   await markSync("act_1", "insights", null);
   expect(await isFirstInsightsSync("act_1")).toBe(false);
+}, 20000);
+
+test("checkpoints round-trip and patch only provided fields", async () => {
+  expect(await getCheckpoint("act_1", "insights:ad")).toBeNull();
+  await setCheckpoint("act_1", "insights:ad", { backfilledThrough: "2025-01-01" });
+  expect(await getCheckpoint("act_1", "insights:ad")).toEqual({
+    backfilledThrough: "2025-01-01",
+    cursor: null,
+  });
+  // Patching cursor must not clobber the existing backfilledThrough.
+  await setCheckpoint("act_1", "insights:ad", { cursor: "run_42" });
+  expect(await getCheckpoint("act_1", "insights:ad")).toEqual({
+    backfilledThrough: "2025-01-01",
+    cursor: "run_42",
+  });
 }, 20000);
