@@ -118,6 +118,16 @@ function Creatives() {
               >
                 {c.campaign}
               </Link>
+              {(c.body || c.title) && (
+                <p className="line-clamp-2 text-[10px] leading-snug text-muted-foreground">
+                  {c.body ?? c.title}
+                </p>
+              )}
+              {c.callToActionType && (
+                <span className="inline-block rounded bg-accent px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-accent-foreground">
+                  {c.callToActionType.replace(/_/g, " ")}
+                </span>
+              )}
               <div className="flex items-center justify-between pt-1 text-[10px] font-mono text-muted-foreground">
                 <span>{fmtCompact(c.impressions)} impr</span>
                 <span className={c.results > 0 ? "text-success" : ""}>

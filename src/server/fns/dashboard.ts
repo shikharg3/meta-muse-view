@@ -509,14 +509,44 @@ export async function fetchAccount(
 
 export async function fetchCreatives(w: DateWindow): Promise<CreativeCard[]> {
   const campaigns = await fetchCampaigns(w);
-  const out: CreativeCard[] = [];
+  const cards: CreativeCard[] = [];
   for (const c of campaigns) {
     for (const s of c.adSets) {
       for (const ad of s.ads)
-        out.push({ ...ad, campaign: c.name, account: c.accountName, accountId: c.accountId });
+        cards.push({ ...ad, campaign: c.name, account: c.accountName, accountId: c.accountId });
     }
   }
-  return out.sort((a, b) => b.spend - a.spend).slice(0, 36);
+  const top = cards.sort((a, b) => b.spend - a.spend).slice(0, 36);
+  // Attach creative copy (ad → creative_id → ad_creatives) for the top cards only.
+  const adIds = top.map((t) => t.id);
+  if (adIds.length === 0) return top;
+  const adRows = await db
+    .select({ id: schema.ads.id, creativeId: schema.ads.creativeId })
+    .from(schema.ads)
+    .where(inArray(schema.ads.id, adIds));
+  const creativeIdByAd = new Map(adRows.map((a) => [a.id, a.creativeId]));
+  const creativeIds = [...new Set(adRows.map((a) => a.creativeId).filter(Boolean))] as string[];
+  const copies = creativeIds.length
+    ? await db
+        .select({
+          id: schema.adCreatives.id,
+          title: schema.adCreatives.title,
+          body: schema.adCreatives.body,
+          callToActionType: schema.adCreatives.callToActionType,
+        })
+        .from(schema.adCreatives)
+        .where(inArray(schema.adCreatives.id, creativeIds))
+    : [];
+  const copyByCreative = new Map(copies.map((c) => [c.id, c]));
+  return top.map((t) => {
+    const copy = copyByCreative.get(creativeIdByAd.get(t.id) ?? "");
+    return {
+      ...t,
+      title: copy?.title ?? null,
+      body: copy?.body ?? null,
+      callToActionType: copy?.callToActionType ?? null,
+    };
+  });
 }
 
 export async function fetchBreakdowns(
