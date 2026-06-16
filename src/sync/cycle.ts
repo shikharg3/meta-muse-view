@@ -1,4 +1,5 @@
 import { MetaClient } from "@/meta/client";
+import { db, schema } from "@/db/client";
 import { Limiter } from "@/meta/limiter";
 import { getCredentials } from "@/lib/credentials";
 import { syncStructure, syncAccounts } from "./jobs/structure";
@@ -147,7 +148,18 @@ export async function runCycle(): Promise<void> {
     // Record token health up front so a deleted/expired app is captured even when
     // the account enumeration below throws (otherwise the badge stays stale-green).
     await recordTokenHealth(client);
-    const owned = await syncAccounts(client, creds.businessId);
+    // Account enumeration can hit a transient rate limit (#80004); fall back to the accounts
+    // already known in the DB so a throttled getAccounts doesn't abort the whole cycle.
+    let owned: string[];
+    try {
+      owned = await syncAccounts(client, creds.businessId);
+    } catch (e) {
+      console.error(
+        "[sync] account enumeration failed; using known DB accounts:",
+        e instanceof Error ? e.message : e,
+      );
+      owned = (await db.select({ id: schema.accounts.id }).from(schema.accounts)).map((r) => r.id);
+    }
     const ids = creds.accountIds.length ? owned.filter((a) => creds.accountIds.includes(a)) : owned;
     console.log(`[sync] cycle: ${ids.length} accounts`);
     await runOnce({ client, accountIds: ids, jobs: buildJobs() });
