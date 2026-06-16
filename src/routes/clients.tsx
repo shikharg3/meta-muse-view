@@ -222,6 +222,33 @@ function Clients() {
                 <Kpi label="CPC" value={fmtCurrency(detail.kpis.cpc)} />
               </div>
 
+              {detail.budget.total != null && (
+                <div className="rounded-xl border border-border bg-card p-4">
+                  <h3 className="text-sm font-semibold mb-3">Budget</h3>
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    <Kpi label="Total budget" value={fmtCurrency(detail.budget.total)} />
+                    <Kpi label="Spent" value={fmtCurrency(detail.budget.spent)} />
+                    <Kpi
+                      label="Remaining"
+                      value={
+                        detail.budget.remaining != null ? fmtCurrency(detail.budget.remaining) : "—"
+                      }
+                    />
+                    <Kpi label="Expected end" value={detail.budget.endDate ?? "—"} />
+                  </div>
+                  {detail.budget.total > 0 && (
+                    <div className="mt-3 h-1.5 rounded-full bg-muted overflow-hidden">
+                      <div
+                        className="h-full bg-primary"
+                        style={{
+                          width: `${Math.min(100, Math.max(0, Math.round((detail.budget.spent / detail.budget.total) * 100)))}%`,
+                        }}
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+
               <section className="rounded-xl border border-border bg-card overflow-hidden">
                 <div className="flex items-center gap-3 p-4 border-b border-border">
                   <h3 className="text-sm font-semibold flex-1">

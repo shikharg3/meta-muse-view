@@ -37,6 +37,14 @@ export interface ClientDetail {
   campaigns: Campaign[];
   /** All de-duplicated conversion/engagement events for this client over the window. */
   events: ClientEvent[];
+  /** Engagement budget from Notion + spend against it (null total = not tracked). */
+  budget: {
+    total: number | null;
+    spent: number;
+    remaining: number | null;
+    startDate: string | null;
+    endDate: string | null;
+  };
 }
 
 export async function fetchClients(): Promise<ClientSummary[]> {
@@ -144,6 +152,13 @@ export async function fetchClientDetail(id: string, days: number): Promise<Clien
       accounts: [],
       campaigns: [],
       events: [],
+      budget: {
+        total: row.budget ?? null,
+        spent: 0,
+        remaining: row.budget ?? null,
+        startDate: row.startDate ? String(row.startDate) : null,
+        endDate: row.endDate ? String(row.endDate) : null,
+      },
     };
   }
 
@@ -205,6 +220,21 @@ export async function fetchClientDetail(id: string, days: number): Promise<Clien
 
   // Nested campaign→ad set→ad tree scoped to this client's accounts (drill-down).
   const campaigns = (await fetchCampaigns(days, accountIds)).sort((a, b) => b.spend - a.spend);
+  // Spend against the current engagement budget = spend since its start date.
+  let budgetSpent = 0;
+  if (row.startDate) {
+    const [bs] = await db
+      .select({ s: sql<number>`coalesce(sum(${schema.insightsDaily.spend}),0)` })
+      .from(schema.insightsDaily)
+      .where(
+        and(
+          eq(schema.insightsDaily.level, "account"),
+          inArray(schema.insightsDaily.entityId, accountIds),
+          gte(schema.insightsDaily.date, String(row.startDate)),
+        ),
+      );
+    budgetSpent = num(bs?.s);
+  }
 
   return {
     id: row.id,
@@ -214,6 +244,13 @@ export async function fetchClientDetail(id: string, days: number): Promise<Clien
     accounts,
     campaigns,
     events: canonicalEvents(accountTotals),
+    budget: {
+      total: row.budget ?? null,
+      spent: budgetSpent,
+      remaining: row.budget != null ? row.budget - budgetSpent : null,
+      startDate: row.startDate ? String(row.startDate) : null,
+      endDate: row.endDate ? String(row.endDate) : null,
+    },
   };
 }
 

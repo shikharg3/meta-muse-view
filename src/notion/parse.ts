@@ -34,6 +34,9 @@ export interface ParsedClientRow {
   activeIds: string[];
   otherIds: string[];
   status: string | null;
+  budget: number | null;
+  startDate: string | null;
+  endDate: string | null;
 }
 
 export interface ClubbedClient {
@@ -42,6 +45,9 @@ export interface ClubbedClient {
   status: string | null;
   accountIds: string[];
   pages: { pageId: string; title: string }[];
+  budget: number | null;
+  startDate: string | null;
+  endDate: string | null;
 }
 
 const plain = (p: NotionProp | undefined): string =>
@@ -57,6 +63,13 @@ export function parseClientRow(page: NotionPage): ParsedClientRow | null {
     activeIds: parseAccountIds(plain(page.properties?.["Active Account ID"])),
     otherIds: parseAccountIds(plain(page.properties?.["Other ad accounts"])),
     status: page.properties?.["Account Status"]?.status?.name ?? null,
+    budget: (page.properties?.["Budget ($)"]?.number as number | null) ?? null,
+    startDate:
+      (page.properties?.["Actual Start Date"]?.date as { start?: string } | null)?.start ??
+      (page.properties?.["Ideal Start Date"]?.date as { start?: string } | null)?.start ??
+      null,
+    endDate:
+      (page.properties?.["End Date (Estimated)"]?.date as { start?: string } | null)?.start ?? null,
   };
 }
 
@@ -80,13 +93,32 @@ export function clubClients(rows: ParsedClientRow[]): ClubbedClient[] {
     const display = row.title.split("(")[0].replace(/\s+/g, " ").trim();
     let c = byKey.get(key);
     if (!c) {
-      c = { id: clientSlug(key), name: display, status: row.status, accountIds: [], pages: [] };
+      c = {
+        id: clientSlug(key),
+        name: display,
+        status: row.status,
+        accountIds: [],
+        pages: [],
+        budget: null,
+        startDate: null,
+        endDate: null,
+      };
       byKey.set(key, c);
     }
     c.accountIds = [...new Set([...c.accountIds, ...row.activeIds, ...row.otherIds])];
     c.pages.push({ pageId: row.pageId, title: row.title });
     if ((STATUS_PRIORITY[row.status ?? ""] ?? 0) > (STATUS_PRIORITY[c.status ?? ""] ?? 0)) {
       c.status = row.status;
+    }
+    // Budget + dates reflect the current engagement: the row with the latest end date.
+    const later = row.endDate && (!c.endDate || row.endDate > c.endDate);
+    if (later) {
+      c.endDate = row.endDate;
+      c.startDate = row.startDate;
+      c.budget = row.budget;
+    } else if (c.endDate == null && c.budget == null && row.budget != null) {
+      c.budget = row.budget;
+      c.startDate = row.startDate;
     }
   }
   return [...byKey.values()];

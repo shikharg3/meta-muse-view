@@ -44,6 +44,9 @@ test("clubClients unions accounts across rows and keeps the strongest status", (
       activeIds: ["act_1372577337735758"],
       otherIds: ["act_1210811414237867"],
       status: "Full Budget Finished",
+      budget: 5000,
+      startDate: "2026-05-01",
+      endDate: "2026-06-30",
     },
     {
       pageId: "p2",
@@ -51,6 +54,9 @@ test("clubClients unions accounts across rows and keeps the strongest status", (
       activeIds: ["act_1372577337735758"],
       otherIds: [],
       status: "Live",
+      budget: 7000,
+      startDate: "2026-06-01",
+      endDate: "2026-07-31",
     },
     {
       pageId: "p3",
@@ -58,6 +64,9 @@ test("clubClients unions accounts across rows and keeps the strongest status", (
       activeIds: ["act_1173350144474106"],
       otherIds: [],
       status: "Live",
+      budget: null,
+      startDate: null,
+      endDate: null,
     },
   ]);
   expect(clubbed).toHaveLength(2);
@@ -65,6 +74,9 @@ test("clubClients unions accounts across rows and keeps the strongest status", (
   expect(wild.accountIds.sort()).toEqual(["act_1210811414237867", "act_1372577337735758"].sort());
   expect(wild.status).toBe("Live"); // Live beats Full Budget Finished
   expect(wild.pages).toHaveLength(2);
+  expect(wild.budget).toBe(7000); // current engagement = latest end date (p2)
+  expect(wild.endDate).toBe("2026-07-31");
+  expect(wild.startDate).toBe("2026-06-01");
 });
 
 test("parseClientRow extracts columns and skips titleless rows", () => {

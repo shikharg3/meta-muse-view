@@ -25,6 +25,9 @@ const schema = z.object({
   // the normal Google/email login — no code change needed.
   BASIC_AUTH_USER: z.string().optional(),
   BASIC_AUTH_PASS: z.string().optional(),
+  // Telegram alert delivery (optional): bot token + target chat/channel id.
+  TELEGRAM_BOT_TOKEN: z.string().optional(),
+  TELEGRAM_ALERT_CHAT_ID: z.string().optional(),
   // Emails auto-approved as admins on first sign-up/login (comma-separated, lowercased).
   AUTH_BOOTSTRAP_ADMINS: z
     .string()

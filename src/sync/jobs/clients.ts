@@ -31,6 +31,9 @@ export async function syncClients(client?: NotionClient): Promise<number | null>
       status: c.status,
       notionAccountIds: c.accountIds,
       raw: c.pages,
+      budget: c.budget,
+      startDate: c.startDate,
+      endDate: c.endDate,
       syncedAt: new Date(),
     };
     await db

@@ -161,6 +161,9 @@ export const clients = pgTable("clients", {
   manualAddIds: jsonb("manual_add_ids"), // string[] act_ ids added in the UI
   manualRemoveIds: jsonb("manual_remove_ids"), // string[] act_ ids removed in the UI
   raw: jsonb("raw"), // contributing Notion rows (page ids, titles)
+  budget: doublePrecision("budget"), // current-engagement total $ (Notion "Budget ($)")
+  startDate: date("start_date"), // engagement start (Notion "Actual Start Date")
+  endDate: date("end_date"), // estimated end (Notion "End Date (Estimated)")
   syncedAt: timestamp("synced_at", { withTimezone: true }),
 });
 
