@@ -14,6 +14,7 @@ import { Route as SignupRouteImport } from './routes/signup'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as OverviewRouteImport } from './routes/overview'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as LibraryRouteImport } from './routes/library'
 import { Route as CreativesRouteImport } from './routes/creatives'
 import { Route as ClientsRouteImport } from './routes/clients'
 import { Route as CampaignsRouteImport } from './routes/campaigns'
@@ -46,6 +47,11 @@ const OverviewRoute = OverviewRouteImport.update({
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LibraryRoute = LibraryRouteImport.update({
+  id: '/library',
+  path: '/library',
   getParentRoute: () => rootRouteImport,
 } as any)
 const CreativesRoute = CreativesRouteImport.update({
@@ -96,6 +102,7 @@ export interface FileRoutesByFullPath {
   '/campaigns': typeof CampaignsRoute
   '/clients': typeof ClientsRoute
   '/creatives': typeof CreativesRoute
+  '/library': typeof LibraryRoute
   '/login': typeof LoginRoute
   '/overview': typeof OverviewRoute
   '/settings': typeof SettingsRoute
@@ -111,6 +118,7 @@ export interface FileRoutesByTo {
   '/campaigns': typeof CampaignsRoute
   '/clients': typeof ClientsRoute
   '/creatives': typeof CreativesRoute
+  '/library': typeof LibraryRoute
   '/login': typeof LoginRoute
   '/overview': typeof OverviewRoute
   '/settings': typeof SettingsRoute
@@ -127,6 +135,7 @@ export interface FileRoutesById {
   '/campaigns': typeof CampaignsRoute
   '/clients': typeof ClientsRoute
   '/creatives': typeof CreativesRoute
+  '/library': typeof LibraryRoute
   '/login': typeof LoginRoute
   '/overview': typeof OverviewRoute
   '/settings': typeof SettingsRoute
@@ -144,6 +153,7 @@ export interface FileRouteTypes {
     | '/campaigns'
     | '/clients'
     | '/creatives'
+    | '/library'
     | '/login'
     | '/overview'
     | '/settings'
@@ -159,6 +169,7 @@ export interface FileRouteTypes {
     | '/campaigns'
     | '/clients'
     | '/creatives'
+    | '/library'
     | '/login'
     | '/overview'
     | '/settings'
@@ -174,6 +185,7 @@ export interface FileRouteTypes {
     | '/campaigns'
     | '/clients'
     | '/creatives'
+    | '/library'
     | '/login'
     | '/overview'
     | '/settings'
@@ -190,6 +202,7 @@ export interface RootRouteChildren {
   CampaignsRoute: typeof CampaignsRoute
   ClientsRoute: typeof ClientsRoute
   CreativesRoute: typeof CreativesRoute
+  LibraryRoute: typeof LibraryRoute
   LoginRoute: typeof LoginRoute
   OverviewRoute: typeof OverviewRoute
   SettingsRoute: typeof SettingsRoute
@@ -234,6 +247,13 @@ declare module '@tanstack/react-router' {
       path: '/login'
       fullPath: '/login'
       preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/library': {
+      id: '/library'
+      path: '/library'
+      fullPath: '/library'
+      preLoaderRoute: typeof LibraryRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/creatives': {
@@ -302,6 +322,7 @@ const rootRouteChildren: RootRouteChildren = {
   CampaignsRoute: CampaignsRoute,
   ClientsRoute: ClientsRoute,
   CreativesRoute: CreativesRoute,
+  LibraryRoute: LibraryRoute,
   LoginRoute: LoginRoute,
   OverviewRoute: OverviewRoute,
   SettingsRoute: SettingsRoute,

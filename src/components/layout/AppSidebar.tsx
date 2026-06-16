@@ -7,6 +7,7 @@ import {
   Users,
   Settings,
   Activity,
+  Database,
   Bell,
   Briefcase,
   Sparkles,
@@ -34,6 +35,7 @@ const main = [
   { title: "Campaigns", url: "/campaigns", icon: Megaphone },
   { title: "Creatives", url: "/creatives", icon: Images },
   { title: "Audiences", url: "/audiences", icon: Users },
+  { title: "Library", url: "/library", icon: Database },
   { title: "Clients", url: "/clients", icon: Briefcase },
   { title: "Alerts", url: "/alerts", icon: Bell },
 ];
