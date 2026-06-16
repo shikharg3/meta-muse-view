@@ -3,7 +3,8 @@ import { Limiter } from "@/meta/limiter";
 import { getCredentials } from "@/lib/credentials";
 import { syncStructure, syncAccounts } from "./jobs/structure";
 import { syncInsights } from "./jobs/insights";
-import { syncBreakdowns, BREAKDOWNS } from "./jobs/breakdowns";
+import { syncBreakdowns } from "./jobs/breakdowns";
+import { BREAKDOWN_GROUPS } from "@/meta/fieldsets";
 import { syncClients } from "./jobs/clients";
 import {
   isFirstInsightsSync,
@@ -62,10 +63,18 @@ function buildJobs(): Jobs {
     breakdowns: async (client, id) => {
       try {
         const days = (await isFirst(id)) ? BREAKDOWN_BACKFILL_DAYS : BREAKDOWN_REFRESH_DAYS;
-        // Account-level powers the all-accounts/client Audiences view; campaign-level
-        // is captured so a future per-campaign audience filter has data (phase 2).
-        await syncBreakdowns(client, id, { breakdowns: [...BREAKDOWNS], days, level: "account" });
-        await syncBreakdowns(client, id, { breakdowns: [...BREAKDOWNS], days, level: "campaign" });
+        // Asset breakdowns (image/video/title/body/cta/...) are ad-level only and very high
+        // cardinality, so they run at the ad level on the short refresh window; the standard
+        // demographic/geo/placement/dayparting dims run at account + campaign over the backfill.
+        const asset = BREAKDOWN_GROUPS.filter((g) => g[0].endsWith("_asset"));
+        const standard = BREAKDOWN_GROUPS.filter((g) => !g[0].endsWith("_asset"));
+        await syncBreakdowns(client, id, { groups: standard, days, level: "account" });
+        await syncBreakdowns(client, id, { groups: standard, days, level: "campaign" });
+        await syncBreakdowns(client, id, {
+          groups: asset,
+          days: BREAKDOWN_REFRESH_DAYS,
+          level: "ad",
+        });
       } catch (e) {
         await markSync(id, "insights", e instanceof Error ? e.message : String(e));
         throw e;

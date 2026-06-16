@@ -603,6 +603,7 @@ export const BREAKDOWN_GROUPS: string[][] = [
   ["dma"],
   ["publisher_platform", "platform_position", "impression_device"],
   ["device_platform"],
+  ["publisher_platform"],
   ["hourly_stats_aggregated_by_advertiser_time_zone"],
   ["hourly_stats_aggregated_by_audience_time_zone"],
   ["frequency_value"],

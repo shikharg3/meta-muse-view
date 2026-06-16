@@ -170,6 +170,9 @@ export const insightsBreakdownDaily = pgTable(
     clicks: bigint("clicks", { mode: "number" }).notNull().default(0),
     conversions: doublePrecision("conversions").notNull().default(0),
     conversionValues: doublePrecision("conversion_values").notNull().default(0),
+    reach: bigint("reach", { mode: "number" }).notNull().default(0),
+    dims: jsonb("dims"),
+    raw: jsonb("raw"),
     syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
