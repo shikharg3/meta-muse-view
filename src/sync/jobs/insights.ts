@@ -46,29 +46,30 @@ export function chunkRange(
   return windows;
 }
 
-export async function syncInsights(
+/** Sync insights over an explicit [since, until] window (chunked), merging all metric groups. */
+export async function syncInsightsRange(
   client: InsightsClient,
   accountId: string,
-  opts: { level: Level; days: number; today?: Date },
+  level: Level,
+  since: string,
+  until: string,
 ): Promise<number> {
-  const { since, until } = trailingRange(opts.days, opts.today);
   let written = 0;
-  // Long backfills are chunked so each request stays within Meta's per-call data limits.
+  // Long ranges are chunked so each request stays within Meta's per-call data limits.
   for (const window of chunkRange(since, until)) {
     // Request every metric in compatible groups, merged by (entity, date) so each daily row carries
     // the full metric set. The merged row is stored in `raw`; high-value metrics are promoted.
     const byKey = new Map<string, InsightRow>();
     for (const group of INSIGHT_METRIC_GROUPS) {
       const rows = await client.getInsights(accountId, {
-        level: opts.level,
+        level,
         time_range: { since: window.since, until: window.until },
         time_increment: 1,
         fields: [...group, "account_id", "campaign_id", "adset_id", "ad_id"],
         use_unified_attribution_setting: true,
       });
       for (const r of rows) {
-        const entityId =
-          opts.level === "account" ? accountId : String(r[ID_FIELD[opts.level]] ?? accountId);
+        const entityId = level === "account" ? accountId : String(r[ID_FIELD[level]] ?? accountId);
         const key = `${entityId}:${String(r.date_start)}`;
         const merged = byKey.get(key) ?? ({ date_start: String(r.date_start) } as InsightRow);
         Object.assign(merged, r);
@@ -77,8 +78,8 @@ export async function syncInsights(
     }
     for (const merged of byKey.values()) {
       const entityId =
-        opts.level === "account" ? accountId : String(merged[ID_FIELD[opts.level]] ?? accountId);
-      const v = normalizeInsightRow(merged, opts.level, entityId, accountId);
+        level === "account" ? accountId : String(merged[ID_FIELD[level]] ?? accountId);
+      const v = normalizeInsightRow(merged, level, entityId, accountId);
       await db
         .insert(schema.insightsDaily)
         .values(v)
@@ -94,4 +95,14 @@ export async function syncInsights(
     }
   }
   return written;
+}
+
+/** Sync the trailing `days` window (used for the recurring refresh). */
+export async function syncInsights(
+  client: InsightsClient,
+  accountId: string,
+  opts: { level: Level; days: number; today?: Date },
+): Promise<number> {
+  const { since, until } = trailingRange(opts.days, opts.today);
+  return syncInsightsRange(client, accountId, opts.level, since, until);
 }

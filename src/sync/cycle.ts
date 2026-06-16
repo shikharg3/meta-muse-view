@@ -3,17 +3,19 @@ import { db, schema } from "@/db/client";
 import { Limiter } from "@/meta/limiter";
 import { getCredentials } from "@/lib/credentials";
 import { syncStructure, syncAccounts } from "./jobs/structure";
-import { syncInsights } from "./jobs/insights";
+import { syncInsights, syncInsightsRange } from "./jobs/insights";
 import { syncBreakdowns } from "./jobs/breakdowns";
 import { BREAKDOWN_GROUPS } from "@/meta/fieldsets";
+import { addDays } from "@/lib/range";
 import { syncClients } from "./jobs/clients";
 import { syncEdges, syncActivities } from "./jobs/objects";
 import {
-  isFirstInsightsSync,
   markSync,
   recordTokenHealth,
   getFieldBlocklist,
   saveFieldBlocklist,
+  getCheckpoint,
+  setCheckpoint,
 } from "./state";
 import { runOnce, type Jobs } from "./run";
 import { detectSpendDropAlerts } from "./alerts";
@@ -26,18 +28,33 @@ export const BREAKDOWN_BACKFILL_DAYS = 394; // 13 months: Meta's breakdown reten
 export const INSIGHTS_REFRESH_DAYS = 28; // trailing refresh >= the 28-day attribution window
 export const BREAKDOWN_REFRESH_DAYS = 28;
 
+const BACKFILL_CHUNK = 90;
+const LEVELS = ["account", "campaign", "adset", "ad"] as const;
+
+/**
+ * Advance one dataset's historical backfill by a single chunk, resuming from a persisted
+ * checkpoint. Bounding each cycle to one chunk per dataset means every account is touched every
+ * cycle (rate-limited early accounts don't starve later ones) and history fills in resumably.
+ */
+export async function backfillStep(
+  accountId: string,
+  dataset: string,
+  maxDays: number,
+  today: Date,
+  run: (since: string, until: string) => Promise<unknown>,
+): Promise<void> {
+  const todayYmd = today.toISOString().slice(0, 10);
+  const floor = addDays(todayYmd, -(maxDays - 1));
+  const cp = await getCheckpoint(accountId, dataset);
+  const doneThrough = cp?.backfilledThrough ?? todayYmd;
+  if (doneThrough <= floor) return; // fully backfilled
+  const until = addDays(doneThrough, -1);
+  const cand = addDays(until, -(BACKFILL_CHUNK - 1));
+  const since = cand < floor ? floor : cand;
+  await run(since, until);
+  await setCheckpoint(accountId, dataset, { backfilledThrough: since });
+}
 function buildJobs(): Jobs {
-  // Cycle-scoped memo: insights marks the account synced before breakdowns runs,
-  // so both jobs must observe the same first-run answer.
-  const firstRun = new Map<string, boolean>();
-  const isFirst = async (id: string): Promise<boolean> => {
-    let v = firstRun.get(id);
-    if (v === undefined) {
-      v = await isFirstInsightsSync(id);
-      firstRun.set(id, v);
-    }
-    return v;
-  };
   return {
     structure: async (client, id) => {
       try {
@@ -50,11 +67,12 @@ function buildJobs(): Jobs {
     },
     insights: async (client, id) => {
       try {
-        for (const level of ["account", "campaign", "adset", "ad"] as const) {
-          await syncInsights(client, id, {
-            level,
-            days: (await isFirst(id)) ? BACKFILL_DAYS : INSIGHTS_REFRESH_DAYS,
-          });
+        const today = new Date();
+        for (const level of LEVELS) {
+          await syncInsights(client, id, { level, days: INSIGHTS_REFRESH_DAYS });
+          await backfillStep(id, `insights:${level}`, BACKFILL_DAYS, today, (s, u) =>
+            syncInsightsRange(client, id, level, s, u),
+          );
         }
         await markSync(id, "insights", null);
       } catch (e) {
@@ -64,14 +82,20 @@ function buildJobs(): Jobs {
     },
     breakdowns: async (client, id) => {
       try {
-        const days = (await isFirst(id)) ? BREAKDOWN_BACKFILL_DAYS : BREAKDOWN_REFRESH_DAYS;
-        // Asset breakdowns (image/video/title/body/cta/...) are ad-level only and very high
-        // cardinality, so they run at the ad level on the short refresh window; the standard
-        // demographic/geo/placement/dayparting dims run at account + campaign over the backfill.
+        const today = new Date();
+        // Asset breakdowns are ad-level only + very high cardinality → refresh window only.
         const asset = BREAKDOWN_GROUPS.filter((g) => g[0].endsWith("_asset"));
         const standard = BREAKDOWN_GROUPS.filter((g) => !g[0].endsWith("_asset"));
-        await syncBreakdowns(client, id, { groups: standard, days, level: "account" });
-        await syncBreakdowns(client, id, { groups: standard, days, level: "campaign" });
+        for (const level of ["account", "campaign"] as const) {
+          await syncBreakdowns(client, id, {
+            groups: standard,
+            days: BREAKDOWN_REFRESH_DAYS,
+            level,
+          });
+          await backfillStep(id, `breakdown:${level}`, BREAKDOWN_BACKFILL_DAYS, today, (s, u) =>
+            syncBreakdowns(client, id, { groups: standard, level, since: s, until: u }),
+          );
+        }
         await syncBreakdowns(client, id, {
           groups: asset,
           days: BREAKDOWN_REFRESH_DAYS,

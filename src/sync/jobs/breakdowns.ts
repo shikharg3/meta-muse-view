@@ -21,11 +21,21 @@ const ID_FIELD: Record<Level, string | null> = {
 export async function syncBreakdowns(
   client: InsightsClient,
   accountId: string,
-  opts: { groups: string[][]; days: number; level?: Level; today?: Date },
+  opts: {
+    groups: string[][];
+    days?: number;
+    level?: Level;
+    today?: Date;
+    since?: string;
+    until?: string;
+  },
 ): Promise<number> {
   const level = opts.level ?? "account";
   const idField = ID_FIELD[level];
-  const { since, until } = trailingRange(opts.days, opts.today);
+  const { since, until } =
+    opts.since && opts.until
+      ? { since: opts.since, until: opts.until }
+      : trailingRange(opts.days ?? 28, opts.today);
   const fields = [
     "spend",
     "impressions",
