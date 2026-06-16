@@ -6,6 +6,7 @@ import {
   fetchClientBudgets,
   fetchClientFilterOptions,
 } from "@/server/fns/clients";
+import { resolveWindow, type RangeSpec } from "@/lib/range";
 
 export const listClients = createServerFn({ method: "GET" }).handler(() => fetchClients());
 
@@ -14,8 +15,8 @@ export const getClientFilterOptions = createServerFn({ method: "GET" }).handler(
 );
 
 export const getClientDetail = createServerFn({ method: "GET" })
-  .inputValidator((d: { id: string; days: number }) => d)
-  .handler(({ data }) => fetchClientDetail(data.id, data.days));
+  .inputValidator((d: { id: string } & RangeSpec) => d)
+  .handler(({ data }) => fetchClientDetail(data.id, resolveWindow(data)));
 
 export const getClientBudgets = createServerFn({ method: "GET" })
   .inputValidator((id: string) => id)

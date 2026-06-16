@@ -14,41 +14,42 @@ import {
   type CsvKind,
 } from "@/server/fns/dashboard";
 import { getClientRow, effectiveAccountIds } from "@/sync/jobs/clients";
+import { resolveWindow, type RangeSpec } from "@/lib/range";
 
 export const listAccounts = createServerFn({ method: "GET" })
-  .inputValidator((days: number) => days)
-  .handler(({ data }) => fetchAccounts(data));
+  .inputValidator((spec: RangeSpec) => spec)
+  .handler(({ data }) => fetchAccounts(resolveWindow(data)));
 
 export const getOverview = createServerFn({ method: "GET" })
-  .inputValidator((days: number) => days)
-  .handler(({ data }) => fetchOverview(data));
+  .inputValidator((spec: RangeSpec) => spec)
+  .handler(({ data }) => fetchOverview(resolveWindow(data)));
 
 export const listCampaigns = createServerFn({ method: "GET" })
-  .inputValidator((days: number) => days)
-  .handler(({ data }) => fetchCampaigns(data));
+  .inputValidator((spec: RangeSpec) => spec)
+  .handler(({ data }) => fetchCampaigns(resolveWindow(data)));
 
 export const getAccount = createServerFn({ method: "GET" })
-  .inputValidator((input: { id: string; days: number }) => input)
-  .handler(({ data }) => fetchAccount(data.id, data.days));
+  .inputValidator((input: { id: string } & RangeSpec) => input)
+  .handler(({ data }) => fetchAccount(data.id, resolveWindow(data)));
 
 export const listCreatives = createServerFn({ method: "GET" })
-  .inputValidator((days: number) => days)
-  .handler(({ data }) => fetchCreatives(data));
+  .inputValidator((spec: RangeSpec) => spec)
+  .handler(({ data }) => fetchCreatives(resolveWindow(data)));
 
 export const getBreakdowns = createServerFn({ method: "GET" })
   .inputValidator(
-    (input: { days: number; clientId?: string; campaignId?: string; accountIds?: string[] }) =>
-      input,
+    (input: RangeSpec & { clientId?: string; campaignId?: string; accountIds?: string[] }) => input,
   )
   .handler(async ({ data }) => {
-    if (data.campaignId) return fetchBreakdowns(data.days, { campaignId: data.campaignId });
+    const w = resolveWindow(data);
+    if (data.campaignId) return fetchBreakdowns(w, { campaignId: data.campaignId });
     if (data.clientId) {
       const row = await getClientRow(data.clientId);
-      return fetchBreakdowns(data.days, { accountIds: row ? effectiveAccountIds(row) : [] });
+      return fetchBreakdowns(w, { accountIds: row ? effectiveAccountIds(row) : [] });
     }
     if (data.accountIds && data.accountIds.length > 0)
-      return fetchBreakdowns(data.days, { accountIds: data.accountIds });
-    return fetchBreakdowns(data.days);
+      return fetchBreakdowns(w, { accountIds: data.accountIds });
+    return fetchBreakdowns(w);
   });
 
 export const getCampaignOptions = createServerFn({ method: "GET" })
@@ -71,5 +72,5 @@ export const runSearch = createServerFn({ method: "GET" })
   .handler(({ data }) => searchEntities(data));
 
 export const getExportCsv = createServerFn({ method: "GET" })
-  .inputValidator((input: { kind: CsvKind; days: number }) => input)
-  .handler(({ data }) => exportCsv(data.kind, data.days));
+  .inputValidator((input: { kind: CsvKind } & RangeSpec) => input)
+  .handler(({ data }) => exportCsv(data.kind, resolveWindow(data)));

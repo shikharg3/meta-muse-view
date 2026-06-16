@@ -9,7 +9,7 @@ import { GlobalSearch } from "./GlobalSearch";
 import { RangePicker } from "./RangePicker";
 import { getExportCsv } from "@/lib/api/dashboard";
 import { syncNow } from "@/lib/api/settings";
-import { toRange } from "@/lib/range";
+import { toRange, isYmd } from "@/lib/range";
 import { fmtRelTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { CsvKind } from "@/server/fns/dashboard";
@@ -135,18 +135,21 @@ export function TopBar({
   isAdmin?: boolean;
 }) {
   const path = useRouterState({ select: (s) => s.location.pathname });
-  const search = useSearch({ strict: false }) as { range?: number };
+  const search = useSearch({ strict: false }) as { range?: number; from?: string; to?: string };
   const range = toRange(search.range);
   const kind = csvKindForPath(path);
 
   async function onExport() {
     if (!kind) return;
-    const csv = await getExportCsv({ data: { kind, days: range } });
+    const custom = Boolean(search.from && search.to && isYmd(search.from) && isYmd(search.to));
+    const csv = await getExportCsv({
+      data: { kind, days: range, from: search.from, to: search.to },
+    });
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `${kind}-${range}d.csv`;
+    a.download = custom ? `${kind}-${search.from}_${search.to}.csv` : `${kind}-${range}d.csv`;
     document.body.appendChild(a);
     a.click();
     a.remove();

@@ -82,7 +82,7 @@ function ErrorComponent({ error, reset }: { error: Error; reset: () => void }) {
 }
 
 export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()({
-  search: { middlewares: [retainSearchParams(["range", "accounts"])] },
+  search: { middlewares: [retainSearchParams(["range", "accounts", "from", "to"])] },
   head: () => ({
     meta: [
       { charSet: "utf-8" },

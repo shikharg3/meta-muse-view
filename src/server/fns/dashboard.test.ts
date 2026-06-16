@@ -9,6 +9,7 @@ import {
   searchEntities,
   windowDeltas,
 } from "./dashboard";
+import { windowFromDays } from "@/lib/range";
 
 test("deriveKpis computes ratios from summed totals", () => {
   const k = deriveKpis({
@@ -60,7 +61,7 @@ test("fetchAccounts aggregates insights_daily into KPIs", async () => {
       reach: 800,
     },
   ]);
-  const accts = await fetchAccounts(30);
+  const accts = await fetchAccounts(windowFromDays(30));
   const a = accts.find((x) => x.id === "act_1")!;
   expect(a.spend).toBeCloseTo(100);
   expect(a.roas).toBeCloseTo(3); // 300/100
@@ -130,8 +131,8 @@ test("fetchAccounts respects the range window and maps status", async () => {
       reach: 1,
     },
   ]);
-  const within7 = (await fetchAccounts(7)).find((x) => x.id === "act_1")!;
-  const within90 = (await fetchAccounts(90)).find((x) => x.id === "act_1")!;
+  const within7 = (await fetchAccounts(windowFromDays(7))).find((x) => x.id === "act_1")!;
+  const within90 = (await fetchAccounts(windowFromDays(90))).find((x) => x.id === "act_1")!;
   expect(within7.spend).toBeCloseTo(100);
   expect(within90.spend).toBeCloseTo(1099);
   expect(within7.status).toBe("ACTIVE");
@@ -178,7 +179,7 @@ test("fetchCampaigns derives objective-based results and hi-res creative urls", 
       { action_type: "link_click", value: "30" },
     ],
   });
-  const [camp] = await fetchCampaigns(30);
+  const [camp] = await fetchCampaigns(windowFromDays(30));
   const ad = camp.adSets[0].ads[0];
   expect(ad.results).toBeCloseTo(7); // leads, not link clicks
   expect(ad.resultLabel).toBe("Leads");
@@ -244,11 +245,11 @@ test("windowDeltas compares the trailing window to the preceding one, per entity
       reach: 1,
     },
   ]);
-  const d = await windowDeltas(7, "act_1");
+  const d = await windowDeltas(windowFromDays(7), "act_1");
   expect(d.spend).toBeCloseTo(100); // 50 -> 100
   expect(d.revenue).toBeCloseTo(200); // 100 -> 300
   expect(d.ctr).toBeCloseTo(0); // 5% -> 5%
-  const all = await windowDeltas(7);
+  const all = await windowDeltas(windowFromDays(7));
   expect(all.spend).toBeCloseTo(((100 + 9999 - 50) / 50) * 100);
 }, 20000);
 
@@ -269,7 +270,7 @@ test("windowDeltas yields nulls when the previous window is empty", async () => 
       reach: 800,
     },
   ]);
-  const d = await windowDeltas(7, "act_1");
+  const d = await windowDeltas(windowFromDays(7), "act_1");
   expect(d.spend).toBeNull();
   expect(d.roas).toBeNull();
 }, 20000);

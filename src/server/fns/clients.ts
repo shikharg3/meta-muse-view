@@ -1,4 +1,4 @@
-import { and, eq, gte, inArray, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, lte, sql } from "drizzle-orm";
 import { db, schema } from "@/db/client";
 import {
   deriveKpis,
@@ -7,6 +7,7 @@ import {
   accountStatus,
   type ClientEvent,
 } from "@/server/agg";
+import { type DateWindow } from "@/lib/range";
 import { fetchCampaigns, objectiveResults } from "./dashboard";
 import { effectiveAccountIds, getClientRow } from "@/sync/jobs/clients";
 import type { Campaign, Kpis, AccountStatus } from "@/lib/types";
@@ -79,10 +80,9 @@ export interface ClientRanked extends ClientSummary {
  * spend. Computed in a constant number of queries (NOT per-client) so ranking
  * questions ("which client spent the most") never fan out into many calls.
  */
-export async function fetchClientsRanked(days: number): Promise<ClientRanked[]> {
+export async function fetchClientsRanked(w: DateWindow): Promise<ClientRanked[]> {
   const rows = await db.select().from(schema.clients);
   if (rows.length === 0) return [];
-  const since = windowStart(days);
   const [acct, results] = await Promise.all([
     db
       .select({
@@ -91,9 +91,15 @@ export async function fetchClientsRanked(days: number): Promise<ClientRanked[]> 
         impressions: sql<number>`coalesce(sum(${schema.insightsDaily.impressions}),0)`,
       })
       .from(schema.insightsDaily)
-      .where(and(eq(schema.insightsDaily.level, "account"), gte(schema.insightsDaily.date, since)))
+      .where(
+        and(
+          eq(schema.insightsDaily.level, "account"),
+          gte(schema.insightsDaily.date, w.since),
+          lte(schema.insightsDaily.date, w.until),
+        ),
+      )
       .groupBy(schema.insightsDaily.entityId),
-    objectiveResults(since).then((r) => r.account),
+    objectiveResults(w).then((r) => r.account),
   ]);
   const spendBy = new Map(acct.map((a) => [a.entityId, a]));
   return rows
@@ -136,11 +142,10 @@ export async function fetchClientsRanked(days: number): Promise<ClientRanked[]> 
     .sort((a, b) => b.spend - a.spend);
 }
 
-export async function fetchClientDetail(id: string, days: number): Promise<ClientDetail | null> {
+export async function fetchClientDetail(id: string, w: DateWindow): Promise<ClientDetail | null> {
   const row = await getClientRow(id);
   if (!row) return null;
   const accountIds = effectiveAccountIds(row);
-  const since = windowStart(days);
   const notionIds = (row.notionAccountIds as string[] | null) ?? [];
 
   if (accountIds.length === 0) {
@@ -178,7 +183,8 @@ export async function fetchClientDetail(id: string, days: number): Promise<Clien
         and(
           eq(schema.insightsDaily.level, "account"),
           inArray(schema.insightsDaily.entityId, accountIds),
-          gte(schema.insightsDaily.date, since),
+          gte(schema.insightsDaily.date, w.since),
+          lte(schema.insightsDaily.date, w.until),
         ),
       ),
   ]);
@@ -228,7 +234,7 @@ export async function fetchClientDetail(id: string, days: number): Promise<Clien
   });
 
   // Nested campaign→ad set→ad tree scoped to this client's accounts (drill-down).
-  const campaigns = (await fetchCampaigns(days, accountIds)).sort((a, b) => b.spend - a.spend);
+  const campaigns = (await fetchCampaigns(w, accountIds)).sort((a, b) => b.spend - a.spend);
   // Spend against the current engagement budget = spend since its start date.
   let budgetSpent = 0;
   if (row.startDate) {

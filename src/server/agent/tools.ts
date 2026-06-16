@@ -3,6 +3,7 @@ import { fetchOverview, fetchOverviewEvents, searchEntities } from "@/server/fns
 import { getClientRow, effectiveAccountIds } from "@/sync/jobs/clients";
 import { runReport, resolveRange, normalizeColumns, normalizeBreakdown } from "./report";
 import type { AnthropicTool } from "./anthropic";
+import { windowFromDays } from "@/lib/range";
 
 // Insights are only backfilled ~90 days; clamp so the model can't ask beyond data.
 const MAX_DAYS = 90;
@@ -138,7 +139,7 @@ export async function resolveClient(query: string): Promise<ResolvedClient | Res
 export async function runTool(name: string, input: Record<string, unknown>): Promise<unknown> {
   switch (name) {
     case "list_clients": {
-      const clients = await fetchClientsRanked(clampDays(input.days));
+      const clients = await fetchClientsRanked(windowFromDays(clampDays(input.days)));
       return clients.map((c) => ({
         name: c.name,
         status: c.status,
@@ -151,7 +152,7 @@ export async function runTool(name: string, input: Record<string, unknown>): Pro
     case "get_client_stats": {
       const resolved = await resolveClient(String(input.client ?? ""));
       if ("error" in resolved) return resolved;
-      const detail = await fetchClientDetail(resolved.id, clampDays(input.days));
+      const detail = await fetchClientDetail(resolved.id, windowFromDays(clampDays(input.days)));
       if (!detail) return { error: `Client "${resolved.name}" has no data.` };
       return {
         client: detail.name,
@@ -182,8 +183,8 @@ export async function runTool(name: string, input: Record<string, unknown>): Pro
       };
     }
     case "get_overview": {
-      const days = clampDays(input.days);
-      const [o, events] = await Promise.all([fetchOverview(days), fetchOverviewEvents(days)]);
+      const w = windowFromDays(clampDays(input.days));
+      const [o, events] = await Promise.all([fetchOverview(w), fetchOverviewEvents(w)]);
       return {
         kpis: o.kpis,
         deltas: o.deltas,

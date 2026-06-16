@@ -7,7 +7,7 @@ import { BreakdownBar } from "@/components/dashboard/BreakdownBar";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { getOverview, getBreakdowns } from "@/lib/api/dashboard";
 import { fmtCurrency, fmtCompact, fmtPct } from "@/lib/format";
-import { rangeSearch, toRange, RANGE_LABELS } from "@/lib/range";
+import { rangeSearch, rangeSpec, rangeLabel } from "@/lib/range";
 import { kpiSparks } from "@/lib/sparks";
 import { useSort, SortHeader } from "@/components/dashboard/SortableTable";
 
@@ -19,11 +19,11 @@ export const Route = createFileRoute("/overview")({
     ],
   }),
   validateSearch: rangeSearch,
-  loaderDeps: ({ search }) => ({ range: toRange(search.range) }),
-  loader: async ({ deps: { range } }) => {
+  loaderDeps: ({ search }) => rangeSpec(search),
+  loader: async ({ deps }) => {
     const [overview, breakdowns] = await Promise.all([
-      getOverview({ data: range }),
-      getBreakdowns({ data: { days: range } }),
+      getOverview({ data: deps }),
+      getBreakdowns({ data: deps }),
     ]);
     return { ...overview, placements: breakdowns.publisher_platform };
   },
@@ -33,7 +33,7 @@ export const Route = createFileRoute("/overview")({
 function Overview() {
   const { kpis, deltas, results, topAccounts, topCampaigns, trend, placements } =
     Route.useLoaderData();
-  const { range } = Route.useLoaderDeps();
+  const { days, from, to } = Route.useLoaderDeps();
   const sparks = kpiSparks(trend);
   const accounts = useSort(
     topAccounts,
@@ -108,7 +108,7 @@ function Overview() {
             <div>
               <h3 className="text-sm font-semibold">Spend &amp; Conversions</h3>
               <p className="text-xs text-muted-foreground">
-                Daily aggregate · {RANGE_LABELS[range].toLowerCase()}
+                Daily aggregate · {rangeLabel({ range: days, from, to }).toLowerCase()}
               </p>
             </div>
           </div>

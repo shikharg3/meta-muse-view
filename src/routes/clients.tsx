@@ -14,9 +14,9 @@ import { Plus, Search, X } from "lucide-react";
 import { useSort, SortHeader } from "@/components/dashboard/SortableTable";
 import { CampaignTable } from "@/components/dashboard/CampaignTable";
 import { StatusPill } from "@/components/dashboard/StatusPill";
-import { rangeSearch, toRange, type RangeDays } from "@/lib/range";
+import { rangeSearch, rangeSpec, type RangeDays } from "@/lib/range";
 
-type ClientSearch = { client?: string; range?: RangeDays };
+type ClientSearch = { client?: string; range?: RangeDays; from?: string; to?: string };
 
 export const Route = createFileRoute("/clients")({
   head: () => ({ meta: [{ title: "Clients — MetaConsole" }] }),
@@ -24,13 +24,15 @@ export const Route = createFileRoute("/clients")({
     ...rangeSearch(s),
     client: typeof s.client === "string" ? s.client : undefined,
   }),
-  loaderDeps: ({ search }) => ({ range: toRange(search.range), client: search.client }),
+  loaderDeps: ({ search }) => ({ ...rangeSpec(search), client: search.client }),
   loader: async ({ deps }) => {
     const [clients, me] = await Promise.all([listClients(), getCurrentUser()]);
     const selected = deps.client ?? clients[0]?.id;
     const [detail, budgets] = selected
       ? await Promise.all([
-          getClientDetail({ data: { id: selected, days: deps.range } }),
+          getClientDetail({
+            data: { id: selected, days: deps.days, from: deps.from, to: deps.to },
+          }),
           getClientBudgets({ data: selected }),
         ])
       : [null, []];

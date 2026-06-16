@@ -5,7 +5,7 @@ import { CampaignTable } from "@/components/dashboard/CampaignTable";
 import { listCampaigns } from "@/lib/api/dashboard";
 import { Search, X } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { rangeSearch, accountScope, toRange, type RangeDays } from "@/lib/range";
+import { rangeSearch, accountScope, rangeSpec, type RangeDays } from "@/lib/range";
 
 export const Route = createFileRoute("/campaigns")({
   head: () => ({
@@ -16,13 +16,13 @@ export const Route = createFileRoute("/campaigns")({
   }),
   validateSearch: (
     s: Record<string, unknown>,
-  ): { range?: RangeDays; account?: string; accounts?: string } => ({
+  ): { range?: RangeDays; from?: string; to?: string; account?: string; accounts?: string } => ({
     ...rangeSearch(s),
     ...(typeof s.account === "string" && s.account ? { account: s.account } : {}),
     ...(typeof s.accounts === "string" && s.accounts ? { accounts: s.accounts } : {}),
   }),
-  loaderDeps: ({ search }) => ({ range: toRange(search.range) }),
-  loader: async ({ deps: { range } }) => ({ campaigns: await listCampaigns({ data: range }) }),
+  loaderDeps: ({ search }) => rangeSpec(search),
+  loader: async ({ deps }) => ({ campaigns: await listCampaigns({ data: deps }) }),
   component: CampaignsExplorer,
 });
 

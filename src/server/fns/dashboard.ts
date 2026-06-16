@@ -1,14 +1,14 @@
-import { and, eq, gte, ilike, inArray, lt, or, sql } from "drizzle-orm";
+import { and, eq, gte, ilike, inArray, lt, lte, or, sql } from "drizzle-orm";
 import { db, schema } from "@/db/client";
 import {
   accountStatus,
   canonicalEvents,
   deriveKpis,
   pctDelta,
-  windowStart,
   type ClientEvent,
   type Totals,
 } from "@/server/agg";
+import { addDays, type DateWindow } from "@/lib/range";
 import { creativeFormat, creativeImageUrl, hueFromId, resultSpec } from "@/server/creative";
 import type {
   AdAccount,
@@ -24,7 +24,7 @@ import { isCycleRunning } from "@/sync/cycle";
 const num = (v: unknown): number => Number(v ?? 0);
 
 /** Summed insight totals grouped by entity, for a level over the window. */
-function totalsByEntity(level: string, since: string) {
+function totalsByEntity(level: string, w: DateWindow) {
   return db
     .select({
       entityId: schema.insightsDaily.entityId,
@@ -36,17 +36,23 @@ function totalsByEntity(level: string, since: string) {
       reach: sql<number>`coalesce(max(${schema.insightsDaily.reach}),0)`,
     })
     .from(schema.insightsDaily)
-    .where(and(eq(schema.insightsDaily.level, level), gte(schema.insightsDaily.date, since)))
+    .where(
+      and(
+        eq(schema.insightsDaily.level, level),
+        gte(schema.insightsDaily.date, w.since),
+        lte(schema.insightsDaily.date, w.until),
+      ),
+    )
     .groupBy(schema.insightsDaily.entityId);
 }
 
 /** Action sums keyed `${entityId}:${action_type}` at a level (actions live in jsonb). */
-async function actionTotals(level: string, since: string): Promise<Map<string, number>> {
+async function actionTotals(level: string, w: DateWindow): Promise<Map<string, number>> {
   const rows = await db.execute(sql`
     select entity_id, elem->>'action_type' as type, sum((elem->>'value')::double precision) as val
     from insights_daily
     cross join lateral jsonb_array_elements(actions) elem
-    where level = ${level} and date >= ${since}
+    where level = ${level} and date >= ${w.since} and date <= ${w.until}
     group by 1, 2
   `);
   const out = new Map<string, number>();
@@ -78,7 +84,7 @@ function dominantLabel(m: Map<string, number>): string {
  * campaign contributes its objective's result action (reach for awareness),
  * summed from campaign-level insights — no ecommerce ROAS assumption.
  */
-export async function objectiveResults(since: string): Promise<{
+export async function objectiveResults(w: DateWindow): Promise<{
   campaign: Map<string, ScopeResult>;
   account: Map<string, ScopeResult>;
   total: ScopeResult;
@@ -91,8 +97,8 @@ export async function objectiveResults(since: string): Promise<{
         objective: schema.campaigns.objective,
       })
       .from(schema.campaigns),
-    actionTotals("campaign", since),
-    totalsByEntity("campaign", since),
+    actionTotals("campaign", w),
+    totalsByEntity("campaign", w),
   ]);
   const spendReach = new Map(totals.map((t) => [t.entityId, t]));
   const campaign = new Map<string, ScopeResult>();
@@ -146,12 +152,10 @@ async function sumWindow(since: string, before?: string, entityId?: string): Pro
 }
 
 /** Period-over-period deltas: current trailing window vs the preceding window of equal length. */
-export async function windowDeltas(days: number, entityId?: string): Promise<KpiDeltas> {
-  const since = windowStart(days);
-  const prevSince = windowStart(days * 2);
+export async function windowDeltas(w: DateWindow, entityId?: string): Promise<KpiDeltas> {
   const [cur, prev] = await Promise.all([
-    sumWindow(since, undefined, entityId),
-    sumWindow(prevSince, since, entityId),
+    sumWindow(w.since, addDays(w.until, 1), entityId),
+    sumWindow(w.prevSince, w.since, entityId),
   ]);
   const c = deriveKpis(cur);
   const p = deriveKpis(prev);
@@ -169,8 +173,12 @@ export async function windowDeltas(days: number, entityId?: string): Promise<Kpi
 }
 
 /** Daily account-level series for trend charts and KPI sparklines. */
-async function fetchTrend(since: string, entityId?: string): Promise<TrendPoint[]> {
-  const conds = [eq(schema.insightsDaily.level, "account"), gte(schema.insightsDaily.date, since)];
+async function fetchTrend(w: DateWindow, entityId?: string): Promise<TrendPoint[]> {
+  const conds = [
+    eq(schema.insightsDaily.level, "account"),
+    gte(schema.insightsDaily.date, w.since),
+    lte(schema.insightsDaily.date, w.until),
+  ];
   if (entityId) conds.push(eq(schema.insightsDaily.entityId, entityId));
   const rows = await db
     .select({
@@ -197,15 +205,13 @@ async function fetchTrend(since: string, entityId?: string): Promise<TrendPoint[
   }));
 }
 
-export async function fetchAccounts(days: number): Promise<AdAccount[]> {
-  const since = windowStart(days);
+export async function fetchAccounts(w: DateWindow): Promise<AdAccount[]> {
   const accounts = await db.select().from(schema.accounts);
-  const totals = await totalsByEntity("account", since);
+  const totals = await totalsByEntity("account", w);
   const totalsById = new Map(totals.map((t) => [t.entityId, t]));
-  const results = (await objectiveResults(since)).account;
+  const results = (await objectiveResults(w)).account;
 
   // daily spend per account for sparklines
-  const sparkSince = windowStart(days);
   const sparkRows = await db
     .select({
       entityId: schema.insightsDaily.entityId,
@@ -214,7 +220,11 @@ export async function fetchAccounts(days: number): Promise<AdAccount[]> {
     })
     .from(schema.insightsDaily)
     .where(
-      and(eq(schema.insightsDaily.level, "account"), gte(schema.insightsDaily.date, sparkSince)),
+      and(
+        eq(schema.insightsDaily.level, "account"),
+        gte(schema.insightsDaily.date, w.since),
+        lte(schema.insightsDaily.date, w.until),
+      ),
     )
     .groupBy(schema.insightsDaily.entityId, schema.insightsDaily.date)
     .orderBy(schema.insightsDaily.date);
@@ -249,7 +259,7 @@ export async function fetchAccounts(days: number): Promise<AdAccount[]> {
   });
 }
 
-export async function fetchOverview(days: number): Promise<{
+export async function fetchOverview(w: DateWindow): Promise<{
   kpis: Kpis;
   deltas: KpiDeltas;
   results: ScopeResult;
@@ -257,8 +267,7 @@ export async function fetchOverview(days: number): Promise<{
   topCampaigns: Campaign[];
   trend: TrendPoint[];
 }> {
-  const since = windowStart(days);
-  const accounts = await fetchAccounts(days);
+  const accounts = await fetchAccounts(w);
   const totals: Totals = accounts.reduce(
     (s, a) => ({
       spend: s.spend + a.spend,
@@ -271,9 +280,9 @@ export async function fetchOverview(days: number): Promise<{
     { spend: 0, impressions: 0, clicks: 0, conversions: 0, revenue: 0, reach: 0 },
   );
   const [trend, deltas, campaigns] = await Promise.all([
-    fetchTrend(since),
-    windowDeltas(days),
-    fetchCampaigns(days),
+    fetchTrend(w),
+    windowDeltas(w),
+    fetchCampaigns(w),
   ]);
   const labelSpend = new Map<string, number>();
   for (const c of campaigns)
@@ -292,20 +301,24 @@ export async function fetchOverview(days: number): Promise<{
 }
 
 /** All de-duplicated conversion/engagement events across every ad account (chat get_overview). */
-export async function fetchOverviewEvents(days: number): Promise<ClientEvent[]> {
-  const since = windowStart(days);
+export async function fetchOverviewEvents(w: DateWindow): Promise<ClientEvent[]> {
   const rows = await db
     .select({
       actions: schema.insightsDaily.actions,
       actionValues: schema.insightsDaily.actionValues,
     })
     .from(schema.insightsDaily)
-    .where(and(eq(schema.insightsDaily.level, "account"), gte(schema.insightsDaily.date, since)));
+    .where(
+      and(
+        eq(schema.insightsDaily.level, "account"),
+        gte(schema.insightsDaily.date, w.since),
+        lte(schema.insightsDaily.date, w.until),
+      ),
+    );
   return canonicalEvents(rows);
 }
 
-export async function fetchCampaigns(days: number, accountIds?: string[]): Promise<Campaign[]> {
-  const since = windowStart(days);
+export async function fetchCampaigns(w: DateWindow, accountIds?: string[]): Promise<Campaign[]> {
   // Optional account scope (used by the per-client view). Empty = no rows.
   const inAccts = accountIds ? inArray(schema.campaigns.accountId, accountIds) : undefined;
   const inAcctsSet = accountIds ? inArray(schema.adSets.accountId, accountIds) : undefined;
@@ -326,10 +339,10 @@ export async function fetchCampaigns(days: number, accountIds?: string[]): Promi
     db.select().from(schema.ads).where(inAcctsAd),
     db.select().from(schema.accounts),
     db.select().from(schema.adCreatives),
-    totalsByEntity("campaign", since),
-    totalsByEntity("adset", since),
-    totalsByEntity("ad", since),
-    actionTotals("ad", since),
+    totalsByEntity("campaign", w),
+    totalsByEntity("adset", w),
+    totalsByEntity("ad", w),
+    actionTotals("ad", w),
   ]);
   const accName = new Map(accountRows.map((a) => [a.id, a.name]));
   const creativeById = new Map(creativeRows.map((c) => [c.id, c]));
@@ -435,21 +448,20 @@ export async function fetchCampaigns(days: number, accountIds?: string[]): Promi
 
 export async function fetchAccount(
   id: string,
-  days: number,
+  w: DateWindow,
 ): Promise<{
   account: AdAccount;
   deltas: KpiDeltas;
   campaigns: Campaign[];
   trend: TrendPoint[];
 } | null> {
-  const accounts = await fetchAccounts(days);
+  const accounts = await fetchAccounts(w);
   const account = accounts.find((a) => a.id === id);
   if (!account) return null;
-  const since = windowStart(days);
   const [allCampaigns, trend, deltas] = await Promise.all([
-    fetchCampaigns(days),
-    fetchTrend(since, id),
-    windowDeltas(days, id),
+    fetchCampaigns(w),
+    fetchTrend(w, id),
+    windowDeltas(w, id),
   ]);
   return {
     account,
@@ -459,8 +471,8 @@ export async function fetchAccount(
   };
 }
 
-export async function fetchCreatives(days: number): Promise<CreativeCard[]> {
-  const campaigns = await fetchCampaigns(days);
+export async function fetchCreatives(w: DateWindow): Promise<CreativeCard[]> {
+  const campaigns = await fetchCampaigns(w);
   const out: CreativeCard[] = [];
   for (const c of campaigns) {
     for (const s of c.adSets) {
@@ -472,7 +484,7 @@ export async function fetchCreatives(days: number): Promise<CreativeCard[]> {
 }
 
 export async function fetchBreakdowns(
-  days: number,
+  w: DateWindow,
   scope?: { accountIds?: string[]; campaignId?: string },
 ): Promise<
   Record<"age" | "gender" | "publisher_platform" | "device_platform" | "country", BreakdownRow[]>
@@ -491,18 +503,19 @@ export async function fetchBreakdowns(
     >;
   // A client scoped to zero mapped accounts has nothing to show.
   if (!scope?.campaignId && scope?.accountIds && scope.accountIds.length === 0) return shaped();
-  const since = windowStart(days);
   // Campaign scope reads campaign-level rows; otherwise account-level (the all-accounts /
   // client view). Both levels coexist in the table, so the level filter is required.
   const conds = scope?.campaignId
     ? [
         eq(schema.insightsBreakdownDaily.level, "campaign"),
         eq(schema.insightsBreakdownDaily.entityId, scope.campaignId),
-        gte(schema.insightsBreakdownDaily.date, since),
+        gte(schema.insightsBreakdownDaily.date, w.since),
+        lte(schema.insightsBreakdownDaily.date, w.until),
       ]
     : [
         eq(schema.insightsBreakdownDaily.level, "account"),
-        gte(schema.insightsBreakdownDaily.date, since),
+        gte(schema.insightsBreakdownDaily.date, w.since),
+        lte(schema.insightsBreakdownDaily.date, w.until),
       ];
   if (!scope?.campaignId && scope?.accountIds)
     conds.push(inArray(schema.insightsBreakdownDaily.accountId, scope.accountIds));
@@ -617,9 +630,9 @@ function toCsv(headers: string[], rows: (string | number)[][]): string {
   return [headers, ...rows].map((r) => r.map(esc).join(",")).join("\n");
 }
 
-export async function exportCsv(kind: CsvKind, days: number): Promise<string> {
+export async function exportCsv(kind: CsvKind, w: DateWindow): Promise<string> {
   if (kind === "campaigns") {
-    const rows = await fetchCampaigns(days);
+    const rows = await fetchCampaigns(w);
     return toCsv(
       [
         "id",
@@ -650,7 +663,7 @@ export async function exportCsv(kind: CsvKind, days: number): Promise<string> {
     );
   }
   if (kind === "creatives") {
-    const rows = await fetchCreatives(days);
+    const rows = await fetchCreatives(w);
     return toCsv(
       ["id", "name", "account", "campaign", "format", "spend", "impressions", "ctr", "cpc", "roas"],
       rows.map((x) => [
@@ -668,7 +681,7 @@ export async function exportCsv(kind: CsvKind, days: number): Promise<string> {
     );
   }
   if (kind === "breakdowns") {
-    const b = await fetchBreakdowns(days);
+    const b = await fetchBreakdowns(w);
     const rows: (string | number)[][] = [];
     for (const [dim, items] of Object.entries(b)) {
       for (const it of items)
@@ -676,7 +689,7 @@ export async function exportCsv(kind: CsvKind, days: number): Promise<string> {
     }
     return toCsv(["dimension", "value", "spend", "conversions", "roas"], rows);
   }
-  const rows = await fetchAccounts(days);
+  const rows = await fetchAccounts(w);
   return toCsv(
     ["id", "name", "status", "spend", "impressions", "clicks", "conversions", "ctr", "cpc", "roas"],
     rows.map((x) => [

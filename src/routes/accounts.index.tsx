@@ -7,7 +7,7 @@ import { listAccounts } from "@/lib/api/dashboard";
 import { fmtCurrency, fmtCompact, fmtPct } from "@/lib/format";
 import { ArrowUpDown, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { scopedSearch, accountScope, toRange } from "@/lib/range";
+import { scopedSearch, accountScope, rangeSpec } from "@/lib/range";
 
 export const Route = createFileRoute("/accounts/")({
   head: () => ({
@@ -20,8 +20,8 @@ export const Route = createFileRoute("/accounts/")({
     ],
   }),
   validateSearch: scopedSearch,
-  loaderDeps: ({ search }) => ({ range: toRange(search.range) }),
-  loader: async ({ deps: { range } }) => ({ accounts: await listAccounts({ data: range }) }),
+  loaderDeps: ({ search }) => rangeSpec(search),
+  loader: async ({ deps }) => ({ accounts: await listAccounts({ data: deps }) }),
   component: Accounts,
 });
 

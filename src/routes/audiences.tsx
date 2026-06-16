@@ -4,7 +4,7 @@ import { BreakdownBar } from "@/components/dashboard/BreakdownBar";
 import { getBreakdowns, getCampaignOptions } from "@/lib/api/dashboard";
 import { listClients } from "@/lib/api/clients";
 import { fmtCurrency, fmtCompact } from "@/lib/format";
-import { rangeSearch, toRange, accountScope, type RangeDays } from "@/lib/range";
+import { rangeSearch, accountScope, rangeSpec, type RangeDays } from "@/lib/range";
 
 export const Route = createFileRoute("/audiences")({
   head: () => ({
@@ -18,7 +18,14 @@ export const Route = createFileRoute("/audiences")({
   }),
   validateSearch: (
     search: Record<string, unknown>,
-  ): { range?: RangeDays; client?: string; campaign?: string; accounts?: string } => ({
+  ): {
+    range?: RangeDays;
+    from?: string;
+    to?: string;
+    client?: string;
+    campaign?: string;
+    accounts?: string;
+  } => ({
     ...rangeSearch(search),
     ...(typeof search.client === "string" && search.client ? { client: search.client } : {}),
     ...(typeof search.campaign === "string" && search.campaign
@@ -29,16 +36,18 @@ export const Route = createFileRoute("/audiences")({
       : {}),
   }),
   loaderDeps: ({ search }) => ({
-    range: toRange(search.range),
+    ...rangeSpec(search),
     client: search.client,
     campaign: search.campaign,
     accounts: search.accounts,
   }),
-  loader: async ({ deps: { range, client, campaign, accounts } }) => {
+  loader: async ({ deps: { days, from, to, client, campaign, accounts } }) => {
     // Page-local client/campaign override the global header account scope.
     const accountIds = client || campaign ? undefined : [...accountScope(accounts)];
     const [breakdowns, clients, campaigns] = await Promise.all([
-      getBreakdowns({ data: { days: range, clientId: client, campaignId: campaign, accountIds } }),
+      getBreakdowns({
+        data: { days, from, to, clientId: client, campaignId: campaign, accountIds },
+      }),
       listClients(),
       client ? getCampaignOptions({ data: { clientId: client } }) : Promise.resolve([]),
     ]);

@@ -6,15 +6,15 @@ import { StatusPill } from "@/components/dashboard/StatusPill";
 import { getAccount } from "@/lib/api/dashboard";
 import { fmtCurrency, fmtCompact, fmtPct } from "@/lib/format";
 import { ChevronLeft } from "lucide-react";
-import { rangeSearch, toRange, RANGE_LABELS } from "@/lib/range";
+import { rangeSearch, rangeSpec, rangeLabel } from "@/lib/range";
 import { kpiSparks } from "@/lib/sparks";
 import { useSort, SortHeader } from "@/components/dashboard/SortableTable";
 
 export const Route = createFileRoute("/accounts/$id")({
   validateSearch: rangeSearch,
-  loaderDeps: ({ search }) => ({ range: toRange(search.range) }),
-  loader: async ({ params, deps: { range } }) => {
-    const data = await getAccount({ data: { id: params.id, days: range } });
+  loaderDeps: ({ search }) => rangeSpec(search),
+  loader: async ({ params, deps }) => {
+    const data = await getAccount({ data: { id: params.id, ...deps } });
     if (!data) throw notFound();
     return data;
   },
@@ -40,7 +40,7 @@ export const Route = createFileRoute("/accounts/$id")({
 
 function AccountDetail() {
   const { account, deltas, campaigns: accountCampaigns, trend } = Route.useLoaderData();
-  const { range } = Route.useLoaderDeps();
+  const { days, from, to } = Route.useLoaderDeps();
   const sparks = kpiSparks(trend);
   const { sorted, key, dir, toggle } = useSort(
     accountCampaigns,
@@ -107,7 +107,7 @@ function AccountDetail() {
       <section className="rounded-xl border border-border bg-card p-5">
         <h3 className="text-sm font-semibold mb-1">Performance Trend</h3>
         <p className="text-xs text-muted-foreground mb-2">
-          {RANGE_LABELS[range]} · spend &amp; conversions
+          {rangeLabel({ range: days, from, to })} · spend &amp; conversions
         </p>
         <TrendChart data={trend} />
       </section>

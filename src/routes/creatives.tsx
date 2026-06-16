@@ -6,7 +6,7 @@ import { listCreatives } from "@/lib/api/dashboard";
 import { fmtCurrency, fmtPct, fmtCompact } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { Play } from "lucide-react";
-import { scopedSearch, accountScope, toRange } from "@/lib/range";
+import { scopedSearch, accountScope, rangeSpec } from "@/lib/range";
 
 export const Route = createFileRoute("/creatives")({
   head: () => ({
@@ -16,8 +16,8 @@ export const Route = createFileRoute("/creatives")({
     ],
   }),
   validateSearch: scopedSearch,
-  loaderDeps: ({ search }) => ({ range: toRange(search.range) }),
-  loader: async ({ deps: { range } }) => ({ creatives: await listCreatives({ data: range }) }),
+  loaderDeps: ({ search }) => rangeSpec(search),
+  loader: async ({ deps }) => ({ creatives: await listCreatives({ data: deps }) }),
   component: Creatives,
 });
 
