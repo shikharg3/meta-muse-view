@@ -7,6 +7,7 @@ import {
   useRouterState,
   HeadContent,
   Scripts,
+  retainSearchParams,
 } from "@tanstack/react-router";
 import { useEffect, type ReactNode } from "react";
 
@@ -16,6 +17,7 @@ import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/layout/AppSidebar";
 import { TopBar } from "@/components/layout/TopBar";
 import { getAccountOptions, getBusinessSummary } from "@/lib/api/dashboard";
+import { getClientFilterOptions } from "@/lib/api/clients";
 import { getCurrentUser } from "@/lib/api/auth";
 import type { PublicUser } from "@/lib/auth/users";
 
@@ -80,6 +82,7 @@ function ErrorComponent({ error, reset }: { error: Error; reset: () => void }) {
 }
 
 export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()({
+  search: { middlewares: [retainSearchParams(["range", "accounts"])] },
   head: () => ({
     meta: [
       { charSet: "utf-8" },
@@ -118,10 +121,19 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
     const user = await getCurrentUser();
     // Only the approved app shell needs business/account data.
     if (!user || user.status !== "approved") {
-      return { user, business: null, accounts: [] as { id: string; name: string }[] };
+      return {
+        user,
+        business: null,
+        accounts: [] as { id: string; name: string }[],
+        filterClients: [] as { id: string; name: string; accountIds: string[] }[],
+      };
     }
-    const [business, accounts] = await Promise.all([getBusinessSummary(), getAccountOptions()]);
-    return { user, business, accounts };
+    const [business, accounts, filterClients] = await Promise.all([
+      getBusinessSummary(),
+      getAccountOptions(),
+      getClientFilterOptions(),
+    ]);
+    return { user, business, accounts, filterClients };
   },
   shellComponent: RootShell,
   component: RootComponent,
@@ -165,7 +177,7 @@ function PendingScreen({ user }: { user: PublicUser }) {
 
 function RootComponent() {
   const { queryClient } = Route.useRouteContext();
-  const { user, business, accounts } = Route.useLoaderData();
+  const { user, business, accounts, filterClients } = Route.useLoaderData();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const bare = pathname === "/login" || pathname === "/signup";
 
@@ -179,7 +191,12 @@ function RootComponent() {
         <SidebarProvider>
           <AppSidebar user={user} />
           <SidebarInset>
-            <TopBar business={business!} accounts={accounts} isAdmin={user.role === "admin"} />
+            <TopBar
+              business={business!}
+              accounts={accounts}
+              filterClients={filterClients}
+              isAdmin={user.role === "admin"}
+            />
             <main className="flex-1 overflow-x-hidden">
               <Outlet />
             </main>

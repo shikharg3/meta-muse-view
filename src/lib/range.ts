@@ -20,3 +20,21 @@ export function rangeSearch(search: Record<string, unknown>): { range?: RangeDay
   const n = Number(search.range);
   return (RANGE_DAYS as readonly number[]).includes(n) ? { range: n as RangeDays } : {};
 }
+
+/** validateSearch helper that keeps both ?range= and the global ?accounts= scope. */
+export function scopedSearch(search: Record<string, unknown>): {
+  range?: RangeDays;
+  accounts?: string;
+} {
+  return {
+    ...rangeSearch(search),
+    ...(typeof search.accounts === "string" && search.accounts
+      ? { accounts: search.accounts }
+      : {}),
+  };
+}
+
+/** Parse the global ?accounts= scope (comma-joined act ids); empty Set = no filter. */
+export function accountScope(accounts: unknown): Set<string> {
+  return new Set(typeof accounts === "string" ? accounts.split(",").filter(Boolean) : []);
+}

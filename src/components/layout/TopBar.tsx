@@ -4,6 +4,7 @@ import { SidebarTrigger } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
 import { CloudDownload, Download, RefreshCw } from "lucide-react";
 import { AccountSwitcher } from "./AccountSwitcher";
+import { GlobalClientFilter, type FilterClient } from "./GlobalClientFilter";
 import { GlobalSearch } from "./GlobalSearch";
 import { RangePicker } from "./RangePicker";
 import { getExportCsv } from "@/lib/api/dashboard";
@@ -120,6 +121,7 @@ function SyncNowButton({ running }: { running: boolean }) {
 export function TopBar({
   business,
   accounts,
+  filterClients,
   isAdmin = false,
 }: {
   business: {
@@ -129,6 +131,7 @@ export function TopBar({
     syncRunning: boolean;
   };
   accounts: { id: string; name: string }[];
+  filterClients: FilterClient[];
   isAdmin?: boolean;
 }) {
   const path = useRouterState({ select: (s) => s.location.pathname });
@@ -156,6 +159,7 @@ export function TopBar({
       <div className="h-6 w-px bg-border mx-1" />
 
       <AccountSwitcher business={business} accounts={accounts} />
+      <GlobalClientFilter clients={filterClients} />
       <GlobalSearch />
 
       <div className="flex-1 lg:hidden" />

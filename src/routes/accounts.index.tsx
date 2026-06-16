@@ -7,7 +7,7 @@ import { listAccounts } from "@/lib/api/dashboard";
 import { fmtCurrency, fmtCompact, fmtPct } from "@/lib/format";
 import { ArrowUpDown, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { rangeSearch, toRange } from "@/lib/range";
+import { scopedSearch, accountScope, toRange } from "@/lib/range";
 
 export const Route = createFileRoute("/accounts/")({
   head: () => ({
@@ -19,7 +19,7 @@ export const Route = createFileRoute("/accounts/")({
       },
     ],
   }),
-  validateSearch: rangeSearch,
+  validateSearch: scopedSearch,
   loaderDeps: ({ search }) => ({ range: toRange(search.range) }),
   loader: async ({ deps: { range } }) => ({ accounts: await listAccounts({ data: range }) }),
   component: Accounts,
@@ -33,10 +33,13 @@ function Accounts() {
   const [sort, setSort] = useState<SortKey>("spend");
   const [dir, setDir] = useState<"asc" | "desc">("desc");
   const [status, setStatus] = useState<string>("ALL");
+  const scopeParam = Route.useSearch().accounts ?? "";
 
   const filtered = useMemo(() => {
+    const scope = accountScope(scopeParam);
     const list = accounts.filter(
       (a) =>
+        (scope.size === 0 || scope.has(a.id)) &&
         (status === "ALL" || a.status === status) &&
         (q.trim() === "" || a.name.toLowerCase().includes(q.toLowerCase()) || a.id.includes(q)),
     );
@@ -47,7 +50,7 @@ function Accounts() {
         typeof av === "string" ? av.localeCompare(bv as string) : (av as number) - (bv as number);
       return dir === "asc" ? cmp : -cmp;
     });
-  }, [accounts, q, sort, dir, status]);
+  }, [accounts, q, sort, dir, status, scopeParam]);
 
   const toggle = (k: SortKey) => {
     if (sort === k) setDir(dir === "asc" ? "desc" : "asc");

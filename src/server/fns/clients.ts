@@ -361,3 +361,14 @@ export async function fetchClientBudgets(clientId: string): Promise<CampaignBudg
     })
     .sort((a, b) => b.spent - a.spent);
 }
+
+/** Clients with their effective account ids — for the global header filter. */
+export async function fetchClientFilterOptions(): Promise<
+  { id: string; name: string; accountIds: string[] }[]
+> {
+  const rows = await db.select().from(schema.clients);
+  return rows
+    .map((r) => ({ id: r.id, name: r.name, accountIds: effectiveAccountIds(r) }))
+    .filter((c) => c.accountIds.length > 0)
+    .sort((a, b) => a.name.localeCompare(b.name));
+}

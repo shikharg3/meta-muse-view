@@ -5,7 +5,7 @@ import { CampaignTable } from "@/components/dashboard/CampaignTable";
 import { listCampaigns } from "@/lib/api/dashboard";
 import { Search, X } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { rangeSearch, toRange, type RangeDays } from "@/lib/range";
+import { rangeSearch, accountScope, toRange, type RangeDays } from "@/lib/range";
 
 export const Route = createFileRoute("/campaigns")({
   head: () => ({
@@ -14,9 +14,12 @@ export const Route = createFileRoute("/campaigns")({
       { name: "description", content: "Hierarchical campaign, ad set, and ad explorer." },
     ],
   }),
-  validateSearch: (s: Record<string, unknown>): { range?: RangeDays; account?: string } => ({
+  validateSearch: (
+    s: Record<string, unknown>,
+  ): { range?: RangeDays; account?: string; accounts?: string } => ({
     ...rangeSearch(s),
     ...(typeof s.account === "string" && s.account ? { account: s.account } : {}),
+    ...(typeof s.accounts === "string" && s.accounts ? { accounts: s.accounts } : {}),
   }),
   loaderDeps: ({ search }) => ({ range: toRange(search.range) }),
   loader: async ({ deps: { range } }) => ({ campaigns: await listCampaigns({ data: range }) }),
@@ -25,7 +28,7 @@ export const Route = createFileRoute("/campaigns")({
 
 function CampaignsExplorer() {
   const { campaigns } = Route.useLoaderData();
-  const { account } = Route.useSearch();
+  const { account, accounts: scopeParam } = Route.useSearch();
   const navigate = useNavigate({ from: "/campaigns" });
   const [q, setQ] = useState("");
   const [objective, setObjective] = useState("ALL");
@@ -38,18 +41,18 @@ function CampaignsExplorer() {
     () => campaigns.find((c) => c.accountId === account)?.accountName ?? account,
     [campaigns, account],
   );
-  const filtered = useMemo(
-    () =>
-      campaigns.filter(
-        (c) =>
-          (!account || c.accountId === account) &&
-          (objective === "ALL" || c.objective === objective) &&
-          (q.trim() === "" ||
-            c.name.toLowerCase().includes(q.toLowerCase()) ||
-            c.accountName.toLowerCase().includes(q.toLowerCase())),
-      ),
-    [campaigns, q, objective, account],
-  );
+  const filtered = useMemo(() => {
+    const scope = accountScope(scopeParam);
+    return campaigns.filter(
+      (c) =>
+        (scope.size === 0 || scope.has(c.accountId)) &&
+        (!account || c.accountId === account) &&
+        (objective === "ALL" || c.objective === objective) &&
+        (q.trim() === "" ||
+          c.name.toLowerCase().includes(q.toLowerCase()) ||
+          c.accountName.toLowerCase().includes(q.toLowerCase())),
+    );
+  }, [campaigns, q, objective, account, scopeParam]);
 
   return (
     <div className="p-6 md:p-8 space-y-6 max-w-[1600px]">

@@ -6,7 +6,7 @@ import { listCreatives } from "@/lib/api/dashboard";
 import { fmtCurrency, fmtPct, fmtCompact } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { Play } from "lucide-react";
-import { rangeSearch, toRange } from "@/lib/range";
+import { scopedSearch, accountScope, toRange } from "@/lib/range";
 
 export const Route = createFileRoute("/creatives")({
   head: () => ({
@@ -15,7 +15,7 @@ export const Route = createFileRoute("/creatives")({
       { name: "description", content: "Creative gallery with performance overlays across the BM." },
     ],
   }),
-  validateSearch: rangeSearch,
+  validateSearch: scopedSearch,
   loaderDeps: ({ search }) => ({ range: toRange(search.range) }),
   loader: async ({ deps: { range } }) => ({ creatives: await listCreatives({ data: range }) }),
   component: Creatives,
@@ -23,12 +23,16 @@ export const Route = createFileRoute("/creatives")({
 
 function Creatives() {
   const { creatives } = Route.useLoaderData();
+  const scopeParam = Route.useSearch().accounts ?? "";
   const [format, setFormat] = useState("ALL");
   const formats = ["ALL", "Image", "Video", "Carousel", "Collection"];
-  const filtered = useMemo(
-    () => creatives.filter((c) => format === "ALL" || c.format === format),
-    [creatives, format],
-  );
+  const filtered = useMemo(() => {
+    const scope = accountScope(scopeParam);
+    return creatives.filter(
+      (c) =>
+        (scope.size === 0 || scope.has(c.accountId)) && (format === "ALL" || c.format === format),
+    );
+  }, [creatives, format, scopeParam]);
 
   return (
     <div className="p-6 md:p-8 space-y-6 max-w-[1600px]">

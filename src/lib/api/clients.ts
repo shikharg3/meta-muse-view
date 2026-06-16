@@ -4,9 +4,14 @@ import {
   fetchClientDetail,
   updateClientAccounts,
   fetchClientBudgets,
+  fetchClientFilterOptions,
 } from "@/server/fns/clients";
 
 export const listClients = createServerFn({ method: "GET" }).handler(() => fetchClients());
+
+export const getClientFilterOptions = createServerFn({ method: "GET" }).handler(() =>
+  fetchClientFilterOptions(),
+);
 
 export const getClientDetail = createServerFn({ method: "GET" })
   .inputValidator((d: { id: string; days: number }) => d)
