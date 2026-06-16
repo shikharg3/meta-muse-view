@@ -8,7 +8,7 @@ import { syncBreakdowns } from "./jobs/breakdowns";
 import { BREAKDOWN_GROUPS } from "@/meta/fieldsets";
 import { addDays } from "@/lib/range";
 import { syncClients } from "./jobs/clients";
-import { syncEdges, syncActivities } from "./jobs/objects";
+import { syncEdges, syncActivities, syncLeadForms } from "./jobs/objects";
 import {
   markSync,
   recordTokenHealth,
@@ -112,6 +112,7 @@ function buildJobs(): Jobs {
       try {
         await syncEdges(client, id);
         await syncActivities(client, id, { days: 90 });
+        await syncLeadForms(client, id);
       } catch (e) {
         console.error(`[sync] objects ${id} failed:`, e instanceof Error ? e.message : e);
       }

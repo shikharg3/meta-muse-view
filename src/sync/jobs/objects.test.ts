@@ -1,7 +1,7 @@
 import { test, expect, beforeEach } from "bun:test";
 import { sql } from "drizzle-orm";
 import { db, schema } from "@/db/client";
-import { syncEdges, syncActivities } from "./objects";
+import { syncEdges, syncActivities, syncLeadForms } from "./objects";
 import type { GraphNode, InsightsClient } from "@/meta/types";
 
 function edgeClient(byEdge: Record<string, GraphNode[]>): InsightsClient {
@@ -67,4 +67,34 @@ test("syncActivities dedupes change-history events on re-pull", async () => {
   expect(rows).toHaveLength(1);
   expect(rows[0].eventType).toBe("update_campaign_budget");
   expect(rows[0].actorName).toBe("Jane");
+});
+
+test("syncLeadForms captures form metadata via pages, and no-ops without page access", async () => {
+  const ok: InsightsClient = {
+    getAccounts: async () => [],
+    getInsights: async () => [],
+    debugToken: async () => ({ is_valid: true, scopes: [] }),
+    getChildren: async (_p, edge) => {
+      if (edge === "promote_pages") return [{ id: "pg1", name: "Page 1" }];
+      if (edge === "leadgen_forms")
+        return [{ id: "lf1", name: "Demo Form", status: "ACTIVE", leads_count: 42 }];
+      return [];
+    },
+  };
+  expect(await syncLeadForms(ok, "act_1")).toBe(1);
+  const rows = await db.select().from(schema.metaObjects);
+  expect(rows[0].objectType).toBe("leadgen_form");
+  expect(rows[0].name).toBe("Demo Form");
+  expect((rows[0].raw as Record<string, unknown>).leads_count).toBe(42);
+
+  const blocked: InsightsClient = {
+    getAccounts: async () => [],
+    getInsights: async () => [],
+    debugToken: async () => ({ is_valid: true, scopes: [] }),
+    getChildren: async (_p, edge) => {
+      if (edge === "promote_pages") throw new Error("(#10) permission");
+      return [];
+    },
+  };
+  expect(await syncLeadForms(blocked, "act_2")).toBe(0);
 });

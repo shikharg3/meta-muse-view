@@ -156,3 +156,48 @@ export async function syncActivities(
   }
   return written;
 }
+
+const LEADFORM_FIELDS = ["id", "name", "status", "leads_count", "locale", "created_time", "page"];
+
+/**
+ * Best-effort lead-form metadata capture (form name/status/count — NOT submissions, which are PII
+ * and need page-level leads_retrieval). Traverses the account's promotable pages → leadgen_forms,
+ * skipping silently where the token lacks page access. Stored in meta_objects as "leadgen_form".
+ */
+export async function syncLeadForms(client: InsightsClient, accountId: string): Promise<number> {
+  let pages: GraphNode[];
+  try {
+    pages = await client.getChildren(accountId, "promote_pages", ["id", "name"], { limit: 50 });
+  } catch {
+    return 0; // no page access for this token — nothing capturable
+  }
+  let written = 0;
+  for (const page of pages) {
+    try {
+      const forms = await client.getChildren(String(page.id), "leadgen_forms", LEADFORM_FIELDS, {
+        limit: 100,
+      });
+      for (const f of forms) {
+        const vals = {
+          objectType: "leadgen_form",
+          id: String(f.id),
+          accountId,
+          name: str(f.name),
+          raw: f,
+          syncedAt: new Date(),
+        };
+        await db
+          .insert(schema.metaObjects)
+          .values(vals)
+          .onConflictDoUpdate({
+            target: [schema.metaObjects.objectType, schema.metaObjects.id],
+            set: vals,
+          });
+        written++;
+      }
+    } catch {
+      // page lacks leads access — skip, capture what we can elsewhere
+    }
+  }
+  return written;
+}
