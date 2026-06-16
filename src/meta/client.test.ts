@@ -100,3 +100,29 @@ test("drops fields Meta rejects, then remembers them for later calls", async () 
   expect(urls).toHaveLength(1);
   expect(urls[0]).not.toContain("bad_field");
 });
+
+test("isolates an unnamed permission-gated field by bisection, then remembers it", async () => {
+  const urls: string[] = [];
+  const fetchImpl = async (url: string | URL) => {
+    const u = String(url);
+    urls.push(u);
+    const fields = (new URL(u).searchParams.get("fields") ?? "").split(",").filter(Boolean);
+    if (fields.includes("gated"))
+      return jsonResponse({
+        error: { code: 10, message: "(#10) Application does not have permission for this action" },
+      });
+    return jsonResponse({ data: [{ id: "ok" }] });
+  };
+  const client = new MetaClient(
+    { appId: "1", appSecret: "s", token: "t", version: "v25.0" },
+    { fetchImpl: fetchImpl as unknown as typeof fetch, sleep: async () => {} },
+  );
+  const rows = await client.getChildren("act_1", "campaigns", ["id", "gated", "name", "status"]);
+  expect(rows[0].id).toBe("ok"); // bisected out the gated field, request succeeded
+  // Second call remembers "gated": no error round-trip, one clean request omitting it.
+  urls.length = 0;
+  const rows2 = await client.getChildren("act_1", "campaigns", ["id", "gated", "name", "status"]);
+  expect(rows2[0].id).toBe("ok");
+  expect(urls).toHaveLength(1);
+  expect(urls.every((u) => !u.includes("gated"))).toBe(true);
+});

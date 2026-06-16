@@ -109,7 +109,24 @@ export class MetaClient implements InsightsClient {
 
   private badFields = new Map<string, Set<string>>();
 
-  /** Pull field names Meta rejected out of an error message ("nonexisting field (x)"). */
+  private stripBad(memoKey: string, fields: string[]): string[] {
+    const bad = this.badFields.get(memoKey);
+    return bad ? fields.filter((f) => !bad.has(f)) : fields;
+  }
+
+  private recordBad(memoKey: string, fields: string[]): void {
+    const set = this.badFields.get(memoKey) ?? new Set<string>();
+    for (const f of fields) set.add(f);
+    this.badFields.set(memoKey, set);
+  }
+
+  /** #100 (nonexisting), #10 (permission) and #3 (unknown) all mean "a field must be dropped". */
+  private isFieldError(e: unknown): boolean {
+    const m = e instanceof Error ? e.message : "";
+    return /error (?:100|10|3):|nonexisting field|not have permission|[Uu]nknown fields?/.test(m);
+  }
+
+  /** Field names Meta named in the error, if any ("nonexisting field (x)" / "Unknown fields: x"). */
   private parseBadFields(message: string): string[] {
     const out: string[] = [];
     const nonexisting = message.match(/nonexisting field \(([^)]+)\)/i);
@@ -119,7 +136,39 @@ export class MetaClient implements InsightsClient {
     return [...new Set(out.filter(Boolean))];
   }
 
-  /** GET a fields-bearing edge, dropping (and remembering, per memoKey) fields Meta rejects. */
+  /** Maximal accepted subset of `fields`, isolated by bisection (for unnamed #10 permission errors). */
+  private async resolveGoodFields(
+    path: string,
+    params: Record<string, unknown>,
+    accountId: string,
+    fields: string[],
+    memoKey: string,
+  ): Promise<string[]> {
+    const probe = async (fs: string[]): Promise<boolean> => {
+      try {
+        await this.getPage(path, { ...params, fields: fs, limit: 1 }, accountId);
+        return true;
+      } catch (e) {
+        if (this.isFieldError(e)) return false;
+        throw e;
+      }
+    };
+    const find = async (fs: string[]): Promise<string[]> => {
+      if (fs.length === 0) return [];
+      if (await probe(fs)) return fs;
+      if (fs.length === 1) {
+        this.recordBad(memoKey, fs);
+        return [];
+      }
+      const mid = Math.floor(fs.length / 2);
+      const left = await find(fs.slice(0, mid));
+      const right = await find(fs.slice(mid));
+      return [...left, ...right];
+    };
+    return find(fields);
+  }
+
+  /** GET a fields-bearing edge, dropping fields Meta rejects (named fast-path, else bisection). */
   private async pagedWithRecovery(
     path: string,
     params: Record<string, unknown>,
@@ -129,18 +178,20 @@ export class MetaClient implements InsightsClient {
     const requested = Array.isArray(params.fields) ? (params.fields as string[]) : null;
     if (!requested) return this.getPaged(path, params, accountId);
     for (let attempt = 0; attempt < 12; attempt++) {
-      const bad = this.badFields.get(memoKey);
-      const use = bad ? requested.filter((f) => !bad.has(f)) : requested;
+      const fields = this.stripBad(memoKey, requested);
       try {
-        return await this.getPaged(path, { ...params, fields: use }, accountId);
+        return await this.getPaged(path, { ...params, fields }, accountId);
       } catch (e) {
-        const novel = this.parseBadFields(e instanceof Error ? e.message : "").filter((f) =>
-          use.includes(f),
+        if (!this.isFieldError(e)) throw e;
+        const named = this.parseBadFields(e instanceof Error ? e.message : "").filter((f) =>
+          fields.includes(f),
         );
-        if (novel.length === 0) throw e;
-        const set = this.badFields.get(memoKey) ?? new Set<string>();
-        for (const f of novel) set.add(f);
-        this.badFields.set(memoKey, set);
+        if (named.length > 0) {
+          this.recordBad(memoKey, named);
+          continue;
+        }
+        const good = await this.resolveGoodFields(path, params, accountId, fields, memoKey);
+        return this.getPaged(path, { ...params, fields: good }, accountId);
       }
     }
     throw new Error(`Meta: could not resolve a valid field set for ${path}`);
@@ -154,18 +205,20 @@ export class MetaClient implements InsightsClient {
     accountId = "",
   ): Promise<GraphNode> {
     for (let attempt = 0; attempt < 12; attempt++) {
-      const bad = this.badFields.get(memoKey);
-      const use = bad ? fields.filter((f) => !bad.has(f)) : fields;
+      const use = this.stripBad(memoKey, fields);
       try {
         return (await this.getPage(id, { fields: use }, accountId)) as GraphNode;
       } catch (e) {
-        const novel = this.parseBadFields(e instanceof Error ? e.message : "").filter((f) =>
+        if (!this.isFieldError(e)) throw e;
+        const named = this.parseBadFields(e instanceof Error ? e.message : "").filter((f) =>
           use.includes(f),
         );
-        if (novel.length === 0) throw e;
-        const set = this.badFields.get(memoKey) ?? new Set<string>();
-        for (const f of novel) set.add(f);
-        this.badFields.set(memoKey, set);
+        if (named.length > 0) {
+          this.recordBad(memoKey, named);
+          continue;
+        }
+        const good = await this.resolveGoodFields(id, {}, accountId, use, memoKey);
+        return (await this.getPage(id, { fields: good }, accountId)) as GraphNode;
       }
     }
     throw new Error(`Meta: could not resolve a valid field set for ${id}`);
