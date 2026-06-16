@@ -143,3 +143,26 @@ test("retries Meta rate-limit error codes (#17) then succeeds", async () => {
   expect(rows[0].id).toBe("ok");
   expect(n).toBe(2);
 });
+
+test("applies a persisted field blocklist on load, skipping those fields without probing", async () => {
+  const urls: string[] = [];
+  const fetchImpl = async (url: string | URL) => {
+    urls.push(String(url));
+    return jsonResponse({ data: [{ id: "ok" }] });
+  };
+  const client = new MetaClient(
+    { appId: "1", appSecret: "s", token: "t", version: "v25.0" },
+    {
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      sleep: async () => {},
+      fieldStore: {
+        load: async (k) => (k === "campaigns" ? ["gated"] : []),
+        save: async () => {},
+      },
+    },
+  );
+  const rows = await client.getChildren("act_1", "campaigns", ["id", "gated", "name"]);
+  expect(rows[0].id).toBe("ok");
+  expect(urls).toHaveLength(1); // blocklist applied up front: no error round-trip, no bisection
+  expect(urls[0]).not.toContain("gated");
+});

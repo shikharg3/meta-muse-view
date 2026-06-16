@@ -114,3 +114,23 @@ export async function setCheckpoint(
       },
     });
 }
+
+/** Fields Meta has rejected for a request key — loaded once into the client's in-memory cache. */
+export async function getFieldBlocklist(memoKey: string): Promise<string[]> {
+  const [row] = await db
+    .select({ fields: schema.metaFieldBlocklist.fields })
+    .from(schema.metaFieldBlocklist)
+    .where(eq(schema.metaFieldBlocklist.memoKey, memoKey));
+  return Array.isArray(row?.fields) ? (row.fields as string[]) : [];
+}
+
+/** Persist the full set of rejected fields for a request key (the caller maintains the union). */
+export async function saveFieldBlocklist(memoKey: string, fields: string[]): Promise<void> {
+  await db
+    .insert(schema.metaFieldBlocklist)
+    .values({ memoKey, fields, updatedAt: new Date() })
+    .onConflictDoUpdate({
+      target: schema.metaFieldBlocklist.memoKey,
+      set: { fields, updatedAt: new Date() },
+    });
+}

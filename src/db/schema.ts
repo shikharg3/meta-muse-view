@@ -262,3 +262,11 @@ export const alerts = pgTable(
   },
   (t) => [index("alerts_status_created_idx").on(t.status, t.createdAt)],
 );
+
+// Per request-key (edge / node type / insights shape) set of fields Meta rejected (#100 nonexisting
+// or #10 permission). Persisted so the costly bisection discovery runs once, not every process.
+export const metaFieldBlocklist = pgTable("meta_field_blocklist", {
+  memoKey: text("memo_key").primaryKey(),
+  fields: jsonb("fields").notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});

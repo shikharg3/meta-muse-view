@@ -12,11 +12,18 @@ export interface MetaCredentials {
   version: string;
 }
 
+/** Persistence for discovered bad field sets, so bisection discovery runs once, not per process. */
+export interface FieldStore {
+  load(memoKey: string): Promise<string[]>;
+  save(memoKey: string, badFields: string[]): Promise<void>;
+}
+
 export interface MetaClientDeps {
   fetchImpl?: typeof fetch;
   sleep?: (ms: number) => Promise<void>;
   maxRetries?: number;
   limiter?: Limiter;
+  fieldStore?: FieldStore;
 }
 
 const BASE = "https://graph.facebook.com";
@@ -26,6 +33,8 @@ export class MetaClient implements InsightsClient {
   private sleep: (ms: number) => Promise<void>;
   private maxRetries: number;
   private limiter?: Limiter;
+  private fieldStore?: FieldStore;
+  private loaded = new Set<string>();
 
   constructor(
     private creds: MetaCredentials,
@@ -41,6 +50,7 @@ export class MetaClient implements InsightsClient {
       });
     this.maxRetries = deps.maxRetries ?? 5;
     this.limiter = deps.limiter;
+    this.fieldStore = deps.fieldStore;
   }
 
   /** Route a request through the optional limiter (concurrency + pacing); identity when unset. */
@@ -136,6 +146,24 @@ export class MetaClient implements InsightsClient {
     const set = this.badFields.get(memoKey) ?? new Set<string>();
     for (const f of fields) set.add(f);
     this.badFields.set(memoKey, set);
+    void this.fieldStore?.save(memoKey, [...set]);
+  }
+
+  /** Load a key's persisted blocklist once, so bisection discovery isn't repeated each process. */
+  private async ensureLoaded(memoKey: string): Promise<void> {
+    if (this.loaded.has(memoKey)) return;
+    this.loaded.add(memoKey);
+    if (!this.fieldStore) return;
+    try {
+      const persisted = await this.fieldStore.load(memoKey);
+      if (persisted.length > 0) {
+        const set = this.badFields.get(memoKey) ?? new Set<string>();
+        for (const f of persisted) set.add(f);
+        this.badFields.set(memoKey, set);
+      }
+    } catch {
+      // best-effort cache; fall back to live discovery
+    }
   }
 
   /** #100 (nonexisting), #10 (permission) and #3 (unknown) all mean "a field must be dropped". */
@@ -195,6 +223,7 @@ export class MetaClient implements InsightsClient {
   ): Promise<GraphNode[]> {
     const requested = Array.isArray(params.fields) ? (params.fields as string[]) : null;
     if (!requested) return this.getPaged(path, params, accountId);
+    await this.ensureLoaded(memoKey);
     for (let attempt = 0; attempt < 12; attempt++) {
       const fields = this.stripBad(memoKey, requested);
       try {
@@ -222,6 +251,7 @@ export class MetaClient implements InsightsClient {
     memoKey: string,
     accountId = "",
   ): Promise<GraphNode> {
+    await this.ensureLoaded(memoKey);
     for (let attempt = 0; attempt < 12; attempt++) {
       const use = this.stripBad(memoKey, fields);
       try {

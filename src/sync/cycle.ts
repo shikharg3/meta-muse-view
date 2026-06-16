@@ -5,7 +5,13 @@ import { syncStructure, syncAccounts } from "./jobs/structure";
 import { syncInsights } from "./jobs/insights";
 import { syncBreakdowns, BREAKDOWNS } from "./jobs/breakdowns";
 import { syncClients } from "./jobs/clients";
-import { isFirstInsightsSync, markSync, recordTokenHealth } from "./state";
+import {
+  isFirstInsightsSync,
+  markSync,
+  recordTokenHealth,
+  getFieldBlocklist,
+  saveFieldBlocklist,
+} from "./state";
 import { runOnce, type Jobs } from "./run";
 import { detectSpendDropAlerts } from "./alerts";
 
@@ -112,7 +118,11 @@ export async function runCycle(): Promise<void> {
       },
       // Pace all requests: the full-field/full-metric extraction is request-heavy, so a single
       // in-flight call every 250ms keeps us under Meta's user/app limits (#17/#4).
-      { limiter: new Limiter(1, 250) },
+      {
+        limiter: new Limiter(1, 250),
+        // Persist discovered bad-field sets so the costly bisection discovery runs once, not per restart.
+        fieldStore: { load: getFieldBlocklist, save: saveFieldBlocklist },
+      },
     );
     // Record token health up front so a deleted/expired app is captured even when
     // the account enumeration below throws (otherwise the badge stays stale-green).
