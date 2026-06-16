@@ -1,5 +1,6 @@
 import { and, eq, gte, ilike, inArray, lt, lte, or, sql } from "drizzle-orm";
 import { disableReasonLabel } from "@/lib/format";
+import { summarizeTargeting } from "./targeting";
 import { db, schema } from "@/db/client";
 import {
   accountStatus,
@@ -236,6 +237,28 @@ export async function fetchAccounts(w: DateWindow): Promise<AdAccount[]> {
     sparkById.set(r.entityId, arr);
   }
 
+  // "Disabled since" = the latest account-status-change activity (best available proxy; null if unsynced).
+  const disabledIds = accounts
+    .filter((a) => accountStatus(a.status) === "DISABLED")
+    .map((a) => a.id);
+  const disabledSince = new Map<string, string>();
+  if (disabledIds.length > 0) {
+    const ev = await db
+      .select({
+        accountId: schema.metaActivities.accountId,
+        at: sql<string>`max(${schema.metaActivities.eventTime})`,
+      })
+      .from(schema.metaActivities)
+      .where(
+        and(
+          eq(schema.metaActivities.eventType, "ad_account_update_status"),
+          inArray(schema.metaActivities.accountId, disabledIds),
+        ),
+      )
+      .groupBy(schema.metaActivities.accountId);
+    for (const r of ev) if (r.at) disabledSince.set(r.accountId, String(r.at).slice(0, 10));
+  }
+
   return accounts.map((a) => {
     const t = totalsById.get(a.id);
     const totals: Totals = {
@@ -256,6 +279,10 @@ export async function fetchAccounts(w: DateWindow): Promise<AdAccount[]> {
       spark: sparkById.get(a.id) ?? [],
       results: results.get(a.id)?.value ?? 0,
       resultLabel: results.get(a.id)?.label ?? "Results",
+      disableReason:
+        accountStatus(a.status) === "DISABLED" ? disableReasonLabel(a.disableReason) : null,
+      disabledSince:
+        accountStatus(a.status) === "DISABLED" ? (disabledSince.get(a.id) ?? null) : null,
     };
   });
 }
@@ -422,7 +449,7 @@ export async function fetchCampaigns(w: DateWindow, accountIds?: string[]): Prom
         roas: sk.roas,
         results: ads.reduce((n, a) => n + a.results, 0),
         resultLabel: rs.label,
-        audience: s.name,
+        audience: summarizeTargeting(s.targeting) ?? s.name,
         ads,
       };
     });

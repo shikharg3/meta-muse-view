@@ -10,12 +10,10 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as UsersRouteImport } from './routes/users'
-import { Route as TargetingRouteImport } from './routes/targeting'
 import { Route as SignupRouteImport } from './routes/signup'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as OverviewRouteImport } from './routes/overview'
 import { Route as LoginRouteImport } from './routes/login'
-import { Route as LibraryRouteImport } from './routes/library'
 import { Route as CreativesRouteImport } from './routes/creatives'
 import { Route as ClientsRouteImport } from './routes/clients'
 import { Route as CampaignsRouteImport } from './routes/campaigns'
@@ -29,11 +27,6 @@ import { Route as AccountsIdRouteImport } from './routes/accounts.$id'
 const UsersRoute = UsersRouteImport.update({
   id: '/users',
   path: '/users',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const TargetingRoute = TargetingRouteImport.update({
-  id: '/targeting',
-  path: '/targeting',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SignupRoute = SignupRouteImport.update({
@@ -54,11 +47,6 @@ const OverviewRoute = OverviewRouteImport.update({
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const LibraryRoute = LibraryRouteImport.update({
-  id: '/library',
-  path: '/library',
   getParentRoute: () => rootRouteImport,
 } as any)
 const CreativesRoute = CreativesRouteImport.update({
@@ -115,12 +103,10 @@ export interface FileRoutesByFullPath {
   '/campaigns': typeof CampaignsRoute
   '/clients': typeof ClientsRoute
   '/creatives': typeof CreativesRoute
-  '/library': typeof LibraryRoute
   '/login': typeof LoginRoute
   '/overview': typeof OverviewRoute
   '/settings': typeof SettingsRoute
   '/signup': typeof SignupRoute
-  '/targeting': typeof TargetingRoute
   '/users': typeof UsersRoute
   '/accounts/$id': typeof AccountsIdRoute
   '/accounts/': typeof AccountsIndexRoute
@@ -133,12 +119,10 @@ export interface FileRoutesByTo {
   '/campaigns': typeof CampaignsRoute
   '/clients': typeof ClientsRoute
   '/creatives': typeof CreativesRoute
-  '/library': typeof LibraryRoute
   '/login': typeof LoginRoute
   '/overview': typeof OverviewRoute
   '/settings': typeof SettingsRoute
   '/signup': typeof SignupRoute
-  '/targeting': typeof TargetingRoute
   '/users': typeof UsersRoute
   '/accounts/$id': typeof AccountsIdRoute
   '/accounts': typeof AccountsIndexRoute
@@ -152,12 +136,10 @@ export interface FileRoutesById {
   '/campaigns': typeof CampaignsRoute
   '/clients': typeof ClientsRoute
   '/creatives': typeof CreativesRoute
-  '/library': typeof LibraryRoute
   '/login': typeof LoginRoute
   '/overview': typeof OverviewRoute
   '/settings': typeof SettingsRoute
   '/signup': typeof SignupRoute
-  '/targeting': typeof TargetingRoute
   '/users': typeof UsersRoute
   '/accounts/$id': typeof AccountsIdRoute
   '/accounts/': typeof AccountsIndexRoute
@@ -172,12 +154,10 @@ export interface FileRouteTypes {
     | '/campaigns'
     | '/clients'
     | '/creatives'
-    | '/library'
     | '/login'
     | '/overview'
     | '/settings'
     | '/signup'
-    | '/targeting'
     | '/users'
     | '/accounts/$id'
     | '/accounts/'
@@ -190,12 +170,10 @@ export interface FileRouteTypes {
     | '/campaigns'
     | '/clients'
     | '/creatives'
-    | '/library'
     | '/login'
     | '/overview'
     | '/settings'
     | '/signup'
-    | '/targeting'
     | '/users'
     | '/accounts/$id'
     | '/accounts'
@@ -208,12 +186,10 @@ export interface FileRouteTypes {
     | '/campaigns'
     | '/clients'
     | '/creatives'
-    | '/library'
     | '/login'
     | '/overview'
     | '/settings'
     | '/signup'
-    | '/targeting'
     | '/users'
     | '/accounts/$id'
     | '/accounts/'
@@ -227,12 +203,10 @@ export interface RootRouteChildren {
   CampaignsRoute: typeof CampaignsRoute
   ClientsRoute: typeof ClientsRoute
   CreativesRoute: typeof CreativesRoute
-  LibraryRoute: typeof LibraryRoute
   LoginRoute: typeof LoginRoute
   OverviewRoute: typeof OverviewRoute
   SettingsRoute: typeof SettingsRoute
   SignupRoute: typeof SignupRoute
-  TargetingRoute: typeof TargetingRoute
   UsersRoute: typeof UsersRoute
   AccountsIdRoute: typeof AccountsIdRoute
   AccountsIndexRoute: typeof AccountsIndexRoute
@@ -245,13 +219,6 @@ declare module '@tanstack/react-router' {
       path: '/users'
       fullPath: '/users'
       preLoaderRoute: typeof UsersRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/targeting': {
-      id: '/targeting'
-      path: '/targeting'
-      fullPath: '/targeting'
-      preLoaderRoute: typeof TargetingRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/signup': {
@@ -280,13 +247,6 @@ declare module '@tanstack/react-router' {
       path: '/login'
       fullPath: '/login'
       preLoaderRoute: typeof LoginRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/library': {
-      id: '/library'
-      path: '/library'
-      fullPath: '/library'
-      preLoaderRoute: typeof LibraryRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/creatives': {
@@ -363,12 +323,10 @@ const rootRouteChildren: RootRouteChildren = {
   CampaignsRoute: CampaignsRoute,
   ClientsRoute: ClientsRoute,
   CreativesRoute: CreativesRoute,
-  LibraryRoute: LibraryRoute,
   LoginRoute: LoginRoute,
   OverviewRoute: OverviewRoute,
   SettingsRoute: SettingsRoute,
   SignupRoute: SignupRoute,
-  TargetingRoute: TargetingRoute,
   UsersRoute: UsersRoute,
   AccountsIdRoute: AccountsIdRoute,
   AccountsIndexRoute: AccountsIndexRoute,

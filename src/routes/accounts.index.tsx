@@ -167,7 +167,21 @@ function Accounts() {
                     <div className="font-mono text-[10px] text-muted-foreground">{a.id}</div>
                   </td>
                   <td className="px-3 py-3">
-                    <StatusPill status={a.status} />
+                    {a.status === "DISABLED" && (a.disableReason || a.disabledSince) ? (
+                      <span
+                        className="cursor-help"
+                        title={[
+                          a.disableReason && `Reason: ${a.disableReason}`,
+                          a.disabledSince && `Disabled since ${a.disabledSince}`,
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
+                      >
+                        <StatusPill status={a.status} />
+                      </span>
+                    ) : (
+                      <StatusPill status={a.status} />
+                    )}
                   </td>
                   <td className="px-3 py-3 text-right font-mono">{fmtCurrency(a.spend)}</td>
                   <td className="px-3 py-3 text-right font-mono">

@@ -188,8 +188,15 @@ export function CampaignTable({ campaigns }: { campaigns: Campaign[] }) {
                                   ) : (
                                     <ChevronRight className="size-3 text-muted-foreground shrink-0" />
                                   )}
-                                  <div className="text-xs font-medium truncate max-w-[400px]">
-                                    {s.name}
+                                  <div className="min-w-0">
+                                    <div className="max-w-[400px] truncate text-xs font-medium">
+                                      {s.name}
+                                    </div>
+                                    {s.audience && s.audience !== s.name && (
+                                      <div className="max-w-[400px] truncate text-[10px] text-muted-foreground">
+                                        {s.audience}
+                                      </div>
+                                    )}
                                   </div>
                                 </div>
                               </td>

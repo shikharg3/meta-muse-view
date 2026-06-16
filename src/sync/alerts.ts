@@ -74,15 +74,16 @@ export async function detectSpendDropAlerts(): Promise<number> {
   return inserted;
 }
 
-/** Push new alerts to the configured Telegram channel (no-op if unconfigured). */
-async function notifyTelegram(alerts: { name: string; message: string }[]): Promise<void> {
+/** Send a message to the configured Telegram channel; returns ok/error (never throws). */
+async function sendTelegram(text: string): Promise<{ ok: boolean; error?: string }> {
   const e = env();
-  if (!e.TELEGRAM_BOT_TOKEN || !e.TELEGRAM_ALERT_CHAT_ID) return;
-  const text =
-    `🚨 ${alerts.length} spend-drop alert${alerts.length > 1 ? "s" : ""}:\n` +
-    alerts.map((a) => `• ${a.name} — ${a.message}`).join("\n");
+  if (!e.TELEGRAM_BOT_TOKEN || !e.TELEGRAM_ALERT_CHAT_ID)
+    return {
+      ok: false,
+      error: "Telegram not configured — set TELEGRAM_BOT_TOKEN + TELEGRAM_ALERT_CHAT_ID.",
+    };
   try {
-    await fetch(`https://api.telegram.org/bot${e.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+    const res = await fetch(`https://api.telegram.org/bot${e.TELEGRAM_BOT_TOKEN}/sendMessage`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -91,7 +92,40 @@ async function notifyTelegram(alerts: { name: string; message: string }[]): Prom
         disable_web_page_preview: true,
       }),
     });
+    if (!res.ok)
+      return { ok: false, error: `Telegram ${res.status}: ${(await res.text()).slice(0, 200)}` };
+    return { ok: true };
   } catch (err) {
-    console.error("[alerts] telegram notify failed:", err);
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
+}
+
+/** Push new alerts to the configured Telegram channel (no-op if unconfigured). */
+async function notifyTelegram(alerts: { name: string; message: string }[]): Promise<void> {
+  const text =
+    `🚨 ${alerts.length} spend-drop alert${alerts.length > 1 ? "s" : ""}:\n` +
+    alerts.map((a) => `• ${a.name} — ${a.message}`).join("\n");
+  const r = await sendTelegram(text);
+  if (!r.ok) console.error("[alerts] telegram notify failed:", r.error);
+}
+
+export interface AlertSettings {
+  minBaseline: number;
+  dropPct: number;
+  telegramConfigured: boolean;
+}
+
+/** Current alert configuration for the settings panel (no secrets leaked). */
+export function alertSettings(): AlertSettings {
+  const e = env();
+  return {
+    minBaseline: ALERT_MIN_BASELINE,
+    dropPct: ALERT_DROP_PCT,
+    telegramConfigured: Boolean(e.TELEGRAM_BOT_TOKEN && e.TELEGRAM_ALERT_CHAT_ID),
+  };
+}
+
+/** Send a test message to verify Telegram delivery. */
+export function sendTestAlert(): Promise<{ ok: boolean; error?: string }> {
+  return sendTelegram("✅ Test alert from MetaConsole — Telegram delivery is working.");
 }

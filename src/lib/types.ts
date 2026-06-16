@@ -28,6 +28,9 @@ export interface AdAccount {
   /** Objective-aware "Results" total (leads/purchases/etc.) across the account. */
   results: number;
   resultLabel: string;
+  /** Human disable_reason + best-known disabled date; both null unless the account is disabled. */
+  disableReason: string | null;
+  disabledSince: string | null;
 }
 export interface Ad {
   id: string;
