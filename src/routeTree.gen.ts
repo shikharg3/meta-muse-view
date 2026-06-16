@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as UsersRouteImport } from './routes/users'
+import { Route as TargetingRouteImport } from './routes/targeting'
 import { Route as SignupRouteImport } from './routes/signup'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as OverviewRouteImport } from './routes/overview'
@@ -20,6 +21,7 @@ import { Route as ClientsRouteImport } from './routes/clients'
 import { Route as CampaignsRouteImport } from './routes/campaigns'
 import { Route as AudiencesRouteImport } from './routes/audiences'
 import { Route as AlertsRouteImport } from './routes/alerts'
+import { Route as ActivityRouteImport } from './routes/activity'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AccountsIndexRouteImport } from './routes/accounts.index'
 import { Route as AccountsIdRouteImport } from './routes/accounts.$id'
@@ -27,6 +29,11 @@ import { Route as AccountsIdRouteImport } from './routes/accounts.$id'
 const UsersRoute = UsersRouteImport.update({
   id: '/users',
   path: '/users',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const TargetingRoute = TargetingRouteImport.update({
+  id: '/targeting',
+  path: '/targeting',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SignupRoute = SignupRouteImport.update({
@@ -79,6 +86,11 @@ const AlertsRoute = AlertsRouteImport.update({
   path: '/alerts',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ActivityRoute = ActivityRouteImport.update({
+  id: '/activity',
+  path: '/activity',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
@@ -97,6 +109,7 @@ const AccountsIdRoute = AccountsIdRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/activity': typeof ActivityRoute
   '/alerts': typeof AlertsRoute
   '/audiences': typeof AudiencesRoute
   '/campaigns': typeof CampaignsRoute
@@ -107,12 +120,14 @@ export interface FileRoutesByFullPath {
   '/overview': typeof OverviewRoute
   '/settings': typeof SettingsRoute
   '/signup': typeof SignupRoute
+  '/targeting': typeof TargetingRoute
   '/users': typeof UsersRoute
   '/accounts/$id': typeof AccountsIdRoute
   '/accounts/': typeof AccountsIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/activity': typeof ActivityRoute
   '/alerts': typeof AlertsRoute
   '/audiences': typeof AudiencesRoute
   '/campaigns': typeof CampaignsRoute
@@ -123,6 +138,7 @@ export interface FileRoutesByTo {
   '/overview': typeof OverviewRoute
   '/settings': typeof SettingsRoute
   '/signup': typeof SignupRoute
+  '/targeting': typeof TargetingRoute
   '/users': typeof UsersRoute
   '/accounts/$id': typeof AccountsIdRoute
   '/accounts': typeof AccountsIndexRoute
@@ -130,6 +146,7 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/activity': typeof ActivityRoute
   '/alerts': typeof AlertsRoute
   '/audiences': typeof AudiencesRoute
   '/campaigns': typeof CampaignsRoute
@@ -140,6 +157,7 @@ export interface FileRoutesById {
   '/overview': typeof OverviewRoute
   '/settings': typeof SettingsRoute
   '/signup': typeof SignupRoute
+  '/targeting': typeof TargetingRoute
   '/users': typeof UsersRoute
   '/accounts/$id': typeof AccountsIdRoute
   '/accounts/': typeof AccountsIndexRoute
@@ -148,6 +166,7 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/activity'
     | '/alerts'
     | '/audiences'
     | '/campaigns'
@@ -158,12 +177,14 @@ export interface FileRouteTypes {
     | '/overview'
     | '/settings'
     | '/signup'
+    | '/targeting'
     | '/users'
     | '/accounts/$id'
     | '/accounts/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/activity'
     | '/alerts'
     | '/audiences'
     | '/campaigns'
@@ -174,12 +195,14 @@ export interface FileRouteTypes {
     | '/overview'
     | '/settings'
     | '/signup'
+    | '/targeting'
     | '/users'
     | '/accounts/$id'
     | '/accounts'
   id:
     | '__root__'
     | '/'
+    | '/activity'
     | '/alerts'
     | '/audiences'
     | '/campaigns'
@@ -190,6 +213,7 @@ export interface FileRouteTypes {
     | '/overview'
     | '/settings'
     | '/signup'
+    | '/targeting'
     | '/users'
     | '/accounts/$id'
     | '/accounts/'
@@ -197,6 +221,7 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  ActivityRoute: typeof ActivityRoute
   AlertsRoute: typeof AlertsRoute
   AudiencesRoute: typeof AudiencesRoute
   CampaignsRoute: typeof CampaignsRoute
@@ -207,6 +232,7 @@ export interface RootRouteChildren {
   OverviewRoute: typeof OverviewRoute
   SettingsRoute: typeof SettingsRoute
   SignupRoute: typeof SignupRoute
+  TargetingRoute: typeof TargetingRoute
   UsersRoute: typeof UsersRoute
   AccountsIdRoute: typeof AccountsIdRoute
   AccountsIndexRoute: typeof AccountsIndexRoute
@@ -219,6 +245,13 @@ declare module '@tanstack/react-router' {
       path: '/users'
       fullPath: '/users'
       preLoaderRoute: typeof UsersRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/targeting': {
+      id: '/targeting'
+      path: '/targeting'
+      fullPath: '/targeting'
+      preLoaderRoute: typeof TargetingRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/signup': {
@@ -291,6 +324,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AlertsRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/activity': {
+      id: '/activity'
+      path: '/activity'
+      fullPath: '/activity'
+      preLoaderRoute: typeof ActivityRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
@@ -317,6 +357,7 @@ declare module '@tanstack/react-router' {
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  ActivityRoute: ActivityRoute,
   AlertsRoute: AlertsRoute,
   AudiencesRoute: AudiencesRoute,
   CampaignsRoute: CampaignsRoute,
@@ -327,6 +368,7 @@ const rootRouteChildren: RootRouteChildren = {
   OverviewRoute: OverviewRoute,
   SettingsRoute: SettingsRoute,
   SignupRoute: SignupRoute,
+  TargetingRoute: TargetingRoute,
   UsersRoute: UsersRoute,
   AccountsIdRoute: AccountsIdRoute,
   AccountsIndexRoute: AccountsIndexRoute,
