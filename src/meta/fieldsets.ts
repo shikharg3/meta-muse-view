@@ -590,8 +590,31 @@ export function chunk<T>(items: T[], size: number): T[][] {
   return out;
 }
 
-/** Co-requestable metric groups. date_start/stop + the level id come back automatically. */
-export const INSIGHT_METRIC_GROUPS: string[][] = chunk(INSIGHT_METRICS, 40);
+/** Proven core metrics (the dashboard's KPIs). Pulled as the first group so a heavy/failed extra
+ *  group never starves the core — and small remainder groups isolate metrics that trip Meta #2. */
+export const CORE_METRICS = [
+  "spend",
+  "impressions",
+  "reach",
+  "clicks",
+  "inline_link_clicks",
+  "ctr",
+  "cpc",
+  "cpm",
+  "frequency",
+  "actions",
+  "action_values",
+  "purchase_roas",
+];
+
+/** Core first, then the long tail in small groups (Meta #2s on large/heavy metric combinations). */
+export const INSIGHT_METRIC_GROUPS: string[][] = [
+  CORE_METRICS,
+  ...chunk(
+    INSIGHT_METRICS.filter((m) => !CORE_METRICS.includes(m)),
+    15,
+  ),
+];
 
 /** Meta only permits specific breakdown combinations; this is the curated valid set we pull. */
 export const BREAKDOWN_GROUPS: string[][] = [
