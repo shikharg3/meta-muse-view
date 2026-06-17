@@ -91,6 +91,8 @@ export class MetaClient implements InsightsClient {
         // #4 app limit, #17 user limit, #32 page limit, #613 custom, #80000-80014 BUC throttles.
         const rateLimited =
           error.is_transient === true ||
+          code === 1 || // transient unknown
+          code === 2 || // service temporarily unavailable
           code === 4 ||
           code === 17 ||
           code === 32 ||

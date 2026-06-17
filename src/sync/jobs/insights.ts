@@ -62,49 +62,65 @@ export async function syncInsightsRange(
     // the full metric set. The merged row is stored in `raw`; high-value metrics are promoted.
     const byKey = new Map<string, InsightRow>();
     for (const group of INSIGHT_METRIC_GROUPS) {
-      const rows = await client.getInsights(accountId, {
-        level,
-        time_range: { since: window.since, until: window.until },
-        time_increment: 1,
-        // De-dupe: the metric groups already include the id fields, so appending them again
-        // would trigger Meta error 2500 ("Field account_id specified more than once").
-        fields: [...new Set([...group, "account_id", "campaign_id", "adset_id", "ad_id"])],
-        use_unified_attribution_setting: true,
-      });
-      for (const r of rows) {
-        const entityId = level === "account" ? accountId : String(r[ID_FIELD[level]] ?? accountId);
-        const key = `${entityId}:${String(r.date_start)}`;
-        const merged = byKey.get(key) ?? ({ date_start: String(r.date_start) } as InsightRow);
-        Object.assign(merged, r);
-        byKey.set(key, merged);
+      try {
+        const rows = await client.getInsights(accountId, {
+          level,
+          time_range: { since: window.since, until: window.until },
+          time_increment: 1,
+          // De-dupe: the metric groups already include the id fields, so appending them again
+          // would trigger Meta error 2500 ("Field account_id specified more than once").
+          fields: [...new Set([...group, "account_id", "campaign_id", "adset_id", "ad_id"])],
+          use_unified_attribution_setting: true,
+        });
+        for (const r of rows) {
+          const entityId =
+            level === "account" ? accountId : String(r[ID_FIELD[level]] ?? accountId);
+          const key = `${entityId}:${String(r.date_start)}`;
+          const merged = byKey.get(key) ?? ({ date_start: String(r.date_start) } as InsightRow);
+          Object.assign(merged, r);
+          byKey.set(key, merged);
+        }
+      } catch (e) {
+        console.error(
+          `[insights] ${level} metric group skipped:`,
+          e instanceof Error ? e.message : e,
+        );
       }
     }
     // Optionally capture conversions split by attribution window — a dedicated request stored in a
     // separate column, so the dashboards' unified-attribution conversion numbers are unchanged.
     const winMap = new Map<string, { actions: unknown; action_values: unknown }>();
     if (attributionWindows) {
-      const winRows = await client.getInsights(accountId, {
-        level,
-        time_range: { since: window.since, until: window.until },
-        time_increment: 1,
-        fields: [
-          ...new Set([
-            "actions",
-            "action_values",
-            "account_id",
-            "campaign_id",
-            "adset_id",
-            "ad_id",
-          ]),
-        ],
-        action_attribution_windows: ATTRIBUTION_WINDOWS,
-      });
-      for (const r of winRows) {
-        const entityId = level === "account" ? accountId : String(r[ID_FIELD[level]] ?? accountId);
-        winMap.set(`${entityId}:${String(r.date_start)}`, {
-          actions: r.actions ?? null,
-          action_values: r.action_values ?? null,
+      try {
+        const winRows = await client.getInsights(accountId, {
+          level,
+          time_range: { since: window.since, until: window.until },
+          time_increment: 1,
+          fields: [
+            ...new Set([
+              "actions",
+              "action_values",
+              "account_id",
+              "campaign_id",
+              "adset_id",
+              "ad_id",
+            ]),
+          ],
+          action_attribution_windows: ATTRIBUTION_WINDOWS,
         });
+        for (const r of winRows) {
+          const entityId =
+            level === "account" ? accountId : String(r[ID_FIELD[level]] ?? accountId);
+          winMap.set(`${entityId}:${String(r.date_start)}`, {
+            actions: r.actions ?? null,
+            action_values: r.action_values ?? null,
+          });
+        }
+      } catch (e) {
+        console.error(
+          `[insights] ${level} attribution-window request skipped:`,
+          e instanceof Error ? e.message : e,
+        );
       }
     }
     for (const merged of byKey.values()) {
