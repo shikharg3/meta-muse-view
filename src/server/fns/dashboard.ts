@@ -576,28 +576,42 @@ export async function fetchCreatives(w: DateWindow): Promise<CreativeCard[]> {
   });
 }
 
+type BreakdownDims = Record<
+  | "age"
+  | "gender"
+  | "publisher_platform"
+  | "device_platform"
+  | "country"
+  | "region"
+  | "placement"
+  | "hourly",
+  BreakdownRow[]
+>;
+
+// Map verbose/combo breakdown_types to the dimension keys the UI renders.
+const BREAKDOWN_KEY: Record<string, keyof BreakdownDims> = {
+  "publisher_platform|platform_position|impression_device": "placement",
+  hourly_stats_aggregated_by_advertiser_time_zone: "hourly",
+};
+
 export async function fetchBreakdowns(
   w: DateWindow,
   scope?: { accountIds?: string[]; campaignId?: string },
-): Promise<
-  Record<"age" | "gender" | "publisher_platform" | "device_platform" | "country", BreakdownRow[]>
-> {
-  const empty = {
+): Promise<BreakdownDims> {
+  const empty: Record<string, BreakdownRow[]> = {
     age: [],
     gender: [],
     publisher_platform: [],
     device_platform: [],
     country: [],
-  } as Record<string, BreakdownRow[]>;
-  const shaped = () =>
-    empty as Record<
-      "age" | "gender" | "publisher_platform" | "device_platform" | "country",
-      BreakdownRow[]
-    >;
+    region: [],
+    placement: [],
+    hourly: [],
+  };
+  const shaped = () => empty as BreakdownDims;
   // A client scoped to zero mapped accounts has nothing to show.
   if (!scope?.campaignId && scope?.accountIds && scope.accountIds.length === 0) return shaped();
-  // Campaign scope reads campaign-level rows; otherwise account-level (the all-accounts /
-  // client view). Both levels coexist in the table, so the level filter is required.
+  // Campaign scope reads campaign-level rows; otherwise account-level. Both levels coexist.
   const conds = scope?.campaignId
     ? [
         eq(schema.insightsBreakdownDaily.level, "campaign"),
@@ -627,8 +641,11 @@ export async function fetchBreakdowns(
       schema.insightsBreakdownDaily.breakdownValue,
     );
   for (const r of rows) {
-    (empty[r.breakdownType] ??= []).push({
-      label: r.breakdownValue,
+    const key = BREAKDOWN_KEY[r.breakdownType] ?? (r.breakdownType as keyof BreakdownDims);
+    if (!(key in empty)) continue; // skip dims we don't surface (dma, frequency_value, asset, age|gender)
+    const label = key === "placement" ? r.breakdownValue.replace(/\|/g, " · ") : r.breakdownValue;
+    empty[key].push({
+      label,
       spend: num(r.spend),
       conversions: num(r.conversions),
       roas: num(r.revenue) / Math.max(1, num(r.spend)),

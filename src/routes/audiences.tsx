@@ -152,6 +152,15 @@ function Audiences() {
         <Panel title="Top Countries — Spend">
           <BreakdownBar rows={breakdowns.country} valueKey="spend" format={fmtCurrency} />
         </Panel>
+        <Panel title="Region — Spend">
+          <BreakdownBar rows={breakdowns.region} valueKey="spend" format={fmtCurrency} />
+        </Panel>
+        <Panel title="Placement (platform · position · device) — Spend">
+          <BreakdownBar rows={breakdowns.placement} valueKey="spend" format={fmtCurrency} />
+        </Panel>
+        <Panel title="Hour of Day — Spend">
+          <BreakdownBar rows={breakdowns.hourly} valueKey="spend" format={fmtCurrency} />
+        </Panel>
       </div>
     </div>
   );
