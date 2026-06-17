@@ -152,3 +152,20 @@ test("captures attribution-window splits in a separate column on refresh", async
     { action_type: "purchase", value: "5", "7d_click": "4", "1d_view": "1" },
   ]);
 }, 20000);
+
+test("never requests a duplicate field (avoids Meta #2500), but keeps the id fields", async () => {
+  const seen: string[][] = [];
+  const client: InsightsClient = {
+    getAccounts: async () => [],
+    getChildren: async () => [],
+    debugToken: async () => ({ is_valid: true, scopes: [] }),
+    getInsights: async (_id, params) => {
+      seen.push(params.fields as string[]);
+      return [];
+    },
+  };
+  await syncInsights(client, "act_1", { level: "campaign", days: 1 });
+  expect(seen.length).toBeGreaterThan(0);
+  for (const f of seen) expect(f.length).toBe(new Set(f).size); // no field appears twice
+  expect(seen.some((f) => f.includes("account_id"))).toBe(true); // id fields still requested
+}, 20000);

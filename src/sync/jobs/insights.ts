@@ -66,7 +66,9 @@ export async function syncInsightsRange(
         level,
         time_range: { since: window.since, until: window.until },
         time_increment: 1,
-        fields: [...group, "account_id", "campaign_id", "adset_id", "ad_id"],
+        // De-dupe: the metric groups already include the id fields, so appending them again
+        // would trigger Meta error 2500 ("Field account_id specified more than once").
+        fields: [...new Set([...group, "account_id", "campaign_id", "adset_id", "ad_id"])],
         use_unified_attribution_setting: true,
       });
       for (const r of rows) {
@@ -85,7 +87,16 @@ export async function syncInsightsRange(
         level,
         time_range: { since: window.since, until: window.until },
         time_increment: 1,
-        fields: ["actions", "action_values", "account_id", "campaign_id", "adset_id", "ad_id"],
+        fields: [
+          ...new Set([
+            "actions",
+            "action_values",
+            "account_id",
+            "campaign_id",
+            "adset_id",
+            "ad_id",
+          ]),
+        ],
         action_attribution_windows: ATTRIBUTION_WINDOWS,
       });
       for (const r of winRows) {
