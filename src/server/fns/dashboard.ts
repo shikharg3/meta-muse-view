@@ -1,4 +1,4 @@
-import { and, eq, gte, ilike, inArray, lt, lte, or, sql } from "drizzle-orm";
+import { and, eq, gte, ilike, inArray, lt, lte, or, sql, type SQL } from "drizzle-orm";
 import { disableReasonLabel } from "@/lib/format";
 import { summarizeTargeting } from "./targeting";
 import { db, schema } from "@/db/client";
@@ -594,6 +594,13 @@ const BREAKDOWN_KEY: Record<string, keyof BreakdownDims> = {
   hourly_stats_aggregated_by_advertiser_time_zone: "hourly",
 };
 
+// region/placement/hourly are only available at campaign level — aggregated up for the account view.
+const SUPPLEMENT_DIMS = [
+  "region",
+  "publisher_platform|platform_position|impression_device",
+  "hourly_stats_aggregated_by_advertiser_time_zone",
+];
+
 export async function fetchBreakdowns(
   w: DateWindow,
   scope?: { accountIds?: string[]; campaignId?: string },
@@ -609,47 +616,57 @@ export async function fetchBreakdowns(
     hourly: [],
   };
   const shaped = () => empty as BreakdownDims;
-  // A client scoped to zero mapped accounts has nothing to show.
   if (!scope?.campaignId && scope?.accountIds && scope.accountIds.length === 0) return shaped();
-  // Campaign scope reads campaign-level rows; otherwise account-level. Both levels coexist.
-  const conds = scope?.campaignId
-    ? [
-        eq(schema.insightsBreakdownDaily.level, "campaign"),
-        eq(schema.insightsBreakdownDaily.entityId, scope.campaignId),
-        gte(schema.insightsBreakdownDaily.date, w.since),
-        lte(schema.insightsBreakdownDaily.date, w.until),
-      ]
-    : [
-        eq(schema.insightsBreakdownDaily.level, "account"),
-        gte(schema.insightsBreakdownDaily.date, w.since),
-        lte(schema.insightsBreakdownDaily.date, w.until),
-      ];
-  if (!scope?.campaignId && scope?.accountIds)
-    conds.push(inArray(schema.insightsBreakdownDaily.accountId, scope.accountIds));
-  const rows = await db
-    .select({
-      breakdownType: schema.insightsBreakdownDaily.breakdownType,
-      breakdownValue: schema.insightsBreakdownDaily.breakdownValue,
-      spend: sql<number>`coalesce(sum(${schema.insightsBreakdownDaily.spend}),0)`,
-      conversions: sql<number>`coalesce(sum(${schema.insightsBreakdownDaily.conversions}),0)`,
-      revenue: sql<number>`coalesce(sum(${schema.insightsBreakdownDaily.conversionValues}),0)`,
-    })
-    .from(schema.insightsBreakdownDaily)
-    .where(and(...conds))
-    .groupBy(
-      schema.insightsBreakdownDaily.breakdownType,
-      schema.insightsBreakdownDaily.breakdownValue,
-    );
-  for (const r of rows) {
-    const key = BREAKDOWN_KEY[r.breakdownType] ?? (r.breakdownType as keyof BreakdownDims);
-    if (!(key in empty)) continue; // skip dims we don't surface (dma, frequency_value, asset, age|gender)
-    const label = key === "placement" ? r.breakdownValue.replace(/\|/g, " · ") : r.breakdownValue;
-    empty[key].push({
-      label,
-      spend: num(r.spend),
-      conversions: num(r.conversions),
-      roas: num(r.revenue) / Math.max(1, num(r.spend)),
-    });
+
+  const pull = async (conds: SQL[]) => {
+    const rows = await db
+      .select({
+        breakdownType: schema.insightsBreakdownDaily.breakdownType,
+        breakdownValue: schema.insightsBreakdownDaily.breakdownValue,
+        spend: sql<number>`coalesce(sum(${schema.insightsBreakdownDaily.spend}),0)`,
+        conversions: sql<number>`coalesce(sum(${schema.insightsBreakdownDaily.conversions}),0)`,
+        revenue: sql<number>`coalesce(sum(${schema.insightsBreakdownDaily.conversionValues}),0)`,
+      })
+      .from(schema.insightsBreakdownDaily)
+      .where(and(...conds))
+      .groupBy(
+        schema.insightsBreakdownDaily.breakdownType,
+        schema.insightsBreakdownDaily.breakdownValue,
+      );
+    for (const r of rows) {
+      const key = BREAKDOWN_KEY[r.breakdownType] ?? (r.breakdownType as keyof BreakdownDims);
+      if (!(key in empty)) continue;
+      const label = key === "placement" ? r.breakdownValue.replace(/\|/g, " · ") : r.breakdownValue;
+      empty[key].push({
+        label,
+        spend: num(r.spend),
+        conversions: num(r.conversions),
+        roas: num(r.revenue) / Math.max(1, num(r.spend)),
+      });
+    }
+  };
+
+  const window = [
+    gte(schema.insightsBreakdownDaily.date, w.since),
+    lte(schema.insightsBreakdownDaily.date, w.until),
+  ];
+  if (scope?.campaignId) {
+    await pull([
+      eq(schema.insightsBreakdownDaily.level, "campaign"),
+      eq(schema.insightsBreakdownDaily.entityId, scope.campaignId),
+      ...window,
+    ]);
+  } else {
+    const acctFilter = scope?.accountIds
+      ? [inArray(schema.insightsBreakdownDaily.accountId, scope.accountIds)]
+      : [];
+    await pull([eq(schema.insightsBreakdownDaily.level, "account"), ...window, ...acctFilter]);
+    await pull([
+      eq(schema.insightsBreakdownDaily.level, "campaign"),
+      inArray(schema.insightsBreakdownDaily.breakdownType, SUPPLEMENT_DIMS),
+      ...window,
+      ...acctFilter,
+    ]);
   }
   for (const k of Object.keys(empty)) empty[k].sort((a, b) => b.spend - a.spend);
   return shaped();
