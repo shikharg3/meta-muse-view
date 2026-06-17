@@ -144,6 +144,10 @@ export function CampaignTable({ campaigns }: { campaigns: Campaign[] }) {
                               </Link>
                               {" · "}
                               <span className="font-mono">{c.objective}</span>
+                              {" · "}
+                              <span className="font-mono" title="Avg impressions per person">
+                                {c.frequency.toFixed(1)}× freq
+                              </span>
                             </div>
                           </div>
                         </div>
@@ -195,6 +199,11 @@ export function CampaignTable({ campaigns }: { campaigns: Campaign[] }) {
                                     {s.audience && s.audience !== s.name && (
                                       <div className="max-w-[400px] truncate text-[10px] text-muted-foreground">
                                         {s.audience}
+                                      </div>
+                                    )}
+                                    {s.frequency > 0 && (
+                                      <div className="text-[10px] text-muted-foreground">
+                                        {s.frequency.toFixed(1)}× frequency
                                       </div>
                                     )}
                                   </div>

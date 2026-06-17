@@ -59,6 +59,7 @@ export interface AdSet {
   results: number;
   resultLabel: string;
   audience: string;
+  frequency: number;
   ads: Ad[];
 }
 export interface Campaign {
@@ -75,6 +76,7 @@ export interface Campaign {
   cpc: number;
   cpm: number;
   roas: number;
+  frequency: number;
   results: number;
   resultLabel: string;
   adSets: AdSet[];
