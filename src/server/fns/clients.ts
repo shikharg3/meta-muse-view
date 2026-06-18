@@ -396,3 +396,49 @@ export async function fetchClientFilterOptions(): Promise<
     .filter((c) => c.accountIds.length > 0)
     .sort((a, b) => a.name.localeCompare(b.name));
 }
+
+export interface AccountDirectoryRow {
+  id: string;
+  name: string | null;
+  status: AccountStatus; // ACTIVE | PAUSED | DISABLED | PENDING (DISABLED = suspended by Meta)
+  disableReason: string | null;
+  client: string | null; // client that owns this account, if mapped
+  clientStatus: string | null; // that client's Notion board status (Live/Paused/…)
+}
+
+/**
+ * Every ad account with its Meta status (DISABLED = suspended/disabled, with reason) joined to the
+ * client that owns it and that client's Notion board status — a single call for cross-referencing
+ * Notion campaign status against account suspension.
+ */
+export async function fetchAccountDirectory(): Promise<AccountDirectoryRow[]> {
+  const [accts, clients] = await Promise.all([
+    db
+      .select({
+        id: schema.accounts.id,
+        name: schema.accounts.name,
+        status: schema.accounts.status,
+        disableReason: schema.accounts.disableReason,
+      })
+      .from(schema.accounts),
+    db.select().from(schema.clients),
+  ]);
+  const owner = new Map<string, { name: string; status: string | null }>();
+  for (const c of clients) {
+    for (const aid of effectiveAccountIds(c)) {
+      if (!owner.has(aid)) owner.set(aid, { name: c.name, status: c.status ?? null });
+    }
+  }
+  return accts.map((a) => {
+    const status = accountStatus(a.status);
+    const o = owner.get(a.id);
+    return {
+      id: a.id,
+      name: a.name,
+      status,
+      disableReason: status === "DISABLED" ? disableReasonLabel(a.disableReason) : null,
+      client: o?.name ?? null,
+      clientStatus: o?.status ?? null,
+    };
+  });
+}

@@ -1,4 +1,9 @@
-import { fetchClients, fetchClientsRanked, fetchClientDetail } from "@/server/fns/clients";
+import {
+  fetchClients,
+  fetchClientsRanked,
+  fetchClientDetail,
+  fetchAccountDirectory,
+} from "@/server/fns/clients";
 import { fetchOverview, fetchOverviewEvents, searchEntities } from "@/server/fns/dashboard";
 import { getClientRow, effectiveAccountIds } from "@/sync/jobs/clients";
 import { runReport, resolveRange, normalizeColumns, normalizeBreakdown } from "./report";
@@ -17,7 +22,7 @@ export const TOOLS: AnthropicTool[] = [
   {
     name: "list_clients",
     description:
-      "List all clients with status, ad-account count, spend, and objective-aware results over the last N days (default 30), sorted by spend (highest first). Use this single call to answer ranking questions like 'which client spent/performed the most/least' — do NOT call get_client_stats for every client.",
+      "List all clients with their Notion board status (the `status` field — e.g. Live, Paused, Full Budget Finished — is the client's status on the Notion campaigns board), ad-account count, spend, and objective-aware results over the last N days (default 30), sorted by spend (highest first). Use this single call to answer ranking questions like 'which client spent/performed the most/least' — do NOT call get_client_stats for every client.",
     input_schema: {
       type: "object",
       properties: {
@@ -31,7 +36,7 @@ export const TOOLS: AnthropicTool[] = [
   {
     name: "get_client_stats",
     description:
-      "Performance for one client across every ad account they've ever used: overall KPIs (spend, impressions, clicks, CTR, CPC), per-account breakdown, and their campaigns (status, spend, CTR, CPC, results). The client name is fuzzy-matched.",
+      "Performance for one client across every ad account they've ever used: overall KPIs (spend, impressions, clicks, CTR, CPC); a per-account breakdown where each account carries its Meta `status` (ACTIVE or DISABLED) and `disableReason` — i.e. whether Meta has suspended/disabled that account; and their campaigns (status, spend, CTR, CPC, results). The client-level `status` is the Notion board status. The client name is fuzzy-matched.",
     input_schema: {
       type: "object",
       properties: {
@@ -64,6 +69,12 @@ export const TOOLS: AnthropicTool[] = [
       properties: { query: { type: "string" } },
       required: ["query"],
     },
+  },
+  {
+    name: "list_accounts",
+    description:
+      "List every ad account with its Meta status — ACTIVE, PAUSED, or DISABLED (DISABLED = suspended/disabled by Meta, with the disable reason) — the client that owns it, and that client's Notion board status (e.g. Live, Paused). Use this for any question about suspended/disabled accounts, or to cross-reference Notion campaign status against account suspension. Returns all accounts in one call (no per-client looping).",
+    input_schema: { type: "object", properties: {} },
   },
   {
     name: "generate_report",
@@ -209,6 +220,8 @@ export async function runTool(name: string, input: Record<string, unknown>): Pro
     }
     case "search_entities":
       return await searchEntities(String(input.query ?? ""));
+    case "list_accounts":
+      return await fetchAccountDirectory();
     case "generate_report":
       return await generateReportTool(input);
     default:

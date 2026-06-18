@@ -96,6 +96,43 @@ test("get_client_stats reports each account's Meta status (disabled flagged, not
   expect(acct?.disableReason).toBe("Ads integrity policy");
 }, 20000);
 
+test("list_accounts joins Meta status to the owning client's Notion status (suspension cross-ref)", async () => {
+  await db
+    .update(schema.accounts)
+    .set({ status: "2", disableReason: 1 })
+    .where(eq(schema.accounts.id, "act_111"));
+  const rows = (await runTool("list_accounts", {})) as {
+    id: string;
+    status: string;
+    disableReason: string | null;
+    client: string | null;
+    clientStatus: string | null;
+  }[];
+  expect(rows.find((r) => r.id === "act_111")).toMatchObject({
+    status: "DISABLED",
+    disableReason: "Ads integrity policy",
+    client: "wildcasino.ag",
+    clientStatus: "Live",
+  });
+  expect(rows.find((r) => r.id === "act_222")).toMatchObject({
+    status: "ACTIVE",
+    client: "wildcasino.ag",
+    clientStatus: "Live",
+  });
+  // The cross-reference the chatbot wrongly claimed it couldn't do: Live/Paused-on-Notion clients
+  // that currently have a suspended (DISABLED) ad account.
+  const flagged = new Set(
+    rows
+      .filter(
+        (r) =>
+          r.status === "DISABLED" && (r.clientStatus === "Live" || r.clientStatus === "Paused"),
+      )
+      .map((r) => r.client),
+  );
+  expect(flagged.has("wildcasino.ag")).toBe(true);
+  expect(flagged.size).toBe(1);
+}, 20000);
+
 test("runTool returns error data for unknown tools rather than throwing", async () => {
   expect(await runTool("bogus", {})).toEqual({ error: "Unknown tool: bogus" });
 });
