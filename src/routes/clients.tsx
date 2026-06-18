@@ -176,6 +176,7 @@ function Clients() {
                     <span className="block text-xs font-medium truncate">{c.name}</span>
                     <span className="block text-[10px] text-muted-foreground">
                       {c.status ?? "—"} · {c.accountCount} acct
+                      {c.removedAt && <span className="text-amber-500"> · off board</span>}
                     </span>
                   </span>
                   {active && <span className="size-1 rounded-full bg-primary" />}

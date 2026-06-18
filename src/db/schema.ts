@@ -248,6 +248,9 @@ export const clients = pgTable("clients", {
   startDate: date("start_date"), // engagement start (Notion "Actual Start Date")
   endDate: date("end_date"), // estimated end (Notion "End Date (Estimated)")
   syncedAt: timestamp("synced_at", { withTimezone: true }),
+  // Set when a client drops off the Notion board; the row + its history are retained (this DB is
+  // the source of truth for all historical clients). NULL = currently on the board.
+  removedAt: timestamp("removed_at", { withTimezone: true }),
 });
 
 // App users for Google / email-password auth. New accounts are "pending" until

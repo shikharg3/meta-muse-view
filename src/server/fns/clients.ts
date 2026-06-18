@@ -22,6 +22,7 @@ export interface ClientSummary {
   status: string | null;
   accountCount: number;
   syncedAt: string | null;
+  removedAt: string | null; // set when the client is no longer on the Notion board (data retained)
 }
 
 export interface ClientAccountRow {
@@ -67,6 +68,7 @@ export async function fetchClients(): Promise<ClientSummary[]> {
       status: r.status,
       accountCount: effectiveAccountIds(r).length,
       syncedAt: r.syncedAt?.toISOString() ?? null,
+      removedAt: r.removedAt?.toISOString() ?? null,
     }))
     .sort((a, b) => a.name.localeCompare(b.name));
 }
@@ -136,6 +138,7 @@ export async function fetchClientsRanked(w: DateWindow): Promise<ClientRanked[]>
         status: r.status,
         accountCount: ids.length,
         syncedAt: r.syncedAt?.toISOString() ?? null,
+        removedAt: r.removedAt?.toISOString() ?? null,
         spend,
         impressions,
         results: resultVal,

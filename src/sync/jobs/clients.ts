@@ -1,8 +1,13 @@
-import { eq, notInArray, sql } from "drizzle-orm";
+import { and, eq, isNull, notInArray } from "drizzle-orm";
 import { db, schema } from "@/db/client";
 import { getNotionCredentials } from "@/lib/credentials";
 import { NotionClient } from "@/notion/client";
-import { parseClientRow, clubClients, type ParsedClientRow } from "@/notion/parse";
+import {
+  parseClientRow,
+  clubClients,
+  type ParsedClientRow,
+  type ClubbedClient,
+} from "@/notion/parse";
 
 /**
  * Pull the client ↔ ad-account board from Notion and upsert the clients table.
@@ -22,8 +27,18 @@ export async function syncClients(client?: NotionClient): Promise<number | null>
       if (row) rows.push(row);
     }
   }
-  const clubbed = clubClients(rows);
+  return reconcileClients(clubClients(rows));
+}
 
+/**
+ * Upsert the board snapshot into the clients table and retain churned clients. A client that
+ * dropped off the Notion board is marked `removedAt` (and kept) rather than deleted — this DB is
+ * the source of truth for all historical clients, so its mapping/budget/history must persist.
+ * A re-appearing client is un-marked (`removedAt` reset to null). The removal sweep only runs when
+ * we actually got a board snapshot, so a transient empty/failed Notion pull never flags live
+ * clients as gone. Returns the number of clients currently on the board.
+ */
+export async function reconcileClients(clubbed: ClubbedClient[]): Promise<number> {
   for (const c of clubbed) {
     const vals = {
       id: c.id,
@@ -35,6 +50,7 @@ export async function syncClients(client?: NotionClient): Promise<number | null>
       startDate: c.startDate,
       endDate: c.endDate,
       syncedAt: new Date(),
+      removedAt: null,
     };
     await db
       .insert(schema.clients)
@@ -42,16 +58,13 @@ export async function syncClients(client?: NotionClient): Promise<number | null>
       .onConflictDoUpdate({ target: schema.clients.id, set: vals });
   }
 
-  // Drop clients that vanished from the board — unless the UI added accounts
-  // to them, in which case the manual state is the only copy and must stay.
   const ids = clubbed.map((c) => c.id);
-  await db
-    .delete(schema.clients)
-    .where(
-      ids.length
-        ? sql`${notInArray(schema.clients.id, ids)} and coalesce(jsonb_array_length(${schema.clients.manualAddIds}), 0) = 0`
-        : sql`coalesce(jsonb_array_length(${schema.clients.manualAddIds}), 0) = 0`,
-    );
+  if (ids.length) {
+    await db
+      .update(schema.clients)
+      .set({ removedAt: new Date() })
+      .where(and(notInArray(schema.clients.id, ids), isNull(schema.clients.removedAt)));
+  }
 
   return clubbed.length;
 }
