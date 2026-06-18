@@ -7,11 +7,16 @@ import {
   recordTokenHealth,
   getCheckpoint,
   setCheckpoint,
+  recordSyncEvent,
+  getRecentSyncEvents,
+  pruneSyncEvents,
 } from "./state";
 import type { InsightsClient } from "@/meta/types";
 
 beforeEach(async () => {
-  await db.execute(sql`truncate table sync_state, token_health, sync_checkpoints cascade`);
+  await db.execute(
+    sql`truncate table sync_state, token_health, sync_checkpoints, sync_events cascade`,
+  );
 });
 
 test("markSync advances a phase timestamp only on success", async () => {
@@ -58,3 +63,35 @@ test("checkpoints round-trip and patch only provided fields", async () => {
     cursor: "run_42",
   });
 }, 20000);
+
+test("sync events round-trip newest-first and prune by age", async () => {
+  const now = Date.now();
+  await recordSyncEvent({
+    kind: "rate_limit",
+    code: 17,
+    message: "User request limit reached",
+    accountId: "act_1",
+    retryAfterMin: 5,
+    pressure: 96,
+    at: now,
+  });
+  await recordSyncEvent({
+    kind: "rate_limit",
+    code: 4,
+    message: "old throttle",
+    accountId: "act_2",
+    retryAfterMin: 0,
+    pressure: 90,
+    at: now - 10 * 86_400_000, // 10 days ago
+  });
+  const recent = await getRecentSyncEvents(10);
+  expect(recent).toHaveLength(2);
+  expect(recent[0].code).toBe(17); // newest first
+  expect(recent[0].pressure).toBe(96);
+  expect(recent[0].accountId).toBe("act_1");
+
+  await pruneSyncEvents(7);
+  const afterPrune = await getRecentSyncEvents(10);
+  expect(afterPrune).toHaveLength(1); // the 10-day-old event is gone
+  expect(afterPrune[0].code).toBe(17);
+});
