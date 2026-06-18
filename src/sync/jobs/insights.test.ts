@@ -98,12 +98,18 @@ test("syncInsights issues one request per chunk across a long backfill", async (
 test("merges metric groups into one row and captures the full set in raw", async () => {
   const client = fakeInsightsClient({
     getInsights: async (_id, params) => {
+      // Return every requested metric so a group carrying several (e.g. CORE has spend + frequency)
+      // contributes them all; the rest groups add nothing but must merge by (entity, date).
       const fields = (params.fields as string[]) ?? [];
-      const base = { date_start: "2026-06-01", date_stop: "2026-06-01", campaign_id: "c1" };
-      if (fields.includes("spend")) return [{ ...base, spend: "100", impressions: "10" }];
+      const row: InsightRow = {
+        date_start: "2026-06-01",
+        date_stop: "2026-06-01",
+        campaign_id: "c1",
+      };
+      if (fields.includes("spend")) Object.assign(row, { spend: "100", impressions: "10" });
       if (fields.includes("frequency"))
-        return [{ ...base, frequency: "2.5", quality_ranking: "ABOVE_AVERAGE" }];
-      return [base];
+        Object.assign(row, { frequency: "2.5", quality_ranking: "ABOVE_AVERAGE" });
+      return [row];
     },
   });
   await syncInsights(client, "act_1", { level: "campaign", days: 1 });
