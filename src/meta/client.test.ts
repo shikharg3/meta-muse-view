@@ -239,3 +239,31 @@ test("async insights recover from a named bad field via the memoKey", async () =
   expect(posts.some((u) => u.includes("bad"))).toBe(true); // first submit tried the bad field
   expect(posts.length).toBeGreaterThanOrEqual(2); // then retried without it
 });
+
+test("drops a field Meta says must be queried alone (#100 total_postbacks)", async () => {
+  const seen: string[][] = [];
+  const fetchImpl = (async (url: string | URL) => {
+    const fields = (new URL(String(url)).searchParams.get("fields") ?? "")
+      .split(",")
+      .filter(Boolean);
+    seen.push(fields);
+    if (fields.includes("total_postbacks"))
+      return jsonResponse({
+        error: {
+          code: 100,
+          message: "(#100) total_postbacks should not be queried with other field values.",
+        },
+      });
+    return jsonResponse({ data: [{ id: "ok" }] });
+  }) as unknown as typeof fetch;
+  const client = new MetaClient(
+    { appId: "1", appSecret: "s", token: "t", version: "v25.0" },
+    { fetchImpl, sleep: async () => {} },
+  );
+  const rows = await client.getInsights("act_1", {
+    level: "account",
+    fields: ["spend", "total_postbacks"],
+  });
+  expect(rows[0].id).toBe("ok");
+  expect(seen.at(-1)).not.toContain("total_postbacks"); // retried without the exclusive field
+});

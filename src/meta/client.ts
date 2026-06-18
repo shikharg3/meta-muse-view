@@ -211,10 +211,14 @@ export class MetaClient implements InsightsClient {
     }
   }
 
-  /** #100 (nonexisting), #10 (permission) and #3 (unknown) all mean "a field must be dropped". */
+  /** #100 (nonexisting), #10 (permission), #3 (unknown), and "should not be queried with other
+   *  field values" (a field that must be requested alone, e.g. total_postbacks) all mean a field
+   *  must be dropped from the set. */
   private isFieldError(e: unknown): boolean {
     const m = e instanceof Error ? e.message : "";
-    return /error (?:100|10|3):|nonexisting field|not have permission|[Uu]nknown fields?/.test(m);
+    return /error (?:100|10|3):|nonexisting field|not have permission|[Uu]nknown fields?|should not be queried with other/.test(
+      m,
+    );
   }
 
   /** Field names Meta named in the error, if any ("nonexisting field (x)" / "Unknown fields: x"). */
@@ -222,6 +226,10 @@ export class MetaClient implements InsightsClient {
     const out: string[] = [];
     const nonexisting = message.match(/nonexisting field \(([^)]+)\)/i);
     if (nonexisting) out.push(...nonexisting[1].split(/[\s,]+/));
+    // "(#100) total_postbacks should not be queried with other field values" — names one field
+    // that is valid but mutually exclusive; drop it so the rest of the group still succeeds.
+    const exclusive = message.match(/\(#100\)\s+(\w+)\s+should not be queried with other/i);
+    if (exclusive) out.push(exclusive[1]);
     const unknown = message.match(/[Uu]nknown fields?:?\s*([\w,\s]+)/);
     if (unknown) out.push(...unknown[1].split(/[\s,]+/));
     return [...new Set(out.filter(Boolean))];
