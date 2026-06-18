@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNotNull } from "drizzle-orm";
 import { db, schema } from "@/db/client";
 import type { InsightsClient } from "@/meta/types";
 
@@ -11,6 +11,19 @@ export async function isFirstInsightsSync(accountId: string): Promise<boolean> {
     .from(schema.syncState)
     .where(eq(schema.syncState.accountId, accountId));
   return !row?.last;
+}
+
+/**
+ * Account ids that have completed at least one structure sync. Used to push never-synced
+ * accounts (e.g. newly added ones) to the front of the cycle so they get baseline data
+ * immediately instead of waiting behind every existing account's refresh.
+ */
+export async function getStructuredAccountIds(): Promise<Set<string>> {
+  const rows = await db
+    .select({ id: schema.syncState.accountId })
+    .from(schema.syncState)
+    .where(isNotNull(schema.syncState.lastStructureSync));
+  return new Set(rows.map((r) => r.id));
 }
 
 export async function markSync(

@@ -1,7 +1,7 @@
 import { test, expect, beforeEach } from "bun:test";
 import { sql } from "drizzle-orm";
 import { db } from "@/db/client";
-import { backfillStep } from "./cycle";
+import { backfillStep, orderUnsyncedFirst } from "./cycle";
 import { getCheckpoint } from "./state";
 import { addDays } from "@/lib/range";
 
@@ -41,4 +41,15 @@ test("backfillStep clamps the oldest window to the retention floor", async () =>
   // Once backfilled through the floor, further calls are no-ops.
   await backfillStep("act_2", "insights:ad", 5, today, run);
   expect(windows).toHaveLength(1);
+});
+
+test("orderUnsyncedFirst puts never-structured accounts first, preserving order within groups", () => {
+  const ids = ["a", "b", "c", "d", "e"];
+  const structured = new Set(["a", "c", "e"]); // b and d were just added
+  expect(orderUnsyncedFirst(ids, structured)).toEqual(["b", "d", "a", "c", "e"]);
+});
+
+test("orderUnsyncedFirst is a no-op when every account is already synced", () => {
+  const ids = ["a", "b", "c"];
+  expect(orderUnsyncedFirst(ids, new Set(ids))).toEqual(ids);
 });

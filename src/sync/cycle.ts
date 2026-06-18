@@ -16,6 +16,7 @@ import {
   saveFieldBlocklist,
   getCheckpoint,
   setCheckpoint,
+  getStructuredAccountIds,
 } from "./state";
 import { runOnce, type Jobs } from "./run";
 import { detectSpendDropAlerts } from "./alerts";
@@ -30,6 +31,18 @@ export const BREAKDOWN_REFRESH_DAYS = 28;
 
 const BACKFILL_CHUNK = 90;
 const LEVELS = ["account", "campaign", "adset", "ad"] as const;
+
+/**
+ * Order accounts so never-structured ones (e.g. just added to the system user) come first,
+ * preserving enumeration order within each group. The cycle is sequential and rate-limited, so a
+ * new account placed at the back of the queue can be starved for a full cycle; front-loading it
+ * guarantees it gets baseline structure + insights right away.
+ */
+export function orderUnsyncedFirst(ids: string[], structured: Set<string>): string[] {
+  const fresh = ids.filter((id) => !structured.has(id));
+  const rest = ids.filter((id) => structured.has(id));
+  return [...fresh, ...rest];
+}
 
 /**
  * Advance one dataset's historical backfill by a single chunk, resuming from a persisted
@@ -186,8 +199,11 @@ export async function runCycle(): Promise<void> {
       owned = (await db.select({ id: schema.accounts.id }).from(schema.accounts)).map((r) => r.id);
     }
     const ids = creds.accountIds.length ? owned.filter((a) => creds.accountIds.includes(a)) : owned;
-    console.log(`[sync] cycle: ${ids.length} accounts`);
-    await runOnce({ client, accountIds: ids, jobs: buildJobs() });
+    const structured = await getStructuredAccountIds();
+    const ordered = orderUnsyncedFirst(ids, structured);
+    const fresh = ids.reduce((n, id) => (structured.has(id) ? n : n + 1), 0);
+    console.log(`[sync] cycle: ${ids.length} accounts (${fresh} never synced → first)`);
+    await runOnce({ client, accountIds: ordered, jobs: buildJobs() });
     try {
       const n = await detectSpendDropAlerts();
       if (n > 0) console.log(`[sync] alerts: ${n} new spend-drop alert(s)`);
