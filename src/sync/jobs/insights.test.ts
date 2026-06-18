@@ -1,17 +1,13 @@
 import { test, expect, beforeEach } from "bun:test";
 import { sql } from "drizzle-orm";
 import { db, schema } from "@/db/client";
-import { syncInsights, trailingRange, chunkRange } from "./insights";
+import { syncInsights, syncInsightsRange, trailingRange, chunkRange } from "./insights";
 import type { InsightRow, InsightsClient } from "@/meta/types";
 import { INSIGHT_METRIC_GROUPS } from "@/meta/fieldsets";
+import { fakeInsightsClient } from "@/meta/fake-client";
 
 function makeClient(rows: InsightRow[]): InsightsClient {
-  return {
-    getAccounts: async () => [],
-    getChildren: async () => [],
-    debugToken: async () => ({ is_valid: true, scopes: [] }),
-    getInsights: async () => rows,
-  };
+  return fakeInsightsClient({ getInsights: async () => rows });
 }
 
 beforeEach(async () => {
@@ -83,15 +79,12 @@ test("chunkRange returns a single window when the range already fits", () => {
 
 test("syncInsights issues one request per chunk across a long backfill", async () => {
   let calls = 0;
-  const client: InsightsClient = {
-    getAccounts: async () => [],
-    getChildren: async () => [],
-    debugToken: async () => ({ is_valid: true, scopes: [] }),
+  const client = fakeInsightsClient({
     getInsights: async () => {
       calls++;
       return [];
     },
-  };
+  });
   // 365-day window at 90-day chunks → 5 chunks, each requested once per metric group.
   await syncInsights(client, "act_1", {
     level: "account",
@@ -103,20 +96,16 @@ test("syncInsights issues one request per chunk across a long backfill", async (
 });
 
 test("merges metric groups into one row and captures the full set in raw", async () => {
-  const client: InsightsClient = {
-    getAccounts: async () => [],
-    getChildren: async () => [],
-    debugToken: async () => ({ is_valid: true, scopes: [] }),
+  const client = fakeInsightsClient({
     getInsights: async (_id, params) => {
       const fields = (params.fields as string[]) ?? [];
       const base = { date_start: "2026-06-01", date_stop: "2026-06-01", campaign_id: "c1" };
-      // Simulate Meta returning only the requested group's metrics.
       if (fields.includes("spend")) return [{ ...base, spend: "100", impressions: "10" }];
       if (fields.includes("frequency"))
         return [{ ...base, frequency: "2.5", quality_ranking: "ABOVE_AVERAGE" }];
       return [base];
     },
-  };
+  });
   await syncInsights(client, "act_1", { level: "campaign", days: 1 });
   const [row] = await db.select().from(schema.insightsDaily);
   expect(row.spend).toBeCloseTo(100);
@@ -128,10 +117,7 @@ test("merges metric groups into one row and captures the full set in raw", async
 }, 20000);
 
 test("captures attribution-window splits in a separate column on refresh", async () => {
-  const client: InsightsClient = {
-    getAccounts: async () => [],
-    getChildren: async () => [],
-    debugToken: async () => ({ is_valid: true, scopes: [] }),
+  const client = fakeInsightsClient({
     getInsights: async (_id, params) => {
       const base = { date_start: "2026-06-01", date_stop: "2026-06-01", campaign_id: "c1" };
       if (params.action_attribution_windows)
@@ -144,7 +130,7 @@ test("captures attribution-window splits in a separate column on refresh", async
       if ((params.fields as string[]).includes("spend")) return [{ ...base, spend: "10" }];
       return [base];
     },
-  };
+  });
   await syncInsights(client, "act_1", { level: "campaign", days: 1 });
   const [row] = await db.select().from(schema.insightsDaily);
   expect(row.spend).toBeCloseTo(10);
@@ -155,17 +141,32 @@ test("captures attribution-window splits in a separate column on refresh", async
 
 test("never requests a duplicate field (avoids Meta #2500), but keeps the id fields", async () => {
   const seen: string[][] = [];
-  const client: InsightsClient = {
-    getAccounts: async () => [],
-    getChildren: async () => [],
-    debugToken: async () => ({ is_valid: true, scopes: [] }),
+  const client = fakeInsightsClient({
     getInsights: async (_id, params) => {
       seen.push(params.fields as string[]);
       return [];
     },
-  };
+  });
   await syncInsights(client, "act_1", { level: "campaign", days: 1 });
   expect(seen.length).toBeGreaterThan(0);
   for (const f of seen) expect(f.length).toBe(new Set(f).size); // no field appears twice
   expect(seen.some((f) => f.includes("account_id"))).toBe(true); // id fields still requested
+}, 20000);
+
+test("backfill mode (useAsync) routes every metric group through async report runs", async () => {
+  let asyncCalls = 0;
+  let syncCalls = 0;
+  const client = fakeInsightsClient({
+    runAsyncInsights: async () => {
+      asyncCalls++;
+      return [];
+    },
+    getInsights: async () => {
+      syncCalls++;
+      return [];
+    },
+  });
+  await syncInsightsRange(client, "act_1", "account", "2026-06-01", "2026-06-02", false, true);
+  expect(asyncCalls).toBe(INSIGHT_METRIC_GROUPS.length);
+  expect(syncCalls).toBe(0);
 }, 20000);

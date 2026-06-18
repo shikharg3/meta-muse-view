@@ -1,5 +1,6 @@
 import { test, expect } from "bun:test";
 import { MetaClient } from "./client";
+import type { MetaApiEvent } from "./types";
 
 function jsonResponse(body: unknown, headers: Record<string, string> = {}) {
   return new Response(JSON.stringify(body), {
@@ -165,4 +166,76 @@ test("applies a persisted field blocklist on load, skipping those fields without
   expect(rows[0].id).toBe("ok");
   expect(urls).toHaveLength(1); // blocklist applied up front: no error round-trip, no bisection
   expect(urls[0]).not.toContain("gated");
+});
+
+test("emits a rate_limit event when retries are exhausted on a #17", async () => {
+  const events: MetaApiEvent[] = [];
+  const client = new MetaClient(
+    { appId: "1", appSecret: "s", token: "t", version: "v25.0" },
+    {
+      fetchImpl: (async () =>
+        jsonResponse({
+          error: { code: 17, message: "User request limit reached" },
+        })) as unknown as typeof fetch,
+      sleep: async () => {},
+      maxRetries: 1,
+      onEvent: (e) => events.push(e),
+    },
+  );
+  await expect(client.getChildren("act_1", "campaigns", ["id"])).rejects.toThrow(/error 17/);
+  expect(events).toHaveLength(1);
+  expect(events[0]).toMatchObject({ kind: "rate_limit", code: 17, accountId: "act_1" });
+});
+
+test("emits a proactive rate_limit event when usage headers cross the threshold", async () => {
+  const events: MetaApiEvent[] = [];
+  const client = new MetaClient(
+    { appId: "1", appSecret: "s", token: "t", version: "v25.0" },
+    {
+      fetchImpl: (async () =>
+        jsonResponse(
+          { data: [] },
+          {
+            "x-business-use-case-usage": JSON.stringify({
+              act_1: [{ type: "ads_insights", call_count: 95, total_cputime: 10, total_time: 10 }],
+            }),
+          },
+        )) as unknown as typeof fetch,
+      sleep: async () => {},
+      onEvent: (e) => events.push(e),
+    },
+  );
+  await client.getChildren("act_1", "campaigns", ["id"]);
+  expect(events).toHaveLength(1);
+  expect(events[0]).toMatchObject({ kind: "rate_limit", code: 0 });
+  expect(events[0].pressure).toBe(95);
+});
+
+test("async insights recover from a named bad field via the memoKey", async () => {
+  const posts: string[] = [];
+  const fetchImpl = (async (url: string | URL, init?: { method?: string }) => {
+    const u = String(url);
+    if (init?.method === "POST") {
+      posts.push(u);
+      if (u.includes("bad"))
+        return jsonResponse({ error: { code: 100, message: "(#100) nonexisting field (bad)" } });
+      return jsonResponse({ report_run_id: "run1" });
+    }
+    if (u.includes("run1/insights"))
+      return jsonResponse({ data: [{ date_start: "2026-06-01", spend: "5" }] });
+    if (u.includes("run1")) return jsonResponse({ async_status: "Job Completed" });
+    return jsonResponse({ data: [] });
+  }) as unknown as typeof fetch;
+  const client = new MetaClient(
+    { appId: "1", appSecret: "s", token: "t", version: "v25.0" },
+    { fetchImpl, sleep: async () => {} },
+  );
+  const rows = await client.runAsyncInsights(
+    "act_1",
+    { level: "account", fields: ["good", "bad"] },
+    { memoKey: "insights:account:" },
+  );
+  expect(rows).toHaveLength(1);
+  expect(posts.some((u) => u.includes("bad"))).toBe(true); // first submit tried the bad field
+  expect(posts.length).toBeGreaterThanOrEqual(2); // then retried without it
 });

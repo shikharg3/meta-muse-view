@@ -1,17 +1,16 @@
 import { test, expect } from "bun:test";
 import { buildReport, normalizeColumns, normalizeBreakdown, resolveRange } from "./report";
 import type { InsightRow, InsightsClient } from "@/meta/types";
+import { fakeInsightsClient } from "@/meta/fake-client";
 
-const fakeClient = (byAccount: Record<string, InsightRow[] | "throw">): InsightsClient => ({
-  getAccounts: async () => [],
-  getChildren: async () => [],
-  debugToken: async () => ({ is_valid: true, scopes: [] }),
-  getInsights: async (id: string) => {
-    const v = byAccount[id];
-    if (v === "throw") throw new Error("no access");
-    return v ?? [];
-  },
-});
+const fakeClient = (byAccount: Record<string, InsightRow[] | "throw">): InsightsClient =>
+  fakeInsightsClient({
+    getInsights: async (id: string) => {
+      const v = byAccount[id];
+      if (v === "throw") throw new Error("no access");
+      return v ?? [];
+    },
+  });
 
 const row = (date: string, campaign: string, o: Partial<InsightRow>): InsightRow => ({
   date_start: date,

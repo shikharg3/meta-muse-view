@@ -77,32 +77,52 @@ export const EDGE_SYNCS: { type: string; edge: string; fields: string[] }[] = [
   { type: "conversion_goal", edge: "conversion_goals", fields: ["id", "name"] },
 ];
 
-/** Pull each reference edge into meta_objects (raw-complete). Returns rows written. */
+/**
+ * Pull every reference edge into meta_objects (raw-complete). The edges are fetched in ONE batched
+ * request (Graph caps a batch at 50; there are ~11) instead of one GET each, cutting per-account
+ * round-trips ~10x. A sub-request that fails (e.g. permission-gated) comes back as null and is
+ * skipped; the rare edge with more than one page falls back to a full paged fetch. Returns rows
+ * written.
+ */
 export async function syncEdges(client: InsightsClient, accountId: string): Promise<number> {
+  const bodies = await client.batchGet(
+    EDGE_SYNCS.map((c) => `${accountId}/${c.edge}?fields=${c.fields.join(",")}&limit=200`),
+  );
   let written = 0;
-  for (const cfg of EDGE_SYNCS) {
-    try {
-      const rows = await client.getChildren(accountId, cfg.edge, cfg.fields, { limit: 200 });
-      for (const r of rows) {
-        const vals = {
-          objectType: cfg.type,
-          id: String(r.id),
-          accountId,
-          name: str(r.name) ?? str((r as GraphNode).title) ?? str((r as GraphNode).username),
-          raw: r,
-          syncedAt: new Date(),
-        };
-        await db
-          .insert(schema.metaObjects)
-          .values(vals)
-          .onConflictDoUpdate({
-            target: [schema.metaObjects.objectType, schema.metaObjects.id],
-            set: vals,
-          });
-        written++;
+  for (let i = 0; i < EDGE_SYNCS.length; i++) {
+    const cfg = EDGE_SYNCS[i];
+    const body = bodies[i];
+    if (!body) continue; // failed/permission-gated sub-request — skip silently
+    let rows = Array.isArray(body.data) ? (body.data as GraphNode[]) : [];
+    const paging = body.paging as { next?: unknown } | undefined;
+    if (paging?.next) {
+      // Overflowed one page (rare for reference edges): fetch the rest paged.
+      try {
+        rows = await client.getChildren(accountId, cfg.edge, cfg.fields, { limit: 200 });
+      } catch (e) {
+        console.error(
+          `[edges] ${cfg.edge} paging fallback skipped:`,
+          e instanceof Error ? e.message : e,
+        );
       }
-    } catch (e) {
-      console.error(`[edges] ${cfg.edge} skipped:`, e instanceof Error ? e.message : e);
+    }
+    for (const r of rows) {
+      const vals = {
+        objectType: cfg.type,
+        id: String(r.id),
+        accountId,
+        name: str(r.name) ?? str((r as GraphNode).title) ?? str((r as GraphNode).username),
+        raw: r,
+        syncedAt: new Date(),
+      };
+      await db
+        .insert(schema.metaObjects)
+        .values(vals)
+        .onConflictDoUpdate({
+          target: [schema.metaObjects.objectType, schema.metaObjects.id],
+          set: vals,
+        });
+      written++;
     }
   }
   return written;

@@ -46,7 +46,12 @@ export function chunkRange(
   return windows;
 }
 
-/** Sync insights over an explicit [since, until] window (chunked), merging all metric groups. */
+/**
+ * Sync insights over an explicit [since, until] window (chunked), merging all metric groups.
+ * `useAsync` routes each group through an async report run instead of a synchronous GET — used for
+ * the heavy historical backfill so its compute lands on Meta's async budget (eases the #80004 /
+ * cputime throttles that hit the foreground refresh).
+ */
 export async function syncInsightsRange(
   client: InsightsClient,
   accountId: string,
@@ -54,6 +59,7 @@ export async function syncInsightsRange(
   since: string,
   until: string,
   attributionWindows = false,
+  useAsync = false,
 ): Promise<number> {
   let written = 0;
   // Long ranges are chunked so each request stays within Meta's per-call data limits.
@@ -63,7 +69,7 @@ export async function syncInsightsRange(
     const byKey = new Map<string, InsightRow>();
     for (const group of INSIGHT_METRIC_GROUPS) {
       try {
-        const rows = await client.getInsights(accountId, {
+        const params = {
           level,
           time_range: { since: window.since, until: window.until },
           time_increment: 1,
@@ -71,7 +77,10 @@ export async function syncInsightsRange(
           // would trigger Meta error 2500 ("Field account_id specified more than once").
           fields: [...new Set([...group, "account_id", "campaign_id", "adset_id", "ad_id"])],
           use_unified_attribution_setting: true,
-        });
+        };
+        const rows = useAsync
+          ? await client.runAsyncInsights(accountId, params, { memoKey: `insights:${level}:` })
+          : await client.getInsights(accountId, params);
         for (const r of rows) {
           const entityId =
             level === "account" ? accountId : String(r[ID_FIELD[level]] ?? accountId);

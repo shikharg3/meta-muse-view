@@ -17,6 +17,8 @@ import {
   getCheckpoint,
   setCheckpoint,
   getStructuredAccountIds,
+  recordSyncEvent,
+  pruneSyncEvents,
 } from "./state";
 import { runOnce, type Jobs } from "./run";
 import { detectSpendDropAlerts } from "./alerts";
@@ -84,7 +86,9 @@ function buildJobs(): Jobs {
         for (const level of LEVELS) {
           await syncInsights(client, id, { level, days: INSIGHTS_REFRESH_DAYS });
           await backfillStep(id, `insights:${level}`, BACKFILL_DAYS, today, (s, u) =>
-            syncInsightsRange(client, id, level, s, u),
+            // Backfill via async report runs (useAsync) so the heavy history lands on Meta's async
+            // budget rather than the synchronous one the foreground refresh shares.
+            syncInsightsRange(client, id, level, s, u, false, true),
           );
         }
         await markSync(id, "insights", null);
@@ -181,11 +185,15 @@ export async function runCycle(): Promise<void> {
         limiter: new Limiter(1, 250),
         // Persist discovered bad-field sets so the costly bisection discovery runs once, not per restart.
         fieldStore: { load: getFieldBlocklist, save: saveFieldBlocklist },
+        // Persist rate-limit/throttle events so admins can see when (and why) the API pushes back.
+        onEvent: (e) => void recordSyncEvent(e).catch(() => {}),
       },
     );
     // Record token health up front so a deleted/expired app is captured even when
     // the account enumeration below throws (otherwise the badge stays stale-green).
     await recordTokenHealth(client);
+    // Keep the API event log bounded — it's a recent-activity view, not an audit trail.
+    await pruneSyncEvents().catch((e) => console.error("[sync] prune events failed:", e));
     // Account enumeration can hit a transient rate limit (#80004); fall back to the accounts
     // already known in the DB so a throttled getAccounts doesn't abort the whole cycle.
     let owned: string[];

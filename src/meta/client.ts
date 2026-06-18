@@ -1,7 +1,7 @@
 import { appsecretProof } from "./proof";
 import { buildQuery } from "./url";
-import { parseUsage, shouldBackoff } from "./rate-limit";
-import type { GraphNode, InsightRow, InsightsClient } from "./types";
+import { parseUsage, shouldBackoff, peakPressure } from "./rate-limit";
+import type { GraphNode, InsightRow, InsightsClient, MetaApiEvent } from "./types";
 import { NODE_FIELDS } from "./fieldsets";
 import { Limiter } from "./limiter";
 
@@ -24,6 +24,7 @@ export interface MetaClientDeps {
   maxRetries?: number;
   limiter?: Limiter;
   fieldStore?: FieldStore;
+  onEvent?: (e: MetaApiEvent) => void;
 }
 
 const BASE = "https://graph.facebook.com";
@@ -35,6 +36,8 @@ export class MetaClient implements InsightsClient {
   private limiter?: Limiter;
   private fieldStore?: FieldStore;
   private loaded = new Set<string>();
+  private onEvent?: (e: MetaApiEvent) => void;
+  private lastProactive = new Map<string, number>();
 
   constructor(
     private creds: MetaCredentials,
@@ -51,11 +54,28 @@ export class MetaClient implements InsightsClient {
     this.maxRetries = deps.maxRetries ?? 5;
     this.limiter = deps.limiter;
     this.fieldStore = deps.fieldStore;
+    this.onEvent = deps.onEvent;
   }
 
   /** Route a request through the optional limiter (concurrency + pacing); identity when unset. */
   private gate<T>(fn: () => Promise<T>): Promise<T> {
     return this.limiter ? this.limiter.run(fn) : fn();
+  }
+
+  /** Forward a notable API event to the sink (if any). Proactive-backoff events are coalesced per
+   *  account so a run near the limit doesn't flood the event log. */
+  private emit(e: MetaApiEvent): void {
+    if (!this.onEvent) return;
+    if (e.kind === "rate_limit" && e.code === 0) {
+      const last = this.lastProactive.get(e.accountId) ?? 0;
+      if (e.at - last < 30_000) return;
+      this.lastProactive.set(e.accountId, e.at);
+    }
+    try {
+      this.onEvent(e);
+    } catch {
+      // the sink must never break a request
+    }
   }
 
   private url(path: string, params: Record<string, unknown>): string {
@@ -98,19 +118,42 @@ export class MetaClient implements InsightsClient {
           code === 32 ||
           code === 613 ||
           (code >= 80000 && code <= 80014);
-        if (rateLimited && attempt < this.maxRetries) {
-          attempt++;
-          await this.sleep(Math.min(60_000, backoffMs(attempt) * 4));
-          continue;
+        if (rateLimited) {
+          if (attempt < this.maxRetries) {
+            attempt++;
+            await this.sleep(Math.min(60_000, backoffMs(attempt) * 4));
+            continue;
+          }
+          // Retries exhausted on a rate-limit code — surface it before giving up on this call.
+          const u = accountId ? parseUsage(res.headers, accountId) : null;
+          this.emit({
+            kind: "rate_limit",
+            code,
+            message: String(error.message ?? ""),
+            accountId,
+            retryAfterMin: u?.estimatedTimeToRegainAccess ?? 0,
+            pressure: u ? peakPressure(u) : 0,
+            at: Date.now(),
+          });
         }
         throw new Error(`Meta error ${error.code}: ${error.message}`);
       }
       if (accountId) {
         const usage = parseUsage(res.headers, accountId);
-        if (shouldBackoff(usage))
+        if (shouldBackoff(usage)) {
+          this.emit({
+            kind: "rate_limit",
+            code: 0,
+            message: `approaching limit (peak ${peakPressure(usage)}%)`,
+            accountId,
+            retryAfterMin: usage.estimatedTimeToRegainAccess,
+            pressure: peakPressure(usage),
+            at: Date.now(),
+          });
           await this.sleep(
             Math.min(60_000, Math.max(1000, usage.estimatedTimeToRegainAccess * 60_000)),
           );
+        }
       }
       return body;
     }
@@ -216,20 +259,24 @@ export class MetaClient implements InsightsClient {
     return find(fields);
   }
 
-  /** GET a fields-bearing edge, dropping fields Meta rejects (named fast-path, else bisection). */
-  private async pagedWithRecovery(
-    path: string,
-    params: Record<string, unknown>,
-    accountId: string,
+  /**
+   * Run `exec(fields)` with field-error recovery: strip the persisted blocklist first, drop any
+   * field Meta names in an error (fast path), else isolate the bad ones by bisection. Shared by the
+   * paged, single-node, and async-insights paths so all three self-heal identically.
+   */
+  private async withFieldRecovery<T>(
     memoKey: string,
-  ): Promise<GraphNode[]> {
-    const requested = Array.isArray(params.fields) ? (params.fields as string[]) : null;
-    if (!requested) return this.getPaged(path, params, accountId);
+    requested: string[],
+    accountId: string,
+    probePath: string,
+    probeParams: Record<string, unknown>,
+    exec: (fields: string[]) => Promise<T>,
+  ): Promise<T> {
     await this.ensureLoaded(memoKey);
     for (let attempt = 0; attempt < 12; attempt++) {
       const fields = this.stripBad(memoKey, requested);
       try {
-        return await this.getPaged(path, { ...params, fields }, accountId);
+        return await exec(fields);
       } catch (e) {
         if (!this.isFieldError(e)) throw e;
         const named = this.parseBadFields(e instanceof Error ? e.message : "").filter((f) =>
@@ -239,39 +286,43 @@ export class MetaClient implements InsightsClient {
           this.recordBad(memoKey, named);
           continue;
         }
-        const good = await this.resolveGoodFields(path, params, accountId, fields, memoKey);
-        return this.getPaged(path, { ...params, fields: good }, accountId);
+        const good = await this.resolveGoodFields(
+          probePath,
+          probeParams,
+          accountId,
+          fields,
+          memoKey,
+        );
+        return exec(good);
       }
     }
-    throw new Error(`Meta: could not resolve a valid field set for ${path}`);
+    throw new Error(`Meta: could not resolve a valid field set for ${probePath}`);
+  }
+
+  /** GET a fields-bearing edge, dropping fields Meta rejects (named fast-path, else bisection). */
+  private pagedWithRecovery(
+    path: string,
+    params: Record<string, unknown>,
+    accountId: string,
+    memoKey: string,
+  ): Promise<GraphNode[]> {
+    const requested = Array.isArray(params.fields) ? (params.fields as string[]) : null;
+    if (!requested) return this.getPaged(path, params, accountId);
+    return this.withFieldRecovery(memoKey, requested, accountId, path, params, (fields) =>
+      this.getPaged(path, { ...params, fields }, accountId),
+    );
   }
 
   /** GET a single node with its full field set, dropping fields Meta rejects (memoKey = node type). */
-  async getNodeFull(
-    id: string,
-    fields: string[],
-    memoKey: string,
-    accountId = "",
-  ): Promise<GraphNode> {
-    await this.ensureLoaded(memoKey);
-    for (let attempt = 0; attempt < 12; attempt++) {
-      const use = this.stripBad(memoKey, fields);
-      try {
-        return (await this.getPage(id, { fields: use }, accountId)) as GraphNode;
-      } catch (e) {
-        if (!this.isFieldError(e)) throw e;
-        const named = this.parseBadFields(e instanceof Error ? e.message : "").filter((f) =>
-          use.includes(f),
-        );
-        if (named.length > 0) {
-          this.recordBad(memoKey, named);
-          continue;
-        }
-        const good = await this.resolveGoodFields(id, {}, accountId, use, memoKey);
-        return (await this.getPage(id, { fields: good }, accountId)) as GraphNode;
-      }
-    }
-    throw new Error(`Meta: could not resolve a valid field set for ${id}`);
+  getNodeFull(id: string, fields: string[], memoKey: string, accountId = ""): Promise<GraphNode> {
+    return this.withFieldRecovery(
+      memoKey,
+      fields,
+      accountId,
+      id,
+      {},
+      async (use) => (await this.getPage(id, { fields: use }, accountId)) as GraphNode,
+    );
   }
 
   /** Submit an async insights report; returns the report_run_id. */
@@ -285,10 +336,10 @@ export class MetaClient implements InsightsClient {
   }
 
   /** Submit an async insights report, poll to completion, then page its rows. */
-  async runAsyncInsights(
+  private async runAsyncOnce(
     objectId: string,
     params: Record<string, unknown>,
-    opts: { pollMs?: number; maxPolls?: number } = {},
+    opts: { pollMs?: number; maxPolls?: number },
   ): Promise<InsightRow[]> {
     const runId = await this.submitAsyncInsights(objectId, params);
     const pollMs = opts.pollMs ?? 5000;
@@ -305,6 +356,25 @@ export class MetaClient implements InsightsClient {
       await this.sleep(pollMs);
     }
     throw new Error(`Meta async report timed out for ${objectId}`);
+  }
+
+  /** Async insights with the same field-error recovery as the sync paths (pass a memoKey). */
+  async runAsyncInsights(
+    objectId: string,
+    params: Record<string, unknown>,
+    opts: { memoKey?: string; pollMs?: number; maxPolls?: number } = {},
+  ): Promise<InsightRow[]> {
+    const requested = Array.isArray(params.fields) ? (params.fields as string[]) : null;
+    if (!opts.memoKey || !requested) return this.runAsyncOnce(objectId, params, opts);
+    const accountId = objectId.startsWith("act_") ? objectId : "";
+    return this.withFieldRecovery(
+      opts.memoKey,
+      requested,
+      accountId,
+      `${objectId}/insights`,
+      params,
+      (fields) => this.runAsyncOnce(objectId, { ...params, fields }, opts),
+    );
   }
 
   /** Batched GET of relative urls (Graph caps each batch at 50); null per failed item. */

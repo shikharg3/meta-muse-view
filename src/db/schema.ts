@@ -337,3 +337,20 @@ export const metaActivities = pgTable(
   },
   (t) => [index("meta_activities_account_time_idx").on(t.accountId, t.eventTime)],
 );
+
+// Notable Meta API events (rate-limit throttles + hard failures) surfaced to admins. Append-only,
+// pruned by age; id is a uuid so concurrent inserts never collide.
+export const syncEvents = pgTable(
+  "sync_events",
+  {
+    id: text("id").primaryKey(),
+    at: timestamp("at", { withTimezone: true }).notNull().defaultNow(),
+    kind: text("kind").notNull(), // "rate_limit" | "error"
+    code: integer("code").notNull(), // Meta error code (0 = proactive backoff / unknown)
+    accountId: text("account_id"),
+    message: text("message").notNull(),
+    retryAfterMin: integer("retry_after_min"), // estimated minutes until the throttle lifts
+    pressure: integer("pressure"), // peak BUC utilization 0-100 at the time
+  },
+  (t) => [index("sync_events_at_idx").on(t.at)],
+);

@@ -1,4 +1,5 @@
 export interface Usage {
+  callCount: number;
   totalCputime: number;
   totalTime: number;
   appIdUtilPct: number;
@@ -15,24 +16,37 @@ function num(v: unknown): number {
 export function parseUsage(headers: Headers, accountId: string): Usage {
   const buc = safeJson(headers.get("x-business-use-case-usage"));
   const throttle = safeJson(headers.get("x-fb-ads-insights-throttle"));
+  // An account can carry several BUC buckets (ads_management + ads_insights, …); take the worst
+  // dimension across all of them so we back off on whichever bucket is closest to its limit.
   const list = buc?.[accountId];
-  const entry = Array.isArray(list) ? (list[0] as Record<string, unknown> | undefined) : undefined;
+  const entries = Array.isArray(list) ? (list as Record<string, unknown>[]) : [];
+  let callCount = 0;
+  let totalCputime = 0;
+  let totalTime = 0;
+  let regain = 0;
+  for (const e of entries) {
+    callCount = Math.max(callCount, num(e?.call_count));
+    totalCputime = Math.max(totalCputime, num(e?.total_cputime));
+    totalTime = Math.max(totalTime, num(e?.total_time));
+    regain = Math.max(regain, num(e?.estimated_time_to_regain_access));
+  }
   return {
-    totalCputime: num(entry?.total_cputime),
-    totalTime: num(entry?.total_time),
-    estimatedTimeToRegainAccess: num(entry?.estimated_time_to_regain_access),
+    callCount,
+    totalCputime,
+    totalTime,
+    estimatedTimeToRegainAccess: regain,
     appIdUtilPct: num(throttle?.app_id_util_pct),
     accIdUtilPct: num(throttle?.acc_id_util_pct),
   };
 }
 
+/** Worst utilization dimension (0-100), used to decide and report proactive backoff. */
+export function peakPressure(u: Usage): number {
+  return Math.max(u.callCount, u.totalCputime, u.totalTime, u.appIdUtilPct, u.accIdUtilPct);
+}
+
 export function shouldBackoff(u: Usage): boolean {
-  return (
-    u.totalCputime >= THRESHOLD ||
-    u.totalTime >= THRESHOLD ||
-    u.appIdUtilPct >= THRESHOLD ||
-    u.accIdUtilPct >= THRESHOLD
-  );
+  return peakPressure(u) >= THRESHOLD;
 }
 
 function safeJson(s: string | null): Record<string, unknown> | undefined {

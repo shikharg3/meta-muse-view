@@ -13,8 +13,16 @@ test("pickAction sums the matching action type and returns 0 when absent", () =>
 
 test("normalizeInsightRow maps strings to numbers and derives conversions/roas", () => {
   const row: InsightRow = {
-    date_start: "2026-06-01", date_stop: "2026-06-01", account_id: "act_1", campaign_id: "c1",
-    spend: "100.5", impressions: "1000", clicks: "50", ctr: "5", cpc: "2.01", cpm: "100.5",
+    date_start: "2026-06-01",
+    date_stop: "2026-06-01",
+    account_id: "act_1",
+    campaign_id: "c1",
+    spend: "100.5",
+    impressions: "1000",
+    clicks: "50",
+    ctr: "5",
+    cpc: "2.01",
+    cpm: "100.5",
     actions: [{ action_type: "omni_purchase", value: "10" }],
     action_values: [{ action_type: "omni_purchase", value: "300" }],
     purchase_roas: [{ action_type: "omni_purchase", value: "2.98" }],

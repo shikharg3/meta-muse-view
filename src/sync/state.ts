@@ -1,6 +1,6 @@
-import { and, eq, isNotNull } from "drizzle-orm";
+import { and, eq, isNotNull, desc, lt } from "drizzle-orm";
 import { db, schema } from "@/db/client";
-import type { InsightsClient } from "@/meta/types";
+import type { InsightsClient, MetaApiEvent } from "@/meta/types";
 
 type Phase = "structure" | "insights";
 
@@ -146,4 +146,29 @@ export async function saveFieldBlocklist(memoKey: string, fields: string[]): Pro
       target: schema.metaFieldBlocklist.memoKey,
       set: { fields, updatedAt: new Date() },
     });
+}
+
+/** Persist a notable API event (rate-limit throttle or hard failure) for admin visibility. */
+export async function recordSyncEvent(e: MetaApiEvent): Promise<void> {
+  await db.insert(schema.syncEvents).values({
+    id: crypto.randomUUID(),
+    at: new Date(e.at),
+    kind: e.kind,
+    code: e.code,
+    accountId: e.accountId || null,
+    message: e.message.slice(0, 500),
+    retryAfterMin: e.retryAfterMin,
+    pressure: e.pressure,
+  });
+}
+
+/** Most recent API events, newest first. */
+export function getRecentSyncEvents(limit = 50) {
+  return db.select().from(schema.syncEvents).orderBy(desc(schema.syncEvents.at)).limit(limit);
+}
+
+/** Drop API events older than `days` so the log stays bounded. */
+export async function pruneSyncEvents(days = 7): Promise<void> {
+  const cutoff = new Date(Date.now() - days * 86_400_000);
+  await db.delete(schema.syncEvents).where(lt(schema.syncEvents.at, cutoff));
 }

@@ -3,15 +3,13 @@ import { sql } from "drizzle-orm";
 import { db, schema } from "@/db/client";
 import { syncBreakdowns } from "./breakdowns";
 import type { InsightRow, InsightsClient } from "@/meta/types";
+import { fakeInsightsClient } from "@/meta/fake-client";
 
 function clientFor(byBreakdown: Record<string, InsightRow[]>): InsightsClient {
-  return {
-    getAccounts: async () => [],
-    getChildren: async () => [],
-    debugToken: async () => ({ is_valid: true, scopes: [] }),
+  return fakeInsightsClient({
     getInsights: async (_id: string, params: Record<string, unknown>) =>
       byBreakdown[String(params.breakdowns)] ?? [],
-  };
+  });
 }
 
 beforeEach(async () => {
@@ -94,10 +92,7 @@ test("multi-dimension groups become one breakdown_type with per-dim dims", async
 });
 
 test("a group Meta rejects is skipped without failing the others", async () => {
-  const client: InsightsClient = {
-    getAccounts: async () => [],
-    getChildren: async () => [],
-    debugToken: async () => ({ is_valid: true, scopes: [] }),
+  const client = fakeInsightsClient({
     getInsights: async (_id, params) => {
       if (String(params.breakdowns) === "bad_dim")
         throw new Error("(#100) bad_dim is not a valid breakdown");
@@ -111,7 +106,7 @@ test("a group Meta rejects is skipped without failing the others", async () => {
         },
       ];
     },
-  };
+  });
   const written = await syncBreakdowns(client, "act_1", {
     groups: [["bad_dim"], ["country"]],
     days: 1,

@@ -12,6 +12,7 @@ import { isCycleRunning } from "@/sync/cycle";
 import { syncClients } from "@/sync/jobs/clients";
 import { parseNotionDbId } from "@/notion/client";
 import { requireAdmin, audit } from "./auth";
+import { getRecentSyncEvents } from "@/sync/state";
 
 export interface SettingsView {
   appId: string;
@@ -25,6 +26,19 @@ export interface SettingsView {
   syncRunning: boolean;
   notion: { configured: boolean; dbId: string; clients: number; lastSync: string | null };
   chat: { configured: boolean; model: string; effort: string };
+  health: {
+    rateLimitedLastHour: number;
+    events: {
+      at: string;
+      kind: string;
+      code: number;
+      accountId: string | null;
+      message: string;
+      retryAfterMin: number | null;
+      pressure: number | null;
+    }[];
+    accountErrors: { accountId: string; error: string; at: string | null }[];
+  };
 }
 
 export interface CredsForm {
@@ -47,6 +61,8 @@ export async function fetchSettings(): Promise<SettingsView> {
     .where(eq(schema.tokenHealth.id, "singleton"));
   const states = await db.select().from(schema.syncState);
   const clientRows = await db.select({ syncedAt: schema.clients.syncedAt }).from(schema.clients);
+  const events = await getRecentSyncEvents(50);
+  const hourAgo = Date.now() - 3_600_000;
   return {
     appId: cred?.appId ?? "",
     businessId: cred?.businessId ?? "",
@@ -87,6 +103,27 @@ export async function fetchSettings(): Promise<SettingsView> {
       configured: Boolean(cred?.anthropicTokenEnc),
       model: cred?.chatModel ?? DEFAULT_CHAT_MODEL,
       effort: cred?.chatEffort ?? DEFAULT_CHAT_EFFORT,
+    },
+    health: {
+      rateLimitedLastHour: events.filter(
+        (e) => e.kind === "rate_limit" && e.at.getTime() >= hourAgo,
+      ).length,
+      events: events.map((e) => ({
+        at: e.at.toISOString(),
+        kind: e.kind,
+        code: e.code,
+        accountId: e.accountId,
+        message: e.message,
+        retryAfterMin: e.retryAfterMin,
+        pressure: e.pressure,
+      })),
+      accountErrors: states
+        .filter((s) => s.status === "error" && s.lastError)
+        .map((s) => ({
+          accountId: s.accountId,
+          error: s.lastError as string,
+          at: (s.lastInsightsSync ?? s.lastStructureSync)?.toISOString() ?? null,
+        })),
     },
   };
 }

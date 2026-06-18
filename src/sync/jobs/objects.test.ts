@@ -3,14 +3,14 @@ import { sql } from "drizzle-orm";
 import { db, schema } from "@/db/client";
 import { syncEdges, syncActivities, syncLeadForms } from "./objects";
 import type { GraphNode, InsightsClient } from "@/meta/types";
+import { fakeInsightsClient } from "@/meta/fake-client";
 
 function edgeClient(byEdge: Record<string, GraphNode[]>): InsightsClient {
-  return {
-    getAccounts: async () => [],
+  const edgeOf = (url: string) => url.split("?")[0].split("/").pop() ?? "";
+  return fakeInsightsClient({
     getChildren: async (_p: string, edge: string) => byEdge[edge] ?? [],
-    debugToken: async () => ({ is_valid: true, scopes: [] }),
-    getInsights: async () => [],
-  };
+    batchGet: async (urls) => urls.map((u) => ({ data: byEdge[edgeOf(u)] ?? [] })),
+  });
 }
 
 beforeEach(async () => {
@@ -34,16 +34,15 @@ test("syncEdges captures reference objects by type into meta_objects", async () 
 });
 
 test("syncEdges skips an edge that errors without failing the rest", async () => {
-  const client: InsightsClient = {
-    getAccounts: async () => [],
-    getInsights: async () => [],
-    debugToken: async () => ({ is_valid: true, scopes: [] }),
-    getChildren: async (_p, edge) => {
-      if (edge === "customaudiences") throw new Error("(#10) permission");
-      if (edge === "adlabels") return [{ id: "l1", name: "Q3" }];
-      return [];
-    },
-  };
+  const client = fakeInsightsClient({
+    // A failed sub-request comes back as null in the batch (here: the permission-gated edge).
+    batchGet: async (urls) =>
+      urls.map((u) => {
+        if (u.startsWith("act_1/customaudiences")) return null;
+        if (u.startsWith("act_1/adlabels")) return { data: [{ id: "l1", name: "Q3" }] };
+        return { data: [] };
+      }),
+  });
   const written = await syncEdges(client, "act_1");
   expect(written).toBe(1);
   expect((await db.select().from(schema.metaObjects))[0].objectType).toBe("ad_label");
@@ -70,31 +69,25 @@ test("syncActivities dedupes change-history events on re-pull", async () => {
 });
 
 test("syncLeadForms captures form metadata via pages, and no-ops without page access", async () => {
-  const ok: InsightsClient = {
-    getAccounts: async () => [],
-    getInsights: async () => [],
-    debugToken: async () => ({ is_valid: true, scopes: [] }),
+  const ok = fakeInsightsClient({
     getChildren: async (_p, edge) => {
       if (edge === "promote_pages") return [{ id: "pg1", name: "Page 1" }];
       if (edge === "leadgen_forms")
         return [{ id: "lf1", name: "Demo Form", status: "ACTIVE", leads_count: 42 }];
       return [];
     },
-  };
+  });
   expect(await syncLeadForms(ok, "act_1")).toBe(1);
   const rows = await db.select().from(schema.metaObjects);
   expect(rows[0].objectType).toBe("leadgen_form");
   expect(rows[0].name).toBe("Demo Form");
   expect((rows[0].raw as Record<string, unknown>).leads_count).toBe(42);
 
-  const blocked: InsightsClient = {
-    getAccounts: async () => [],
-    getInsights: async () => [],
-    debugToken: async () => ({ is_valid: true, scopes: [] }),
+  const blocked = fakeInsightsClient({
     getChildren: async (_p, edge) => {
       if (edge === "promote_pages") throw new Error("(#10) permission");
       return [];
     },
-  };
+  });
   expect(await syncLeadForms(blocked, "act_2")).toBe(0);
 });

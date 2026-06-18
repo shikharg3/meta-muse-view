@@ -13,7 +13,17 @@ import {
 } from "@/lib/api/settings";
 import { getCurrentUser } from "@/lib/api/auth";
 import { CHAT_MODELS, CHAT_EFFORTS } from "@/lib/chat-options";
-import { Bot, CheckCircle2, Database, KeyRound, RefreshCw, Trash2, XCircle } from "lucide-react";
+import {
+  Activity,
+  AlertTriangle,
+  Bot,
+  CheckCircle2,
+  Database,
+  KeyRound,
+  RefreshCw,
+  Trash2,
+  XCircle,
+} from "lucide-react";
 
 export const Route = createFileRoute("/settings")({
   head: () => ({ meta: [{ title: "Settings — MetaConsole" }] }),
@@ -288,6 +298,80 @@ function Settings() {
           <span className="text-xs text-muted-foreground">
             {syncMsg ?? "Pull the latest data from Meta now (runs in the background; ~minutes)."}
           </span>
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-border bg-card p-6 space-y-4">
+        <div className="flex items-center gap-3">
+          <div className="size-9 rounded-md bg-primary/10 grid place-items-center">
+            <Activity className="size-4 text-primary" />
+          </div>
+          <h3 className="text-sm font-semibold flex-1">Sync health</h3>
+          {s.health.rateLimitedLastHour > 0 ? (
+            <span className="inline-flex items-center gap-1 text-xs font-medium text-amber-500">
+              <AlertTriangle className="size-3.5" /> {s.health.rateLimitedLastHour} rate-limit
+              {s.health.rateLimitedLastHour === 1 ? "" : "s"} / hr
+            </span>
+          ) : (
+            <span className="inline-flex items-center gap-1 text-xs font-medium text-success">
+              <CheckCircle2 className="size-3.5" /> no recent throttling
+            </span>
+          )}
+        </div>
+
+        {s.health.accountErrors.length > 0 && (
+          <div className="space-y-1">
+            <div className="text-[11px] font-medium uppercase text-muted-foreground">
+              Accounts in error ({s.health.accountErrors.length})
+            </div>
+            <div className="max-h-32 overflow-auto rounded-md border border-border divide-y divide-border">
+              {s.health.accountErrors.map((a) => (
+                <div key={a.accountId} className="flex items-start gap-2 px-3 py-1.5 text-[11px]">
+                  <span className="font-mono shrink-0">{a.accountId}</span>
+                  <span className="truncate text-muted-foreground">{a.error}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div className="space-y-1">
+          <div className="text-[11px] font-medium uppercase text-muted-foreground">
+            Recent API events
+          </div>
+          {s.health.events.length === 0 ? (
+            <p className="text-xs text-muted-foreground">No rate-limit or error events recorded.</p>
+          ) : (
+            <div className="max-h-64 overflow-auto rounded-md border border-border divide-y divide-border">
+              {s.health.events.map((e, i) => (
+                <div
+                  key={`${e.at}-${i}`}
+                  className="flex items-center gap-2 px-3 py-1.5 text-[11px]"
+                >
+                  <span
+                    className={`shrink-0 rounded px-1.5 py-0.5 font-medium ${
+                      e.kind === "rate_limit"
+                        ? "bg-amber-500/10 text-amber-500"
+                        : "bg-destructive/10 text-destructive"
+                    }`}
+                  >
+                    {e.kind === "rate_limit" ? (e.code === 0 ? "throttle" : `#${e.code}`) : "error"}
+                  </span>
+                  {e.accountId && <span className="shrink-0 font-mono">{e.accountId}</span>}
+                  <span className="flex-1 truncate text-muted-foreground">{e.message}</span>
+                  {e.pressure ? (
+                    <span className="shrink-0 text-muted-foreground">{e.pressure}%</span>
+                  ) : null}
+                  {e.retryAfterMin ? (
+                    <span className="shrink-0 text-amber-500">~{e.retryAfterMin}m</span>
+                  ) : null}
+                  <span className="shrink-0 text-muted-foreground/60">
+                    {new Date(e.at).toLocaleTimeString()}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </section>
 
