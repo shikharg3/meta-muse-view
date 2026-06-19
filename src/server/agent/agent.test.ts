@@ -193,3 +193,25 @@ test("runAgentLoop stops at the iteration cap if the model never finishes", asyn
   expect(out.reply).toContain("couldn't finish");
   expect(out.toolCalls.length).toBe(5); // MAX_ITERATIONS
 }, 20000);
+
+test("aggregate tools honor an explicit since/until day (yesterday ≠ days=1)", async () => {
+  const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+  await db.insert(schema.insightsDaily).values({
+    level: "account",
+    entityId: "act_111",
+    date: yesterday,
+    accountId: "act_111",
+    spend: 500,
+    impressions: 100,
+    clicks: 5,
+  });
+  // days=1 resolves to TODAY only → today's seeded spend (200), not yesterday's. This is the bug
+  // that produced "$0 yesterday": today is often ~empty until it completes.
+  const todayOnly = (await runTool("get_overview", { days: 1 })) as { kpis: { spend: number } };
+  expect(todayOnly.kpis.spend).toBeCloseTo(200);
+  // since=until=yesterday → yesterday's spend (500), the correct answer.
+  const yest = (await runTool("get_overview", { since: yesterday, until: yesterday })) as {
+    kpis: { spend: number };
+  };
+  expect(yest.kpis.spend).toBeCloseTo(500);
+}, 20000);

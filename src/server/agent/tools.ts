@@ -8,7 +8,7 @@ import { fetchOverview, fetchOverviewEvents, searchEntities } from "@/server/fns
 import { getClientRow, effectiveAccountIds } from "@/sync/jobs/clients";
 import { runReport, resolveRange, normalizeColumns, normalizeBreakdown } from "./report";
 import type { AnthropicTool } from "./anthropic";
-import { windowFromDays } from "@/lib/range";
+import { windowFromDays, windowFromDates, isYmd, type DateWindow } from "@/lib/range";
 
 // Insights are only backfilled ~90 days; clamp so the model can't ask beyond data.
 const MAX_DAYS = 90;
@@ -16,6 +16,18 @@ function clampDays(v: unknown): number {
   const n = Math.round(Number(v));
   if (!Number.isFinite(n) || n <= 0) return 30;
   return Math.min(n, MAX_DAYS);
+}
+
+/**
+ * Window for the aggregate tools. `days` is a TRAILING window ending today (days=1 = today only),
+ * so it can't express a specific past day. When both `since` and `until` are valid YYYY-MM-DD it
+ * takes precedence — the model passes since=until=<date> for a single day (e.g. yesterday).
+ */
+function toolWindow(input: Record<string, unknown>): DateWindow {
+  if (isYmd(input.since) && isYmd(input.until)) {
+    return windowFromDates(String(input.since), String(input.until));
+  }
+  return windowFromDays(clampDays(input.days));
 }
 
 export const TOOLS: AnthropicTool[] = [
@@ -28,8 +40,15 @@ export const TOOLS: AnthropicTool[] = [
       properties: {
         days: {
           type: "integer",
-          description: "Trailing window in days for spend/results (default 30, max 90).",
+          description:
+            "Trailing window ending TODAY (default 30, max 90). days=1 = today only — for a specific past day use since+until instead.",
         },
+        since: {
+          type: "string",
+          description:
+            "Start date YYYY-MM-DD. Provide with `until` for a specific day or range (yesterday = since=until=that date). Takes precedence over days.",
+        },
+        until: { type: "string", description: "End date YYYY-MM-DD inclusive (use with since)." },
       },
     },
   },
@@ -44,7 +63,16 @@ export const TOOLS: AnthropicTool[] = [
           type: "string",
           description: "Client name or partial name, e.g. 'Wild' or 'Playw3'.",
         },
-        days: { type: "integer", description: "Trailing window in days (default 30, max 90)." },
+        days: {
+          type: "integer",
+          description:
+            "Trailing window ending TODAY (default 30, max 90). days=1 = today only — for a specific past day use since+until.",
+        },
+        since: {
+          type: "string",
+          description: "Start date YYYY-MM-DD (yesterday = since=until=that date); overrides days.",
+        },
+        until: { type: "string", description: "End date YYYY-MM-DD inclusive (use with since)." },
       },
       required: ["client"],
     },
@@ -56,7 +84,16 @@ export const TOOLS: AnthropicTool[] = [
     input_schema: {
       type: "object",
       properties: {
-        days: { type: "integer", description: "Trailing window in days (default 30, max 90)." },
+        days: {
+          type: "integer",
+          description:
+            "Trailing window ending TODAY (default 30, max 90). days=1 = today only — for a specific past day use since+until.",
+        },
+        since: {
+          type: "string",
+          description: "Start date YYYY-MM-DD (yesterday = since=until=that date); overrides days.",
+        },
+        until: { type: "string", description: "End date YYYY-MM-DD inclusive (use with since)." },
       },
     },
   },
@@ -150,7 +187,7 @@ export async function resolveClient(query: string): Promise<ResolvedClient | Res
 export async function runTool(name: string, input: Record<string, unknown>): Promise<unknown> {
   switch (name) {
     case "list_clients": {
-      const clients = await fetchClientsRanked(windowFromDays(clampDays(input.days)));
+      const clients = await fetchClientsRanked(toolWindow(input));
       return clients.map((c) => ({
         name: c.name,
         status: c.status,
@@ -163,7 +200,7 @@ export async function runTool(name: string, input: Record<string, unknown>): Pro
     case "get_client_stats": {
       const resolved = await resolveClient(String(input.client ?? ""));
       if ("error" in resolved) return resolved;
-      const detail = await fetchClientDetail(resolved.id, windowFromDays(clampDays(input.days)));
+      const detail = await fetchClientDetail(resolved.id, toolWindow(input));
       if (!detail) return { error: `Client "${resolved.name}" has no data.` };
       return {
         client: detail.name,
@@ -196,7 +233,7 @@ export async function runTool(name: string, input: Record<string, unknown>): Pro
       };
     }
     case "get_overview": {
-      const w = windowFromDays(clampDays(input.days));
+      const w = toolWindow(input);
       const [o, events] = await Promise.all([fetchOverview(w), fetchOverviewEvents(w)]);
       return {
         kpis: o.kpis,

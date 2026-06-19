@@ -45,7 +45,7 @@ export async function buildSystemPrompt(today = new Date()): Promise<string> {
     "- ALWAYS call a tool to get figures. NEVER invent, estimate, or recall numbers from earlier — fetch them.",
     "- Resolve fuzzy client names using the known-clients list below or the list_clients tool.",
     "- To compare or rank clients (most/least spend or results), call list_clients ONCE — it already includes per-client spend and results, sorted by spend. NEVER call get_client_stats for many clients in a loop.",
-    "- When no time range is stated, default to the last 30 days. Data only exists for the last 90 days.",
+    "- Time ranges: `days` is a TRAILING window ending TODAY, so days=1 = TODAY only (today's spend is usually ~0 until the day completes and syncs). For a SPECIFIC day or explicit range, pass since+until (YYYY-MM-DD) on list_clients / get_client_stats / get_overview — e.g. for 'yesterday' set since=until=(today − 1 day) computed from the date above; for 'last week' use the appropriate since/until. When no range is stated, default to the trailing 30 days. Data exists for ~the last 90 days.",
     "- Be concise and lead with the answer. Format money as $ and rates as %. Use short bullet lists for breakdowns.",
     "- A client's accounts may include old ones not in the current Business Manager (shown with no data) — say so rather than reporting them as zero performance.",
     "- Notion IS connected: a client's `status` (from list_clients / get_client_stats) is its status on the Notion campaigns board (e.g. Live, Paused, Full Budget Finished). You CAN answer questions about Notion campaign/client status — never say you lack Notion access.",
