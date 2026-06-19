@@ -1,4 +1,5 @@
 import { MetaClient } from "@/meta/client";
+import type { InsightsClient } from "@/meta/types";
 import { db, schema } from "@/db/client";
 import { Limiter } from "@/meta/limiter";
 import { getCredentials } from "@/lib/credentials";
@@ -33,6 +34,9 @@ export const BREAKDOWN_REFRESH_DAYS = 28;
 
 const BACKFILL_CHUNK = 90;
 const LEVELS = ["account", "campaign", "adset", "ad"] as const;
+const BACKFILL_CONCURRENCY = 3; // accounts backfilled in parallel; the refresh stays serial
+const STANDARD_BREAKDOWN_GROUPS = BREAKDOWN_GROUPS.filter((g) => !g[0].endsWith("_asset"));
+const ASSET_BREAKDOWN_GROUPS = BREAKDOWN_GROUPS.filter((g) => g[0].endsWith("_asset"));
 
 /**
  * Order accounts so never-structured ones (e.g. just added to the system user) come first,
@@ -69,7 +73,34 @@ export async function backfillStep(
   await run(since, until);
   await setCheckpoint(accountId, dataset, { backfilledThrough: since });
 }
-function buildJobs(): Jobs {
+/** Build a MetaClient from stored creds with the given limiter (refresh and backfill differ). */
+function buildClient(
+  creds: { appId: string; appSecret: string; token: string; apiVersion: string },
+  limiter: Limiter,
+): MetaClient {
+  return new MetaClient(
+    {
+      appId: creds.appId,
+      appSecret: creds.appSecret,
+      token: creds.token,
+      version: creds.apiVersion,
+    },
+    {
+      limiter,
+      // Persist discovered bad-field sets so the costly bisection discovery runs once per restart.
+      fieldStore: { load: getFieldBlocklist, save: saveFieldBlocklist },
+      // Persist rate-limit/throttle events so admins can see when (and why) the API pushes back.
+      onEvent: (e) => void recordSyncEvent(e).catch(() => {}),
+    },
+  );
+}
+
+/**
+ * Fast hourly jobs: current structure + the trailing-28-day insight/breakdown refresh + reference
+ * objects. NO historical backfill — that runs separately (runBackfillCycle) so a slow backfill
+ * never delays the recent-data refresh.
+ */
+export function buildRefreshJobs(): Jobs {
   return {
     structure: async (client, id) => {
       try {
@@ -82,14 +113,8 @@ function buildJobs(): Jobs {
     },
     insights: async (client, id) => {
       try {
-        const today = new Date();
         for (const level of LEVELS) {
           await syncInsights(client, id, { level, days: INSIGHTS_REFRESH_DAYS });
-          await backfillStep(id, `insights:${level}`, BACKFILL_DAYS, today, (s, u) =>
-            // Backfill via async report runs (useAsync) so the heavy history lands on Meta's async
-            // budget rather than the synchronous one the foreground refresh shares.
-            syncInsightsRange(client, id, level, s, u, false, true),
-          );
         }
         await markSync(id, "insights", null);
       } catch (e) {
@@ -99,22 +124,16 @@ function buildJobs(): Jobs {
     },
     breakdowns: async (client, id) => {
       try {
-        const today = new Date();
-        // Asset breakdowns are ad-level only + very high cardinality → refresh window only.
-        const asset = BREAKDOWN_GROUPS.filter((g) => g[0].endsWith("_asset"));
-        const standard = BREAKDOWN_GROUPS.filter((g) => !g[0].endsWith("_asset"));
         for (const level of ["account", "campaign"] as const) {
           await syncBreakdowns(client, id, {
-            groups: standard,
+            groups: STANDARD_BREAKDOWN_GROUPS,
             days: BREAKDOWN_REFRESH_DAYS,
             level,
           });
-          await backfillStep(id, `breakdown:${level}`, BREAKDOWN_BACKFILL_DAYS, today, (s, u) =>
-            syncBreakdowns(client, id, { groups: standard, level, since: s, until: u }),
-          );
         }
+        // Asset breakdowns are ad-level only + very high cardinality → refresh window only.
         await syncBreakdowns(client, id, {
-          groups: asset,
+          groups: ASSET_BREAKDOWN_GROUPS,
           days: BREAKDOWN_REFRESH_DAYS,
           level: "ad",
         });
@@ -135,6 +154,38 @@ function buildJobs(): Jobs {
       }
     },
   };
+}
+
+/** Advance one chunk of every historical dataset (insights ×4 levels, breakdowns ×2) for one
+ *  account. Insight history uses async report runs so it lands on Meta's async budget. */
+export async function backfillAccount(
+  client: InsightsClient,
+  id: string,
+  today: Date,
+): Promise<void> {
+  for (const level of LEVELS) {
+    await backfillStep(id, `insights:${level}`, BACKFILL_DAYS, today, (s, u) =>
+      syncInsightsRange(client, id, level, s, u, false, true),
+    );
+  }
+  for (const level of ["account", "campaign"] as const) {
+    await backfillStep(id, `breakdown:${level}`, BREAKDOWN_BACKFILL_DAYS, today, (s, u) =>
+      syncBreakdowns(client, id, { groups: STANDARD_BREAKDOWN_GROUPS, level, since: s, until: u }),
+    );
+  }
+}
+
+/** Bounded-concurrency map: `n` workers pull from a shared queue until it drains. */
+export async function mapPool<T>(
+  items: T[],
+  n: number,
+  fn: (item: T) => Promise<void>,
+): Promise<void> {
+  let i = 0;
+  const worker = async () => {
+    while (i < items.length) await fn(items[i++]);
+  };
+  await Promise.all(Array.from({ length: Math.min(n, items.length) }, worker));
 }
 
 let running = false;
@@ -172,23 +223,7 @@ export async function runCycle(): Promise<void> {
       );
       return;
     }
-    const client = new MetaClient(
-      {
-        appId: creds.appId,
-        appSecret: creds.appSecret,
-        token: creds.token,
-        version: creds.apiVersion,
-      },
-      // Pace all requests: the full-field/full-metric extraction is request-heavy, so a single
-      // in-flight call every 250ms keeps us under Meta's user/app limits (#17/#4).
-      {
-        limiter: new Limiter(1, 250),
-        // Persist discovered bad-field sets so the costly bisection discovery runs once, not per restart.
-        fieldStore: { load: getFieldBlocklist, save: saveFieldBlocklist },
-        // Persist rate-limit/throttle events so admins can see when (and why) the API pushes back.
-        onEvent: (e) => void recordSyncEvent(e).catch(() => {}),
-      },
-    );
+    const client = buildClient(creds, new Limiter(1, 250));
     // Record token health up front so a deleted/expired app is captured even when
     // the account enumeration below throws (otherwise the badge stays stale-green).
     await recordTokenHealth(client);
@@ -211,7 +246,7 @@ export async function runCycle(): Promise<void> {
     const ordered = orderUnsyncedFirst(ids, structured);
     const fresh = ids.reduce((n, id) => (structured.has(id) ? n : n + 1), 0);
     console.log(`[sync] cycle: ${ids.length} accounts (${fresh} never synced → first)`);
-    await runOnce({ client, accountIds: ordered, jobs: buildJobs() });
+    await runOnce({ client, accountIds: ordered, jobs: buildRefreshJobs() });
     try {
       const n = await detectSpendDropAlerts();
       if (n > 0) console.log(`[sync] alerts: ${n} new spend-drop alert(s)`);
@@ -222,4 +257,26 @@ export async function runCycle(): Promise<void> {
   } finally {
     running = false;
   }
+}
+
+/**
+ * Advance the historical backfill for every known account in bounded parallel
+ * (BACKFILL_CONCURRENCY). Runs separately from the hourly refresh so deep history never delays
+ * recent data, and stops at `deadlineMs` (the worker passes the time left until the next refresh).
+ * Uses a wider-concurrency limiter than the refresh to overlap the async report polling latency.
+ */
+export async function runBackfillCycle(deadlineMs?: number): Promise<void> {
+  const creds = await getCredentials();
+  if (!creds) return;
+  const client = buildClient(creds, new Limiter(BACKFILL_CONCURRENCY, 150));
+  const ids = (await db.select({ id: schema.accounts.id }).from(schema.accounts)).map((r) => r.id);
+  const today = new Date();
+  await mapPool(ids, BACKFILL_CONCURRENCY, async (id) => {
+    if (deadlineMs && Date.now() >= deadlineMs) return;
+    try {
+      await backfillAccount(client, id, today);
+    } catch (e) {
+      console.error(`[backfill] ${id} failed:`, e instanceof Error ? e.message : e);
+    }
+  });
 }
