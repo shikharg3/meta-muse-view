@@ -27,6 +27,7 @@ export interface MetaClientDeps {
   onEvent?: (e: MetaApiEvent) => void;
 }
 
+const TRANSIENT_RETRIES = 3; // #1/#2/5xx fail fast; real rate limits get the full maxRetries
 const BASE = "https://graph.facebook.com";
 
 export class MetaClient implements InsightsClient {
@@ -93,11 +94,19 @@ export class MetaClient implements InsightsClient {
     params: Record<string, unknown>,
     accountId = "",
   ): Promise<Record<string, unknown>> {
-    let attempt = 0;
+    let attempt = 0; // transient/5xx attempts (fail fast)
+    let rlAttempt = 0; // rate-limit attempts (long, retry-after-aware backoff)
     for (;;) {
       const res = await this.gate(() => this.fetchImpl(this.url(path, params)));
-      if (res.status === 429 || res.status >= 500) {
-        if (attempt++ >= this.maxRetries)
+      if (res.status === 429) {
+        if (rlAttempt++ >= this.maxRetries) throw new Error(`Meta 429 after ${rlAttempt} retries`);
+        await this.sleep(Math.min(60_000, backoffMs(rlAttempt) * 4));
+        continue;
+      }
+      if (res.status >= 500) {
+        // Transient server error: a few quick retries, then give up so one flaky call doesn't
+        // stall the cycle (the next refresh/backfill pass re-attempts).
+        if (attempt++ >= TRANSIENT_RETRIES)
           throw new Error(`Meta ${res.status} after ${attempt} retries`);
         await this.sleep(backoffMs(attempt));
         continue;
@@ -108,20 +117,19 @@ export class MetaClient implements InsightsClient {
         | undefined;
       if (error) {
         const code = Number(error.code);
-        // #4 app limit, #17 user limit, #32 page limit, #613 custom, #80000-80014 BUC throttles.
-        const rateLimited =
-          error.is_transient === true ||
-          code === 1 || // transient unknown
-          code === 2 || // service temporarily unavailable
+        // Real rate limits (#4 app, #17 user, #32 page, #613 custom, #80000-14 BUC) need a long,
+        // retry-after-aware backoff. Transient service errors (#1, #2, is_transient) must fail fast:
+        // retrying them for ~60s each turns a flaky-Meta window into an hours-long stall.
+        const isRateLimit =
           code === 4 ||
           code === 17 ||
           code === 32 ||
           code === 613 ||
           (code >= 80000 && code <= 80014);
-        if (rateLimited) {
-          if (attempt < this.maxRetries) {
-            attempt++;
-            await this.sleep(Math.min(60_000, backoffMs(attempt) * 4));
+        const isTransient = error.is_transient === true || code === 1 || code === 2;
+        if (isRateLimit) {
+          if (rlAttempt++ < this.maxRetries) {
+            await this.sleep(Math.min(60_000, backoffMs(rlAttempt) * 4));
             continue;
           }
           // Retries exhausted on a rate-limit code — surface it before giving up on this call.
@@ -135,6 +143,9 @@ export class MetaClient implements InsightsClient {
             pressure: u ? peakPressure(u) : 0,
             at: Date.now(),
           });
+        } else if (isTransient && attempt++ < TRANSIENT_RETRIES) {
+          await this.sleep(backoffMs(attempt));
+          continue;
         }
         throw new Error(`Meta error ${error.code}: ${error.message}`);
       }

@@ -267,3 +267,23 @@ test("drops a field Meta says must be queried alone (#100 total_postbacks)", asy
   expect(rows[0].id).toBe("ok");
   expect(seen.at(-1)).not.toContain("total_postbacks"); // retried without the exclusive field
 });
+
+test("fails fast on a transient #2 (few retries, not a rate-limit event)", async () => {
+  let n = 0;
+  const events: MetaApiEvent[] = [];
+  const client = new MetaClient(
+    { appId: "1", appSecret: "s", token: "t", version: "v25.0" },
+    {
+      fetchImpl: (async () => {
+        n++;
+        return jsonResponse({ error: { code: 2, message: "Service temporarily unavailable" } });
+      }) as unknown as typeof fetch,
+      sleep: async () => {},
+      maxRetries: 5,
+      onEvent: (e) => events.push(e),
+    },
+  );
+  await expect(client.getChildren("act_1", "campaigns", ["id"])).rejects.toThrow(/error 2/);
+  expect(n).toBeLessThanOrEqual(4); // ~3 quick retries, NOT the 5 maxRetries a rate limit gets
+  expect(events).toHaveLength(0); // a transient service error is not surfaced as a rate-limit
+});
