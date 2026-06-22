@@ -4,7 +4,7 @@ import { PageHeader } from "@/components/dashboard/PageHeader";
 import { StatusPill } from "@/components/dashboard/StatusPill";
 import { Sparkline } from "@/components/dashboard/Sparkline";
 import { listAccounts } from "@/lib/api/dashboard";
-import { fmtCurrency, fmtCompact, fmtPct } from "@/lib/format";
+import { fmtCurrency, fmtCompact, fmtPct, fmtRelTime } from "@/lib/format";
 import { ArrowUpDown, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { scopedSearch, accountScope, rangeSpec } from "@/lib/range";
@@ -165,22 +165,23 @@ function Accounts() {
                       {a.name}
                     </Link>
                     <div className="font-mono text-[10px] text-muted-foreground">{a.id}</div>
+                    {a.lastChecked && (
+                      <div className="text-[10px] text-muted-foreground">
+                        checked {fmtRelTime(a.lastChecked)}
+                      </div>
+                    )}
                   </td>
                   <td className="px-3 py-3">
-                    {a.status === "DISABLED" && (a.disableReason || a.disabledSince) ? (
-                      <span
-                        className="cursor-help"
-                        title={[
-                          a.disableReason && `Reason: ${a.disableReason}`,
-                          a.disabledSince && `Disabled since ${a.disabledSince}`,
-                        ]
-                          .filter(Boolean)
-                          .join(" · ")}
+                    <StatusPill status={a.status} />
+                    {a.status === "DISABLED" && (
+                      <div
+                        className="text-[10px] text-amber-500 mt-0.5"
+                        title={a.disableReason ?? undefined}
                       >
-                        <StatusPill status={a.status} />
-                      </span>
-                    ) : (
-                      <StatusPill status={a.status} />
+                        {a.disabledSince
+                          ? `disabled ${a.disabledSince}`
+                          : "disabled (date unknown)"}
+                      </div>
                     )}
                   </td>
                   <td className="px-3 py-3 text-right font-mono">{fmtCurrency(a.spend)}</td>

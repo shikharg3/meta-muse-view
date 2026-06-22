@@ -10,6 +10,7 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as UsersRouteImport } from './routes/users'
+import { Route as SyncRouteImport } from './routes/sync'
 import { Route as SignupRouteImport } from './routes/signup'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as OverviewRouteImport } from './routes/overview'
@@ -27,6 +28,11 @@ import { Route as AccountsIdRouteImport } from './routes/accounts.$id'
 const UsersRoute = UsersRouteImport.update({
   id: '/users',
   path: '/users',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const SyncRoute = SyncRouteImport.update({
+  id: '/sync',
+  path: '/sync',
   getParentRoute: () => rootRouteImport,
 } as any)
 const SignupRoute = SignupRouteImport.update({
@@ -107,6 +113,7 @@ export interface FileRoutesByFullPath {
   '/overview': typeof OverviewRoute
   '/settings': typeof SettingsRoute
   '/signup': typeof SignupRoute
+  '/sync': typeof SyncRoute
   '/users': typeof UsersRoute
   '/accounts/$id': typeof AccountsIdRoute
   '/accounts/': typeof AccountsIndexRoute
@@ -123,6 +130,7 @@ export interface FileRoutesByTo {
   '/overview': typeof OverviewRoute
   '/settings': typeof SettingsRoute
   '/signup': typeof SignupRoute
+  '/sync': typeof SyncRoute
   '/users': typeof UsersRoute
   '/accounts/$id': typeof AccountsIdRoute
   '/accounts': typeof AccountsIndexRoute
@@ -140,6 +148,7 @@ export interface FileRoutesById {
   '/overview': typeof OverviewRoute
   '/settings': typeof SettingsRoute
   '/signup': typeof SignupRoute
+  '/sync': typeof SyncRoute
   '/users': typeof UsersRoute
   '/accounts/$id': typeof AccountsIdRoute
   '/accounts/': typeof AccountsIndexRoute
@@ -158,6 +167,7 @@ export interface FileRouteTypes {
     | '/overview'
     | '/settings'
     | '/signup'
+    | '/sync'
     | '/users'
     | '/accounts/$id'
     | '/accounts/'
@@ -174,6 +184,7 @@ export interface FileRouteTypes {
     | '/overview'
     | '/settings'
     | '/signup'
+    | '/sync'
     | '/users'
     | '/accounts/$id'
     | '/accounts'
@@ -190,6 +201,7 @@ export interface FileRouteTypes {
     | '/overview'
     | '/settings'
     | '/signup'
+    | '/sync'
     | '/users'
     | '/accounts/$id'
     | '/accounts/'
@@ -207,6 +219,7 @@ export interface RootRouteChildren {
   OverviewRoute: typeof OverviewRoute
   SettingsRoute: typeof SettingsRoute
   SignupRoute: typeof SignupRoute
+  SyncRoute: typeof SyncRoute
   UsersRoute: typeof UsersRoute
   AccountsIdRoute: typeof AccountsIdRoute
   AccountsIndexRoute: typeof AccountsIndexRoute
@@ -219,6 +232,13 @@ declare module '@tanstack/react-router' {
       path: '/users'
       fullPath: '/users'
       preLoaderRoute: typeof UsersRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/sync': {
+      id: '/sync'
+      path: '/sync'
+      fullPath: '/sync'
+      preLoaderRoute: typeof SyncRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/signup': {
@@ -327,6 +347,7 @@ const rootRouteChildren: RootRouteChildren = {
   OverviewRoute: OverviewRoute,
   SettingsRoute: SettingsRoute,
   SignupRoute: SignupRoute,
+  SyncRoute: SyncRoute,
   UsersRoute: UsersRoute,
   AccountsIdRoute: AccountsIdRoute,
   AccountsIndexRoute: AccountsIndexRoute,

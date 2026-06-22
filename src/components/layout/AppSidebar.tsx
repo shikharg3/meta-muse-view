@@ -11,6 +11,7 @@ import {
   Briefcase,
   Sparkles,
   UserCog,
+  RefreshCw,
   LogOut,
 } from "lucide-react";
 import {
@@ -47,6 +48,7 @@ export function AppSidebar({ user }: { user: PublicUser }) {
     user.role === "admin"
       ? [
           { title: "Users", url: "/users", icon: UserCog },
+          { title: "Sync", url: "/sync", icon: RefreshCw },
           { title: "Settings", url: "/settings", icon: Settings },
         ]
       : [];

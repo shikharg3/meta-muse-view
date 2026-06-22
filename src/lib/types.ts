@@ -31,6 +31,8 @@ export interface AdAccount {
   /** Human disable_reason + best-known disabled date; both null unless the account is disabled. */
   disableReason: string | null;
   disabledSince: string | null;
+  /** Most recent structure/insights sync for this account (ISO), null if never synced. */
+  lastChecked: string | null;
 }
 export interface Ad {
   id: string;

@@ -259,6 +259,20 @@ export async function fetchAccounts(w: DateWindow): Promise<AdAccount[]> {
     for (const r of ev) if (r.at) disabledSince.set(r.accountId, String(r.at).slice(0, 10));
   }
 
+  // "Last checked" = the most recent structure/insights sync for the account (null if never synced).
+  const syncRows = await db
+    .select({
+      id: schema.syncState.accountId,
+      s: schema.syncState.lastStructureSync,
+      i: schema.syncState.lastInsightsSync,
+    })
+    .from(schema.syncState);
+  const lastChecked = new Map<string, string>();
+  for (const r of syncRows) {
+    const ms = [r.s, r.i].filter(Boolean).map((d) => (d as Date).getTime());
+    if (ms.length) lastChecked.set(r.id, new Date(Math.max(...ms)).toISOString());
+  }
+
   return accounts.map((a) => {
     const t = totalsById.get(a.id);
     const totals: Totals = {
@@ -283,6 +297,7 @@ export async function fetchAccounts(w: DateWindow): Promise<AdAccount[]> {
         accountStatus(a.status) === "DISABLED" ? disableReasonLabel(a.disableReason) : null,
       disabledSince:
         accountStatus(a.status) === "DISABLED" ? (disabledSince.get(a.id) ?? null) : null,
+      lastChecked: lastChecked.get(a.id) ?? null,
     };
   });
 }
