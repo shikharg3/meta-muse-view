@@ -18,11 +18,13 @@ if (process.argv.includes("--once")) {
 } else {
   console.log("[sync] scheduler started (hourly CORE refresh + daily full + continuous backfill)");
   void (async () => {
-    let lastFullDay = "";
+    // Seed with today so a restart/deploy does NOT re-trigger the ~3h full refresh; it runs once
+    // at the next UTC day boundary. (A manual Sync-now still forces a full refresh.)
+    let lastFullDay = today();
     for (;;) {
       const t0 = Date.now();
-      // One full (all 219 metrics + breakdowns) refresh per calendar day (and on every boot);
-      // every other hour pulls just the CORE KPIs so the refresh stays fast.
+      // One full (all 219 metrics + breakdowns) refresh per calendar day; every other hour pulls
+      // just the CORE KPIs so the refresh stays fast and leaves the hour to backfill.
       const full = today() !== lastFullDay;
       await runCycle({ full }).catch((e) => console.error("[sync] refresh failed:", e));
       if (full) lastFullDay = today();
