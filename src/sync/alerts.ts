@@ -15,14 +15,18 @@ interface DropRow {
 }
 
 /**
- * Detect accounts whose latest-day spend collapsed >= ALERT_DROP_PCT vs their
- * trailing 7-day baseline — a likely ban / shadow-ban signal. Idempotent: at most
- * one alert per account per day (dedup on id). Returns the count of new alerts.
+ * Detect accounts whose spend on the latest COMPLETE day (today is excluded — it's partial until
+ * the day finishes + syncs, which otherwise flags every active account) collapsed >= ALERT_DROP_PCT
+ * vs their trailing-7-day baseline — a likely ban / shadow-ban signal. Suppresses repeats: an
+ * account already flagged in the last 7 days is skipped, so a persistent collapse alerts once, not
+ * every day. Returns the count of new alerts.
  */
 export async function detectSpendDropAlerts(): Promise<number> {
   const keep = 1 - ALERT_DROP_PCT;
   const result = await db.execute(sql`
-    WITH asof AS (SELECT max(date) AS d FROM insights_daily WHERE level = 'account'),
+    WITH asof AS (
+      SELECT max(date) AS d FROM insights_daily WHERE level = 'account' AND date < CURRENT_DATE
+    ),
     recent AS (
       SELECT entity_id, sum(spend) AS latest FROM insights_daily, asof
       WHERE level = 'account' AND date = asof.d GROUP BY entity_id
@@ -38,6 +42,11 @@ export async function detectSpendDropAlerts(): Promise<number> {
     LEFT JOIN accounts a ON a.id = b.entity_id
     WHERE b.avg_daily >= ${ALERT_MIN_BASELINE}
       AND coalesce(r.latest, 0) <= ${keep} * b.avg_daily
+      AND NOT EXISTS (
+        SELECT 1 FROM alerts al
+        WHERE al.account_id = b.entity_id AND al.type = 'spend_drop'
+          AND al.date >= (SELECT d FROM asof) - 7
+      )
   `);
   const rows = result as unknown as DropRow[];
 
