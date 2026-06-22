@@ -43,10 +43,10 @@ export async function backfillProgress(
 ): Promise<DatasetProgress> {
   const rows = (await db.execute(sql`
     SELECT
-      coalesce(sum(greatest(0, ceil((backfilled_through - (current_date - ${targetDays}))::numeric / 90))), 0)::int AS remaining,
+      coalesce(sum(greatest(0, ceil((backfilled_through - (current_date - ${targetDays}::int))::numeric / 90))), 0)::int AS remaining,
       min(backfilled_through)::text AS deepest,
       max(backfilled_through)::text AS shallowest,
-      coalesce(avg(least(1, greatest(0, (current_date - backfilled_through))::numeric / ${targetDays})), 0)::float AS pct
+      coalesce(avg(least(1, greatest(0, (current_date - backfilled_through))::numeric / ${targetDays}::int)), 0)::float AS pct
     FROM sync_checkpoints WHERE dataset LIKE ${prefix}
   `)) as unknown as ProgressRow[];
   const r = rows[0];
