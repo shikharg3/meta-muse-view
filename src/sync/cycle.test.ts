@@ -62,13 +62,31 @@ test("orderUnsyncedFirst is a no-op when every account is already synced", () =>
 });
 
 test("buildRefreshJobs insights job does NOT advance backfill checkpoints", async () => {
-  await buildRefreshJobs().insights(fakeInsightsClient(), "act_rf");
+  await buildRefreshJobs(false).insights(fakeInsightsClient(), "act_rf");
   const rows = await db
     .select()
     .from(schema.syncCheckpoints)
     .where(eq(schema.syncCheckpoints.accountId, "act_rf"));
   expect(rows).toHaveLength(0); // refresh never touches the backfill checkpoints
 });
+
+test("buildRefreshJobs(false) refreshes CORE metrics only; full refreshes every group", async () => {
+  const callsFor = async (full: boolean) => {
+    let calls = 0;
+    const client = fakeInsightsClient({
+      getInsights: async () => {
+        calls++;
+        return [];
+      },
+    });
+    await buildRefreshJobs(full).insights(client, "act_x");
+    return calls;
+  };
+  const core = await callsFor(false);
+  const all = await callsFor(true);
+  expect(core).toBeGreaterThan(0);
+  expect(all).toBeGreaterThan(core * 3); // the full refresh pulls far more metric groups
+}, 20000);
 
 test("backfillAccount advances a checkpoint for every insight level + breakdown", async () => {
   await backfillAccount(fakeInsightsClient(), "act_bf", new Date("2026-06-16T00:00:00Z"));

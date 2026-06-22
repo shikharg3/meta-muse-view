@@ -47,7 +47,9 @@ export function chunkRange(
 }
 
 /**
- * Sync insights over an explicit [since, until] window (chunked), merging all metric groups.
+ * Sync insights over an explicit [since, until] window (chunked), merging the requested metric
+ * `groups` (default: all). The CORE-only subset powers the fast hourly refresh; the full set is the
+ * daily refresh + backfill.
  * `useAsync` routes each group through an async report run instead of a synchronous GET — used for
  * the heavy historical backfill so its compute lands on Meta's async budget (eases the #80004 /
  * cputime throttles that hit the foreground refresh).
@@ -60,6 +62,7 @@ export async function syncInsightsRange(
   until: string,
   attributionWindows = false,
   useAsync = false,
+  groups: string[][] = INSIGHT_METRIC_GROUPS,
 ): Promise<number> {
   let written = 0;
   // Long ranges are chunked so each request stays within Meta's per-call data limits.
@@ -67,7 +70,7 @@ export async function syncInsightsRange(
     // Request every metric in compatible groups, merged by (entity, date) so each daily row carries
     // the full metric set. The merged row is stored in `raw`; high-value metrics are promoted.
     const byKey = new Map<string, InsightRow>();
-    for (const group of INSIGHT_METRIC_GROUPS) {
+    for (const group of groups) {
       try {
         const params = {
           level,
@@ -167,9 +170,9 @@ export async function syncInsightsRange(
 export async function syncInsights(
   client: InsightsClient,
   accountId: string,
-  opts: { level: Level; days: number; today?: Date },
+  opts: { level: Level; days: number; today?: Date; groups?: string[][] },
 ): Promise<number> {
   const { since, until } = trailingRange(opts.days, opts.today);
   // The recurring refresh captures attribution-window splits for recent (still-attributing) data.
-  return syncInsightsRange(client, accountId, opts.level, since, until, true);
+  return syncInsightsRange(client, accountId, opts.level, since, until, true, false, opts.groups);
 }

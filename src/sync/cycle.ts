@@ -6,7 +6,7 @@ import { getCredentials } from "@/lib/credentials";
 import { syncStructure, syncAccounts } from "./jobs/structure";
 import { syncInsights, syncInsightsRange } from "./jobs/insights";
 import { syncBreakdowns } from "./jobs/breakdowns";
-import { BREAKDOWN_GROUPS } from "@/meta/fieldsets";
+import { BREAKDOWN_GROUPS, CORE_METRICS } from "@/meta/fieldsets";
 import { addDays } from "@/lib/range";
 import { syncClients } from "./jobs/clients";
 import { syncEdges, syncActivities, syncLeadForms } from "./jobs/objects";
@@ -96,11 +96,11 @@ function buildClient(
 }
 
 /**
- * Fast hourly jobs: current structure + the trailing-28-day insight/breakdown refresh + reference
- * objects. NO historical backfill — that runs separately (runBackfillCycle) so a slow backfill
- * never delays the recent-data refresh.
+ * Refresh jobs (no historical backfill — that's runBackfillCycle). `full=false` (hourly) pulls only
+ * the CORE KPI metrics and skips breakdowns, so it finishes fast; `full=true` (daily, and manual
+ * Sync-now / reset) pulls every metric group + breakdowns. Either way the dashboard KPIs stay fresh.
  */
-export function buildRefreshJobs(): Jobs {
+export function buildRefreshJobs(full: boolean): Jobs {
   return {
     structure: async (client, id) => {
       try {
@@ -112,9 +112,11 @@ export function buildRefreshJobs(): Jobs {
       }
     },
     insights: async (client, id) => {
+      // CORE metrics every hour (fast); the full 219-metric set only on the daily `full` pass.
+      const groups = full ? undefined : [CORE_METRICS];
       try {
         for (const level of LEVELS) {
-          await syncInsights(client, id, { level, days: INSIGHTS_REFRESH_DAYS });
+          await syncInsights(client, id, { level, days: INSIGHTS_REFRESH_DAYS, groups });
         }
         await markSync(id, "insights", null);
       } catch (e) {
@@ -123,6 +125,7 @@ export function buildRefreshJobs(): Jobs {
       }
     },
     breakdowns: async (client, id) => {
+      if (!full) return; // breakdowns refresh on the daily full pass only (they power Audiences)
       try {
         for (const level of ["account", "campaign"] as const) {
           await syncBreakdowns(client, id, {
@@ -201,7 +204,7 @@ export function isCycleRunning(): boolean {
  * worker and the web server are separate processes, so a concurrent run there is
  * possible but harmless — every job is an idempotent upsert.
  */
-export async function runCycle(): Promise<void> {
+export async function runCycle(opts: { full?: boolean } = {}): Promise<void> {
   if (running) {
     console.warn("[sync] previous cycle still running; skipping this tick");
     return;
@@ -245,8 +248,10 @@ export async function runCycle(): Promise<void> {
     const structured = await getStructuredAccountIds();
     const ordered = orderUnsyncedFirst(ids, structured);
     const fresh = ids.reduce((n, id) => (structured.has(id) ? n : n + 1), 0);
-    console.log(`[sync] cycle: ${ids.length} accounts (${fresh} never synced → first)`);
-    await runOnce({ client, accountIds: ordered, jobs: buildRefreshJobs() });
+    console.log(
+      `[sync] ${opts.full ? "full" : "core"} refresh: ${ids.length} accounts (${fresh} never synced → first)`,
+    );
+    await runOnce({ client, accountIds: ordered, jobs: buildRefreshJobs(opts.full ?? false) });
     try {
       const n = await detectSpendDropAlerts();
       if (n > 0) console.log(`[sync] alerts: ${n} new spend-drop alert(s)`);

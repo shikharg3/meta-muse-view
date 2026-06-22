@@ -29,7 +29,7 @@ export async function resetAndResync(): Promise<ResetResult> {
   await audit("sync.reset", "wiped all synced data and triggered a full resync");
   await wipeSyncedData();
   if (isCycleRunning()) return { ok: true, syncStarted: false };
-  void runCycle().catch((e) => console.error("[reset] background resync failed:", e));
+  void runCycle({ full: true }).catch((e) => console.error("[reset] background resync failed:", e));
   return { ok: true, syncStarted: true };
 }
 
@@ -38,6 +38,6 @@ export async function triggerSync(): Promise<{ ok: true; started: boolean }> {
   await requireAdmin();
   if (isCycleRunning()) return { ok: true, started: false };
   await audit("sync.manual", "triggered a manual sync");
-  void runCycle().catch((e) => console.error("[sync] manual sync failed:", e));
+  void runCycle({ full: true }).catch((e) => console.error("[sync] manual sync failed:", e));
   return { ok: true, started: true };
 }
