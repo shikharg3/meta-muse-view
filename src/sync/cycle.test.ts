@@ -7,6 +7,7 @@ import {
   buildRefreshJobs,
   backfillAccount,
   mapPool,
+  refreshAccountIds,
 } from "./cycle";
 import { getCheckpoint } from "./state";
 import { addDays } from "@/lib/range";
@@ -122,4 +123,19 @@ test("mapPool processes every item and never exceeds the concurrency bound", asy
   });
   expect(seen.sort((a, b) => a - b)).toEqual(items);
   expect(peak).toBe(3);
+});
+
+test("refreshAccountIds skips synced disabled accounts on core, keeps everything on full", () => {
+  const ordered = ["active1", "disabledSynced", "disabledNew", "active2"];
+  const disabled = new Set(["disabledSynced", "disabledNew"]);
+  const structured = new Set(["active1", "disabledSynced", "active2"]); // disabledNew never synced
+  // Core pass: drop the already-synced disabled account, but keep the never-synced disabled one
+  // (it still needs its first sync) and all active accounts.
+  expect(refreshAccountIds(ordered, disabled, structured, false)).toEqual([
+    "active1",
+    "disabledNew",
+    "active2",
+  ]);
+  // Full pass: refresh everything.
+  expect(refreshAccountIds(ordered, disabled, structured, true)).toEqual(ordered);
 });

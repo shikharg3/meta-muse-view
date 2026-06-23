@@ -7,6 +7,7 @@ import { syncStructure, syncAccounts } from "./jobs/structure";
 import { syncInsights, syncInsightsRange } from "./jobs/insights";
 import { syncBreakdowns } from "./jobs/breakdowns";
 import { BREAKDOWN_GROUPS, CORE_METRICS } from "@/meta/fieldsets";
+import { accountStatus } from "@/server/agg";
 import { addDays } from "@/lib/range";
 import { syncClients } from "./jobs/clients";
 import { syncEdges, syncActivities, syncLeadForms } from "./jobs/objects";
@@ -48,6 +49,22 @@ export function orderUnsyncedFirst(ids: string[], structured: Set<string>): stri
   const fresh = ids.filter((id) => !structured.has(id));
   const rest = ids.filter((id) => structured.has(id));
   return [...fresh, ...rest];
+}
+
+/**
+ * Accounts to refresh this cycle. On the hourly CORE pass, already-synced DISABLED accounts are
+ * skipped — a disabled account produces no new data, its history is finished by the backfill, and
+ * the enumeration keeps its status current so it rejoins instantly if re-enabled. The daily FULL
+ * pass still refreshes everything (catches post-disablement attribution settling).
+ */
+export function refreshAccountIds(
+  ordered: string[],
+  disabled: Set<string>,
+  structured: Set<string>,
+  full: boolean,
+): string[] {
+  if (full) return ordered;
+  return ordered.filter((id) => !(disabled.has(id) && structured.has(id)));
 }
 
 /**
@@ -247,11 +264,28 @@ export async function runCycle(opts: { full?: boolean } = {}): Promise<void> {
     const ids = creds.accountIds.length ? owned.filter((a) => creds.accountIds.includes(a)) : owned;
     const structured = await getStructuredAccountIds();
     const ordered = orderUnsyncedFirst(ids, structured);
-    const fresh = ids.reduce((n, id) => (structured.has(id) ? n : n + 1), 0);
+    // Skip already-synced disabled accounts on the hourly CORE refresh: they produce no new data,
+    // the backfill finishes their history, and the enumeration above keeps status current so they
+    // rejoin instantly when re-enabled. The daily FULL pass still refreshes them.
+    const disabled = opts.full
+      ? new Set<string>()
+      : new Set(
+          (
+            await db
+              .select({ id: schema.accounts.id, status: schema.accounts.status })
+              .from(schema.accounts)
+          )
+            .filter((a) => accountStatus(a.status) === "DISABLED")
+            .map((a) => a.id),
+        );
+    const refreshIds = refreshAccountIds(ordered, disabled, structured, opts.full ?? false);
+    const fresh = refreshIds.reduce((n, id) => (structured.has(id) ? n : n + 1), 0);
+    const skipped = ordered.length - refreshIds.length;
     console.log(
-      `[sync] ${opts.full ? "full" : "core"} refresh: ${ids.length} accounts (${fresh} never synced → first)`,
+      `[sync] ${opts.full ? "full" : "core"} refresh: ${refreshIds.length} accounts ` +
+        `(${fresh} never synced → first${skipped ? `, ${skipped} disabled skipped` : ""})`,
     );
-    await runOnce({ client, accountIds: ordered, jobs: buildRefreshJobs(opts.full ?? false) });
+    await runOnce({ client, accountIds: refreshIds, jobs: buildRefreshJobs(opts.full ?? false) });
     try {
       const n = await detectSpendDropAlerts();
       if (n > 0) console.log(`[sync] alerts: ${n} new spend-drop alert(s)`);
