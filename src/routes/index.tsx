@@ -8,6 +8,7 @@ import type { ChatResult, ToolTrace } from "@/server/agent/chat";
 import type { ReportPayload } from "@/server/agent/report";
 import { ReportBuilder, type ReportRequest } from "@/components/chat/ReportBuilder";
 import { ReportBlock } from "@/components/chat/ReportBlock";
+import { Markdown } from "@/components/chat/Markdown";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { fmtCurrency, fmtCompact, fmtPct } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -310,7 +311,7 @@ function Message({ message }: { message: UiMessage }) {
             <span>{message.error}</span>
           </div>
         ) : (
-          <div className="text-sm whitespace-pre-wrap leading-relaxed">{message.content}</div>
+          <Markdown>{message.content}</Markdown>
         )}
         {message.cards && <KpiStrip title={message.cards.title} kpis={message.cards.kpis} />}
         {message.report && <ReportBlock report={message.report} />}
