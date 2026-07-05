@@ -56,7 +56,7 @@ export async function markSync(
     });
 }
 
-export async function recordTokenHealth(client: InsightsClient): Promise<void> {
+export async function recordTokenHealth(client: InsightsClient): Promise<boolean> {
   let isValid = false;
   let scopes: string[] = [];
   let note: string | null = null;
@@ -74,6 +74,7 @@ export async function recordTokenHealth(client: InsightsClient): Promise<void> {
       target: schema.tokenHealth.id,
       set: { checkedAt: new Date(), isValid, scopes, note },
     });
+  return isValid;
 }
 
 export interface Checkpoint {

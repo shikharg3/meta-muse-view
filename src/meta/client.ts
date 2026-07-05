@@ -5,6 +5,10 @@ import type { GraphNode, InsightRow, InsightsClient, MetaApiEvent } from "./type
 import { NODE_FIELDS } from "./fieldsets";
 import { Limiter } from "./limiter";
 
+/** Thrown when Meta rejects the token itself (expired/invalid/session). Distinct from data errors
+ *  so the sync surfaces it loudly instead of masking it as a skippable "group failed". */
+export class MetaAuthError extends Error {}
+
 export interface MetaCredentials {
   appId: string;
   appSecret: string;
@@ -117,6 +121,11 @@ export class MetaClient implements InsightsClient {
         | undefined;
       if (error) {
         const code = Number(error.code);
+        // Auth failures (invalid/expired token, bad session) are NOT retryable and must not be
+        // swallowed by per-group catches — surface them so a dead token can't fake success.
+        if (code === 190 || code === 102) {
+          throw new MetaAuthError(`Meta auth error ${code}: ${error.message}`);
+        }
         // Real rate limits (#4 app, #17 user, #32 page, #613 custom, #80000-14 BUC) need a long,
         // retry-after-aware backoff. Transient service errors (#1, #2, is_transient) must fail fast:
         // retrying them for ~60s each turns a flaky-Meta window into an hours-long stall.

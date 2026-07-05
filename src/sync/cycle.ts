@@ -1,6 +1,7 @@
 import { MetaClient } from "@/meta/client";
 import type { InsightsClient } from "@/meta/types";
 import { db, schema } from "@/db/client";
+import { eq } from "drizzle-orm";
 import { Limiter } from "@/meta/limiter";
 import { getCredentials } from "@/lib/credentials";
 import { syncStructure, syncAccounts } from "./jobs/structure";
@@ -78,9 +79,13 @@ export async function backfillStep(
   maxDays: number,
   today: Date,
   run: (since: string, until: string) => Promise<unknown>,
+  floorDate?: string, // account creation date; backfill never walks older than this
 ): Promise<void> {
   const todayYmd = today.toISOString().slice(0, 10);
-  const floor = addDays(todayYmd, -(maxDays - 1));
+  // Don't backfill older than the account existed: clamp the retention floor to the account's
+  // creation date so a brand-new account finishes in ~1 chunk instead of walking empty months.
+  const retentionFloor = addDays(todayYmd, -(maxDays - 1));
+  const floor = floorDate && floorDate > retentionFloor ? floorDate : retentionFloor;
   const cp = await getCheckpoint(accountId, dataset);
   const doneThrough = cp?.backfilledThrough ?? todayYmd;
   if (doneThrough <= floor) return; // fully backfilled
@@ -183,14 +188,37 @@ export async function backfillAccount(
   id: string,
   today: Date,
 ): Promise<void> {
+  // Clamp the backfill floor to when the account was created — no point walking empty months
+  // before it existed (a week-old account then finishes in ~1 chunk instead of days).
+  const [acct] = await db
+    .select({ created: schema.accounts.createdTime })
+    .from(schema.accounts)
+    .where(eq(schema.accounts.id, id));
+  const createdDate = acct?.created ? acct.created.toISOString().slice(0, 10) : undefined;
   for (const level of LEVELS) {
-    await backfillStep(id, `insights:${level}`, BACKFILL_DAYS, today, (s, u) =>
-      syncInsightsRange(client, id, level, s, u, false, true),
+    await backfillStep(
+      id,
+      `insights:${level}`,
+      BACKFILL_DAYS,
+      today,
+      (s, u) => syncInsightsRange(client, id, level, s, u, false, true),
+      createdDate,
     );
   }
   for (const level of ["account", "campaign"] as const) {
-    await backfillStep(id, `breakdown:${level}`, BREAKDOWN_BACKFILL_DAYS, today, (s, u) =>
-      syncBreakdowns(client, id, { groups: STANDARD_BREAKDOWN_GROUPS, level, since: s, until: u }),
+    await backfillStep(
+      id,
+      `breakdown:${level}`,
+      BREAKDOWN_BACKFILL_DAYS,
+      today,
+      (s, u) =>
+        syncBreakdowns(client, id, {
+          groups: STANDARD_BREAKDOWN_GROUPS,
+          level,
+          since: s,
+          until: u,
+        }),
+      createdDate,
     );
   }
 }
@@ -246,7 +274,14 @@ export async function runCycle(opts: { full?: boolean } = {}): Promise<void> {
     const client = buildClient(creds, new Limiter(1, 250));
     // Record token health up front so a deleted/expired app is captured even when
     // the account enumeration below throws (otherwise the badge stays stale-green).
-    await recordTokenHealth(client);
+    // If the token is invalid/expired, ABORT loudly instead of running a hollow cycle that writes
+    // no data yet reports success (that masked a ~13-day outage). token_health reflects it too.
+    if (!(await recordTokenHealth(client))) {
+      console.error(
+        "[sync] token invalid/expired — aborting cycle (fix Meta credentials on Settings). No data was refreshed.",
+      );
+      return;
+    }
     // Keep the API event log bounded — it's a recent-activity view, not an audit trail.
     await pruneSyncEvents().catch((e) => console.error("[sync] prune events failed:", e));
     // Account enumeration can hit a transient rate limit (#80004); fall back to the accounts

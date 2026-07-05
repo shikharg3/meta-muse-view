@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { MetaClient } from "./client";
+import { MetaClient, MetaAuthError } from "./client";
 import type { MetaApiEvent } from "./types";
 
 function jsonResponse(body: unknown, headers: Record<string, string> = {}) {
@@ -286,4 +286,23 @@ test("fails fast on a transient #2 (few retries, not a rate-limit event)", async
   await expect(client.getChildren("act_1", "campaigns", ["id"])).rejects.toThrow(/error 2/);
   expect(n).toBeLessThanOrEqual(4); // ~3 quick retries, NOT the 5 maxRetries a rate limit gets
   expect(events).toHaveLength(0); // a transient service error is not surfaced as a rate-limit
+});
+
+test("throws MetaAuthError on a #190 (invalid/expired token) and does not retry it", async () => {
+  let n = 0;
+  const client = new MetaClient(
+    { appId: "1", appSecret: "s", token: "t", version: "v25.0" },
+    {
+      fetchImpl: (async () => {
+        n++;
+        return jsonResponse({ error: { code: 190, message: "Error validating access token" } });
+      }) as unknown as typeof fetch,
+      sleep: async () => {},
+      maxRetries: 5,
+    },
+  );
+  await expect(client.getChildren("act_1", "campaigns", ["id"])).rejects.toBeInstanceOf(
+    MetaAuthError,
+  );
+  expect(n).toBe(1); // auth failure is fatal — not retried, not swallowed
 });

@@ -2,6 +2,7 @@ import { db, schema } from "@/db/client";
 import type { InsightRow, InsightsClient } from "@/meta/types";
 import { normalizeInsightRow } from "@/meta/insights";
 import { INSIGHT_METRIC_GROUPS, ATTRIBUTION_WINDOWS } from "@/meta/fieldsets";
+import { MetaAuthError } from "@/meta/client";
 
 export type Level = "account" | "campaign" | "adset" | "ad";
 
@@ -93,6 +94,7 @@ export async function syncInsightsRange(
           byKey.set(key, merged);
         }
       } catch (e) {
+        if (e instanceof MetaAuthError) throw e; // a dead token must abort, not silently skip
         console.error(
           `[insights] ${level} metric group skipped:`,
           e instanceof Error ? e.message : e,

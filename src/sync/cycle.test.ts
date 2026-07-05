@@ -139,3 +139,16 @@ test("refreshAccountIds skips synced disabled accounts on core, keeps everything
   // Full pass: refresh everything.
   expect(refreshAccountIds(ordered, disabled, structured, true)).toEqual(ordered);
 });
+
+test("backfillStep clamps the floor to the account created date (no walk into empty months)", async () => {
+  const today = new Date("2026-07-05T00:00:00Z");
+  const windows: { since: string; until: string }[] = [];
+  const run = async (since: string, until: string) => {
+    windows.push({ since, until });
+  };
+  const created = "2026-06-05"; // 30 days before today; retention target is 1125 days
+  await backfillStep("act_c", "insights:account", 1125, today, run, created);
+  await backfillStep("act_c", "insights:account", 1125, today, run, created);
+  expect(windows).toHaveLength(1); // one 30-day chunk, then done — not ~13 chunks to the 37mo floor
+  expect(windows[0].since).toBe(created); // stopped at creation date, not the retention floor
+});
