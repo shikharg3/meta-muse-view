@@ -4,6 +4,7 @@ import {
   Building2,
   Megaphone,
   Images,
+  FileText,
   Users,
   Settings,
   Activity,
@@ -36,6 +37,7 @@ const main = [
   { title: "Campaigns", url: "/campaigns", icon: Megaphone },
   { title: "Audiences", url: "/audiences", icon: Users },
   { title: "Creatives", url: "/creatives", icon: Images },
+  { title: "Reports", url: "/reports", icon: FileText },
   { title: "Alerts", url: "/alerts", icon: Bell },
   { title: "Activity", url: "/activity", icon: Activity },
 ];

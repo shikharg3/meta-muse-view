@@ -33,7 +33,7 @@ interface Props {
   clients: { id: string; name: string; status: string | null; accountCount: number }[];
   busy: boolean;
   onSubmit: (req: ReportRequest) => void;
-  onClose: () => void;
+  onClose?: () => void;
 }
 
 export function ReportBuilder({ clients, busy, onSubmit, onClose }: Props) {
@@ -76,12 +76,14 @@ export function ReportBuilder({ clients, busy, onSubmit, onClose }: Props) {
       <div className="flex items-center gap-2">
         <FileText className="size-4 text-primary" />
         <h3 className="text-sm font-semibold flex-1">Build a report</h3>
-        <button
-          onClick={onClose}
-          className="size-6 grid place-items-center rounded hover:bg-accent text-muted-foreground"
-        >
-          <X className="size-4" />
-        </button>
+        {onClose && (
+          <button
+            onClick={onClose}
+            className="size-6 grid place-items-center rounded hover:bg-accent text-muted-foreground"
+          >
+            <X className="size-4" />
+          </button>
+        )}
       </div>
 
       {/* Client */}

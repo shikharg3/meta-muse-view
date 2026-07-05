@@ -13,6 +13,7 @@ import { Route as UsersRouteImport } from './routes/users'
 import { Route as SyncRouteImport } from './routes/sync'
 import { Route as SignupRouteImport } from './routes/signup'
 import { Route as SettingsRouteImport } from './routes/settings'
+import { Route as ReportsRouteImport } from './routes/reports'
 import { Route as OverviewRouteImport } from './routes/overview'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as CreativesRouteImport } from './routes/creatives'
@@ -43,6 +44,11 @@ const SignupRoute = SignupRouteImport.update({
 const SettingsRoute = SettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ReportsRoute = ReportsRouteImport.update({
+  id: '/reports',
+  path: '/reports',
   getParentRoute: () => rootRouteImport,
 } as any)
 const OverviewRoute = OverviewRouteImport.update({
@@ -111,6 +117,7 @@ export interface FileRoutesByFullPath {
   '/creatives': typeof CreativesRoute
   '/login': typeof LoginRoute
   '/overview': typeof OverviewRoute
+  '/reports': typeof ReportsRoute
   '/settings': typeof SettingsRoute
   '/signup': typeof SignupRoute
   '/sync': typeof SyncRoute
@@ -128,6 +135,7 @@ export interface FileRoutesByTo {
   '/creatives': typeof CreativesRoute
   '/login': typeof LoginRoute
   '/overview': typeof OverviewRoute
+  '/reports': typeof ReportsRoute
   '/settings': typeof SettingsRoute
   '/signup': typeof SignupRoute
   '/sync': typeof SyncRoute
@@ -146,6 +154,7 @@ export interface FileRoutesById {
   '/creatives': typeof CreativesRoute
   '/login': typeof LoginRoute
   '/overview': typeof OverviewRoute
+  '/reports': typeof ReportsRoute
   '/settings': typeof SettingsRoute
   '/signup': typeof SignupRoute
   '/sync': typeof SyncRoute
@@ -165,6 +174,7 @@ export interface FileRouteTypes {
     | '/creatives'
     | '/login'
     | '/overview'
+    | '/reports'
     | '/settings'
     | '/signup'
     | '/sync'
@@ -182,6 +192,7 @@ export interface FileRouteTypes {
     | '/creatives'
     | '/login'
     | '/overview'
+    | '/reports'
     | '/settings'
     | '/signup'
     | '/sync'
@@ -199,6 +210,7 @@ export interface FileRouteTypes {
     | '/creatives'
     | '/login'
     | '/overview'
+    | '/reports'
     | '/settings'
     | '/signup'
     | '/sync'
@@ -217,6 +229,7 @@ export interface RootRouteChildren {
   CreativesRoute: typeof CreativesRoute
   LoginRoute: typeof LoginRoute
   OverviewRoute: typeof OverviewRoute
+  ReportsRoute: typeof ReportsRoute
   SettingsRoute: typeof SettingsRoute
   SignupRoute: typeof SignupRoute
   SyncRoute: typeof SyncRoute
@@ -253,6 +266,13 @@ declare module '@tanstack/react-router' {
       path: '/settings'
       fullPath: '/settings'
       preLoaderRoute: typeof SettingsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/reports': {
+      id: '/reports'
+      path: '/reports'
+      fullPath: '/reports'
+      preLoaderRoute: typeof ReportsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/overview': {
@@ -345,6 +365,7 @@ const rootRouteChildren: RootRouteChildren = {
   CreativesRoute: CreativesRoute,
   LoginRoute: LoginRoute,
   OverviewRoute: OverviewRoute,
+  ReportsRoute: ReportsRoute,
   SettingsRoute: SettingsRoute,
   SignupRoute: SignupRoute,
   SyncRoute: SyncRoute,
