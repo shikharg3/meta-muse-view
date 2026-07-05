@@ -1,11 +1,9 @@
-import { getCredentials } from "@/lib/credentials";
+import { and, eq, gte, lte, inArray } from "drizzle-orm";
 import { db, schema } from "@/db/client";
-import { inArray } from "drizzle-orm";
-import { MetaClient } from "@/meta/client";
 import { pickAction } from "@/meta/insights";
 import { resultSpec } from "@/server/creative";
 import { trailingRange } from "@/sync/jobs/insights";
-import type { InsightRow, InsightsClient } from "@/meta/types";
+import type { InsightRow } from "@/meta/types";
 import { getClientRow, effectiveAccountIds } from "@/sync/jobs/clients";
 import {
   REPORT_COLUMNS,
@@ -53,17 +51,6 @@ interface Agg {
   conversions: number;
   conversionValue: number;
 }
-
-const BASE_FIELDS = [
-  "campaign_id",
-  "spend",
-  "impressions",
-  "reach",
-  "clicks",
-  "inline_link_clicks",
-  "actions",
-  "action_values",
-];
 
 // "Results" is objective-dependent in Ads Manager (traffic→link clicks,
 // leads→leads, sales→purchases, …). We query at campaign level so each row
@@ -175,6 +162,77 @@ export interface BuildSpec {
   objectiveByCampaign: Record<string, string>;
 }
 
+/** Supplies a report's rows for one account. Injected so buildReport stays pure and unit-testable. */
+export type ReportRowSource = (accountId: string) => Promise<InsightRow[]>;
+
+/**
+ * Report rows sourced from the synced DB, not a live Meta call — reports must cover accounts that
+ * are disabled or outside the current Business Manager (their history is retained locally but the
+ * token can no longer query them live, which otherwise yields an empty "No data" report).
+ * none/day read campaign-level insights_daily (full objective-aware results); dimension breakdowns
+ * read account-level insights_breakdown_daily (no per-campaign objective, so "results" use the
+ * default action type).
+ */
+export function dbRowSource(spec: BuildSpec): ReportRowSource {
+  return async (accountId) => {
+    if (spec.breakdown === "none" || spec.breakdown === "day") {
+      const rows = await db
+        .select()
+        .from(schema.insightsDaily)
+        .where(
+          and(
+            eq(schema.insightsDaily.level, "campaign"),
+            eq(schema.insightsDaily.accountId, accountId),
+            gte(schema.insightsDaily.date, spec.since),
+            lte(schema.insightsDaily.date, spec.until),
+          ),
+        );
+      return rows.map(
+        (r): InsightRow => ({
+          date_start: r.date,
+          date_stop: r.date,
+          campaign_id: r.entityId,
+          spend: String(r.spend),
+          impressions: String(r.impressions),
+          reach: String(r.reach),
+          clicks: String(r.clicks),
+          inline_link_clicks: String(r.inlineLinkClicks),
+          actions: (r.actions ?? undefined) as InsightRow["actions"],
+          action_values: (r.actionValues ?? undefined) as InsightRow["action_values"],
+        }),
+      );
+    }
+    const type = META_BREAKDOWN[spec.breakdown];
+    const rows = await db
+      .select()
+      .from(schema.insightsBreakdownDaily)
+      .where(
+        and(
+          eq(schema.insightsBreakdownDaily.breakdownType, type),
+          eq(schema.insightsBreakdownDaily.accountId, accountId),
+          gte(schema.insightsBreakdownDaily.date, spec.since),
+          lte(schema.insightsBreakdownDaily.date, spec.until),
+        ),
+      );
+    return rows.map((r): InsightRow => {
+      const raw = (r.raw ?? {}) as Record<string, unknown>;
+      return {
+        date_start: r.date,
+        date_stop: r.date,
+        [type]: r.breakdownValue,
+        spend: String(r.spend),
+        impressions: String(r.impressions),
+        reach: String(r.reach),
+        clicks: String(r.clicks),
+        inline_link_clicks:
+          raw.inline_link_clicks != null ? String(raw.inline_link_clicks) : undefined,
+        actions: (raw.actions ?? undefined) as InsightRow["actions"],
+        action_values: (raw.action_values ?? undefined) as InsightRow["action_values"],
+      };
+    });
+  };
+}
+
 /** The action type (or "reach") whose value is this row's "result", per objective. */
 function resultValue(r: InsightRow, objective: string | undefined): number {
   const spec = resultSpec(objective);
@@ -212,7 +270,7 @@ const MAX_ROWS = 500;
  * Per-account API errors (e.g. old accounts outside the BM) are skipped.
  */
 export async function buildReport(
-  client: InsightsClient,
+  fetchRows: ReportRowSource,
   spec: BuildSpec,
   subjectName: string,
 ): Promise<ReportPayload> {
@@ -224,26 +282,16 @@ export async function buildReport(
   const aggByKey = new Map<string, Agg>();
   const order: string[] = [];
   let contributors = 0;
-  let skipped = 0;
 
   for (const acc of spec.accountIds) {
-    const params: Record<string, unknown> = {
-      level: "campaign", // campaign level → rows carry campaign_id for objective-aware results
-      time_range: { since: spec.since, until: spec.until },
-      fields: BASE_FIELDS,
-      use_unified_attribution_setting: true,
-    };
-    if (dim === "day") params.time_increment = 1;
-    else if (dim !== "none") params.breakdowns = [META_BREAKDOWN[dim]];
-
     let rows: InsightRow[];
     try {
-      rows = await client.getInsights(acc, params);
-      contributors++;
+      rows = await fetchRows(acc);
     } catch {
-      skipped++;
-      continue;
+      continue; // an account with no synced data contributes nothing; never fatal
     }
+    if (rows.length === 0) continue;
+    contributors++;
     for (const r of rows) {
       const key =
         dim === "none"
@@ -300,8 +348,8 @@ export async function buildReport(
 
   const dimNote = dim === "none" ? "" : ` · by ${dim}`;
   const accNote =
-    skipped > 0
-      ? `${contributors} of ${spec.accountIds.length} accounts returned data (${skipped} skipped — likely outside the current Business Manager).`
+    contributors < spec.accountIds.length
+      ? `${contributors} of ${spec.accountIds.length} accounts have data in this range.`
       : null;
 
   return {
@@ -359,32 +407,21 @@ async function objectiveMap(accountIds: string[]): Promise<Record<string, string
   return out;
 }
 
-/** Build the Meta client from stored creds and produce the report (or an error for the LLM). */
+/** Produce the report from synced DB data (or an error for the LLM / UI builder). */
 export async function runReport(args: ReportArgs): Promise<ReportPayload | { error: string }> {
   if (args.accountIds.length === 0)
     return { error: `No ad accounts are mapped to "${args.name}".` };
-  const creds = await getCredentials();
-  if (!creds) return { error: "Meta API credentials aren't configured. Set them in Settings." };
-  const client = new MetaClient({
-    appId: creds.appId,
-    appSecret: creds.appSecret,
-    token: creds.token,
-    version: creds.apiVersion,
-  });
-  const payload = await buildReport(
-    client,
-    {
-      accountIds: args.accountIds,
-      since: args.since,
-      until: args.until,
-      columns: args.columns,
-      breakdown: args.breakdown,
-      objectiveByCampaign: await objectiveMap(args.accountIds),
-    },
-    args.name,
-  );
+  const spec: BuildSpec = {
+    accountIds: args.accountIds,
+    since: args.since,
+    until: args.until,
+    columns: args.columns,
+    breakdown: args.breakdown,
+    objectiveByCampaign: await objectiveMap(args.accountIds),
+  };
+  const payload = await buildReport(dbRowSource(spec), spec, args.name);
   if (payload.rowCount === 0) {
-    return { error: `No Meta data for "${args.name}" in ${args.since} → ${args.until}.` };
+    return { error: `No data for "${args.name}" in ${args.since} → ${args.until}.` };
   }
   return payload;
 }

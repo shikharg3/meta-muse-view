@@ -1,16 +1,15 @@
 import { test, expect } from "bun:test";
 import { buildReport, normalizeColumns, normalizeBreakdown, resolveRange } from "./report";
-import type { InsightRow, InsightsClient } from "@/meta/types";
-import { fakeInsightsClient } from "@/meta/fake-client";
+import type { ReportRowSource } from "./report";
+import type { InsightRow } from "@/meta/types";
 
-const fakeClient = (byAccount: Record<string, InsightRow[] | "throw">): InsightsClient =>
-  fakeInsightsClient({
-    getInsights: async (id: string) => {
-      const v = byAccount[id];
-      if (v === "throw") throw new Error("no access");
-      return v ?? [];
-    },
-  });
+const rowSource =
+  (byAccount: Record<string, InsightRow[] | "throw">): ReportRowSource =>
+  async (id) => {
+    const v = byAccount[id];
+    if (v === "throw") throw new Error("boom");
+    return v ?? [];
+  };
 
 const row = (date: string, campaign: string, o: Partial<InsightRow>): InsightRow => ({
   date_start: date,
@@ -49,7 +48,7 @@ test("resolveRange handles days, explicit dates, and rejects empty", () => {
 
 test("buildReport aggregates by day with objective-aware results", async () => {
   // c1 = leads objective (result = lead action); c2 = traffic (result = link_click)
-  const client = fakeClient({
+  const src = rowSource({
     act_1: [
       row("2026-06-01", "c1", {
         spend: "100",
@@ -80,7 +79,7 @@ test("buildReport aggregates by day with objective-aware results", async () => {
     ],
   });
   const p = await buildReport(
-    client,
+    src,
     {
       accountIds: ["act_1", "act_2"],
       since: "2026-06-01",
@@ -101,11 +100,11 @@ test("buildReport aggregates by day with objective-aware results", async () => {
 });
 
 test("buildReport with breakdown none yields a single total row and no dimension column", async () => {
-  const client = fakeClient({
+  const src = rowSource({
     act_1: [row("2026-06-01", "c1", { spend: "200", impressions: "2000", clicks: "100" })],
   });
   const p = await buildReport(
-    client,
+    src,
     {
       accountIds: ["act_1"],
       since: "2026-06-01",
@@ -122,12 +121,12 @@ test("buildReport with breakdown none yields a single total row and no dimension
 });
 
 test("buildReport skips accounts that error and notes it", async () => {
-  const client = fakeClient({
+  const src = rowSource({
     act_ok: [row("2026-06-01", "c1", { spend: "10", impressions: "100", clicks: "5" })],
     act_bad: "throw",
   });
   const p = await buildReport(
-    client,
+    src,
     {
       accountIds: ["act_ok", "act_bad"],
       since: "2026-06-01",
