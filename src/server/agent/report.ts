@@ -160,6 +160,8 @@ export interface BuildSpec {
   breakdown: Breakdown;
   /** campaign_id → objective, for objective-aware "results". */
   objectiveByCampaign: Record<string, string>;
+  /** Cost markup fraction (e.g. 0.1 = +10%) applied to spend for client-facing reports. */
+  markup?: number;
 }
 
 /** Supplies a report's rows for one account. Injected so buildReport stays pure and unit-testable. */
@@ -265,9 +267,9 @@ function accumulate(a: Agg, r: InsightRow, objectiveByCampaign: Record<string, s
 const MAX_ROWS = 500;
 
 /**
- * Query the Meta Insights API live for each account, aggregate by the breakdown
- * key, and shape into a tabular report. Pure w.r.t. the API (client injected).
- * Per-account API errors (e.g. old accounts outside the BM) are skipped.
+ * Aggregate a client's synced rows (from the injected source) by the breakdown key and shape them
+ * into a tabular report. A client-facing cost markup, when set, inflates spend before the derived
+ * cost metrics are computed; accounts with no data in range simply contribute nothing.
  */
 export async function buildReport(
   fetchRows: ReportRowSource,
@@ -307,6 +309,13 @@ export async function buildReport(
       }
       accumulate(a, r, spec.objectiveByCampaign);
     }
+  }
+
+  // Client-facing markup inflates spend so derived cost metrics (cpc/cpm/cost-per-result) rise and
+  // roas falls; delivered figures (impressions/clicks/results/revenue) are real and stay untouched.
+  if (spec.markup) {
+    const factor = 1 + spec.markup;
+    for (const a of aggByKey.values()) a.spend *= factor;
   }
 
   // Order rows: chronological for day, biggest-spend-first for dimensions.
@@ -354,7 +363,7 @@ export async function buildReport(
 
   return {
     title: `${subjectName} — performance report`,
-    subtitle: `${spec.since} → ${spec.until}${dimNote}`,
+    subtitle: `${spec.since} → ${spec.until}${dimNote}${spec.markup ? ` · incl. ${Math.round(spec.markup * 100)}% markup` : ""}`,
     note: accNote,
     columns,
     rows,
@@ -393,6 +402,7 @@ export interface ReportArgs {
   until: string;
   columns: string[];
   breakdown: Breakdown;
+  markup?: number;
 }
 
 /** Load campaign_id → objective for the given accounts (for objective-aware results). */
@@ -418,6 +428,7 @@ export async function runReport(args: ReportArgs): Promise<ReportPayload | { err
     columns: args.columns,
     breakdown: args.breakdown,
     objectiveByCampaign: await objectiveMap(args.accountIds),
+    markup: args.markup,
   };
   const payload = await buildReport(dbRowSource(spec), spec, args.name);
   if (payload.rowCount === 0) {
@@ -453,6 +464,7 @@ export interface ClientReportInput {
   until?: string;
   columns: string[];
   breakdown: string;
+  markup?: number;
 }
 
 /**
@@ -476,5 +488,6 @@ export async function reportForClient(
     until: range.until,
     columns,
     breakdown: normalizeBreakdown(input.breakdown),
+    markup: input.markup,
   });
 }

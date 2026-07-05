@@ -122,6 +122,7 @@ function Ask() {
           until: req.until,
           columns: req.columns,
           breakdown: req.breakdown,
+          markup: req.markup,
         },
       });
       const errored = "error" in res;

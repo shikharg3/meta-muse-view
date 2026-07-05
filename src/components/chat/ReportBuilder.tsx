@@ -25,6 +25,7 @@ export interface ReportRequest {
   until?: string;
   columns: string[];
   breakdown: string;
+  markup?: number;
   summary: string;
 }
 
@@ -45,6 +46,7 @@ export function ReportBuilder({ clients, busy, onSubmit, onClose }: Props) {
   const [until, setUntil] = useState("");
   const [columns, setColumns] = useState<string[]>(DEFAULT_REPORT_COLUMN_KEYS);
   const [breakdown, setBreakdown] = useState("day");
+  const [markupPct, setMarkupPct] = useState(0);
 
   const toggleColumn = (key: string) =>
     setColumns((cur) => (cur.includes(key) ? cur.filter((k) => k !== key) : [...cur, key]));
@@ -64,7 +66,8 @@ export function ReportBuilder({ clients, busy, onSubmit, onClose }: Props) {
       ...(custom ? { since, until } : { days }),
       columns: ordered,
       breakdown,
-      summary: `${clientName} · ${range} · ${bd.toLowerCase()} · ${colLabels.join(", ")}`,
+      markup: markupPct ? markupPct / 100 : undefined,
+      summary: `${clientName} · ${range} · ${bd.toLowerCase()} · ${colLabels.join(", ")}${markupPct ? ` · +${markupPct}% markup` : ""}`,
     });
   };
 
@@ -187,6 +190,19 @@ export function ReportBuilder({ clients, busy, onSubmit, onClose }: Props) {
             </option>
           ))}
         </select>
+      </Field>
+
+      {/* Client markup */}
+      <Field label="Client markup %">
+        <input
+          type="number"
+          min={0}
+          max={100}
+          value={markupPct || ""}
+          onChange={(e) => setMarkupPct(Number(e.target.value) || 0)}
+          placeholder="0 — added to spend & cost metrics for client-facing reports"
+          className="w-full h-9 rounded-md border border-border bg-background px-2.5 text-xs"
+        />
       </Field>
 
       <button

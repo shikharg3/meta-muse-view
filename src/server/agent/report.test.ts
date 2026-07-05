@@ -140,3 +140,26 @@ test("buildReport skips accounts that error and notes it", async () => {
   expect(p.rowCount).toBe(1);
   expect(p.note).toContain("1 of 2 accounts");
 });
+
+test("buildReport applies a client markup to spend and derived cost metrics", async () => {
+  const src = rowSource({
+    act_1: [row("2026-06-01", "c1", { spend: "100", impressions: "1000", clicks: "50" })],
+  });
+  const p = await buildReport(
+    src,
+    {
+      accountIds: ["act_1"],
+      since: "2026-06-01",
+      until: "2026-06-01",
+      columns: ["spend", "cpc"],
+      breakdown: "none",
+      objectiveByCampaign: {},
+      markup: 0.1,
+    },
+    "Acme",
+  );
+  // spend 100 -> 110 (+10%); cpc = 110 / 50 clicks = 2.2
+  expect(p.rows[0][0]).toBeCloseTo(110, 6); // spend +10%
+  expect(p.rows[0][1]).toBeCloseTo(2.2, 6); // cpc from marked-up spend
+  expect(p.subtitle).toContain("10% markup");
+});
