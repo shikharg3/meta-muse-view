@@ -392,6 +392,7 @@ export async function fetchClientFilterOptions(): Promise<
 > {
   const rows = await db.select().from(schema.clients);
   return rows
+    .filter((r) => r.removedAt == null)
     .map((r) => ({ id: r.id, name: r.name, accountIds: effectiveAccountIds(r) }))
     .filter((c) => c.accountIds.length > 0)
     .sort((a, b) => a.name.localeCompare(b.name));

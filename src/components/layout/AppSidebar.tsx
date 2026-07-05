@@ -32,10 +32,10 @@ const main = [
   { title: "Ask", url: "/", icon: Sparkles },
   { title: "Overview", url: "/overview", icon: LayoutDashboard },
   { title: "Ad Accounts", url: "/accounts", icon: Building2 },
-  { title: "Campaigns", url: "/campaigns", icon: Megaphone },
-  { title: "Creatives", url: "/creatives", icon: Images },
-  { title: "Audiences", url: "/audiences", icon: Users },
   { title: "Clients", url: "/clients", icon: Briefcase },
+  { title: "Campaigns", url: "/campaigns", icon: Megaphone },
+  { title: "Audiences", url: "/audiences", icon: Users },
+  { title: "Creatives", url: "/creatives", icon: Images },
   { title: "Alerts", url: "/alerts", icon: Bell },
   { title: "Activity", url: "/activity", icon: Activity },
 ];
