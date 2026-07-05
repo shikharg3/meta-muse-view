@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Briefcase, ChevronDown, FileText, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -16,6 +16,7 @@ import {
   REPORT_RANGE_PRESETS,
   DEFAULT_REPORT_COLUMN_KEYS,
 } from "@/lib/report-options";
+import { getClientCampaigns } from "@/lib/api/clients";
 
 export interface ReportRequest {
   clientId: string;
@@ -26,6 +27,7 @@ export interface ReportRequest {
   columns: string[];
   breakdown: string;
   markup?: number;
+  campaignIds?: string[];
   summary: string;
 }
 
@@ -47,9 +49,37 @@ export function ReportBuilder({ clients, busy, onSubmit, onClose }: Props) {
   const [columns, setColumns] = useState<string[]>(DEFAULT_REPORT_COLUMN_KEYS);
   const [breakdown, setBreakdown] = useState("day");
   const [markupPct, setMarkupPct] = useState(0);
+  const [campaigns, setCampaigns] = useState<{ id: string; name: string }[]>([]);
+  const [selectedCampaigns, setSelectedCampaigns] = useState<Set<string>>(new Set());
 
   const toggleColumn = (key: string) =>
     setColumns((cur) => (cur.includes(key) ? cur.filter((k) => k !== key) : [...cur, key]));
+
+  // Load the client's campaigns when it changes; default to all selected (= no filter).
+  useEffect(() => {
+    if (!clientId) {
+      setCampaigns([]);
+      setSelectedCampaigns(new Set());
+      return;
+    }
+    let cancelled = false;
+    void getClientCampaigns({ data: clientId }).then((cs) => {
+      if (cancelled) return;
+      setCampaigns(cs);
+      setSelectedCampaigns(new Set(cs.map((c) => c.id)));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [clientId]);
+
+  const toggleCampaign = (id: string) =>
+    setSelectedCampaigns((cur) => {
+      const next = new Set(cur);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
 
   const canSubmit = !!clientId && columns.length > 0 && (!custom || (!!since && !!until)) && !busy;
 
@@ -60,6 +90,12 @@ export function ReportBuilder({ clients, busy, onSubmit, onClose }: Props) {
     const colLabels = REPORT_COLUMNS.filter((c) => columns.includes(c.key)).map((c) => c.label);
     const bd = REPORT_BREAKDOWNS.find((b) => b.key === breakdown)?.label ?? breakdown;
     const range = custom ? `${since} → ${until}` : `last ${days} days`;
+    // Only send ids when a proper non-empty subset is chosen; all/none = every campaign.
+    const allCampaigns = campaigns.length > 0 && selectedCampaigns.size === campaigns.length;
+    const campaignIds =
+      campaigns.length > 0 && selectedCampaigns.size > 0 && !allCampaigns
+        ? [...selectedCampaigns]
+        : undefined;
     onSubmit({
       clientId,
       clientName,
@@ -67,7 +103,8 @@ export function ReportBuilder({ clients, busy, onSubmit, onClose }: Props) {
       columns: ordered,
       breakdown,
       markup: markupPct ? markupPct / 100 : undefined,
-      summary: `${clientName} · ${range} · ${bd.toLowerCase()} · ${colLabels.join(", ")}${markupPct ? ` · +${markupPct}% markup` : ""}`,
+      campaignIds,
+      summary: `${clientName} · ${range} · ${bd.toLowerCase()} · ${colLabels.join(", ")}${markupPct ? ` · +${markupPct}% markup` : ""}${campaignIds ? ` · ${campaignIds.length} campaigns` : ""}`,
     });
   };
 
@@ -129,6 +166,42 @@ export function ReportBuilder({ clients, busy, onSubmit, onClose }: Props) {
           </PopoverContent>
         </Popover>
       </Field>
+
+      {/* Campaigns — optional filter; applies to Total / By-day reports */}
+      {campaigns.length > 0 && (
+        <Field label={`Campaigns (${selectedCampaigns.size}/${campaigns.length})`}>
+          <div className="space-y-1.5">
+            <div className="flex items-center gap-2 text-[11px]">
+              <button
+                type="button"
+                onClick={() => setSelectedCampaigns(new Set(campaigns.map((c) => c.id)))}
+                className="text-primary hover:underline"
+              >
+                All
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedCampaigns(new Set())}
+                className="text-muted-foreground hover:underline"
+              >
+                None
+              </button>
+              <span className="ml-auto text-muted-foreground">applies to Total / By-day</span>
+            </div>
+            <div className="flex max-h-32 flex-wrap gap-1.5 overflow-auto">
+              {campaigns.map((c) => (
+                <Chip
+                  key={c.id}
+                  active={selectedCampaigns.has(c.id)}
+                  onClick={() => toggleCampaign(c.id)}
+                >
+                  {c.name}
+                </Chip>
+              ))}
+            </div>
+          </div>
+        </Field>
+      )}
 
       {/* Date range */}
       <Field label="Date range">

@@ -115,6 +115,7 @@ function Ask() {
           columns: req.columns,
           breakdown: req.breakdown,
           markup: req.markup,
+          campaignIds: req.campaignIds,
         },
       });
       const errored = "error" in res;

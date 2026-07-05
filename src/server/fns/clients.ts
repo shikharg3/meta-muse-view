@@ -398,6 +398,21 @@ export async function fetchClientFilterOptions(): Promise<
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
+/** A client's campaigns across its effective accounts — for the report campaign filter. */
+export async function fetchClientCampaigns(
+  clientId: string,
+): Promise<{ id: string; name: string }[]> {
+  const row = await getClientRow(clientId);
+  if (!row) return [];
+  const accounts = effectiveAccountIds(row);
+  if (accounts.length === 0) return [];
+  return db
+    .select({ id: schema.campaigns.id, name: schema.campaigns.name })
+    .from(schema.campaigns)
+    .where(inArray(schema.campaigns.accountId, accounts))
+    .orderBy(schema.campaigns.name);
+}
+
 export interface AccountDirectoryRow {
   id: string;
   name: string | null;

@@ -40,6 +40,7 @@ function Reports() {
           columns: req.columns,
           breakdown: req.breakdown,
           markup: req.markup,
+          campaignIds: req.campaignIds,
         },
       });
       if ("error" in res) {

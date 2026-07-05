@@ -162,6 +162,8 @@ export interface BuildSpec {
   objectiveByCampaign: Record<string, string>;
   /** Cost markup fraction (e.g. 0.1 = +10%) applied to spend for client-facing reports. */
   markup?: number;
+  /** Restrict none/day reports to these campaign ids (empty/undefined = all campaigns). */
+  campaignIds?: string[];
 }
 
 /** Supplies a report's rows for one account. Injected so buildReport stays pure and unit-testable. */
@@ -187,6 +189,9 @@ export function dbRowSource(spec: BuildSpec): ReportRowSource {
             eq(schema.insightsDaily.accountId, accountId),
             gte(schema.insightsDaily.date, spec.since),
             lte(schema.insightsDaily.date, spec.until),
+            spec.campaignIds?.length
+              ? inArray(schema.insightsDaily.entityId, spec.campaignIds)
+              : undefined,
           ),
         );
       return rows.map(
@@ -403,6 +408,7 @@ export interface ReportArgs {
   columns: string[];
   breakdown: Breakdown;
   markup?: number;
+  campaignIds?: string[];
 }
 
 /** Load campaign_id → objective for the given accounts (for objective-aware results). */
@@ -429,6 +435,7 @@ export async function runReport(args: ReportArgs): Promise<ReportPayload | { err
     breakdown: args.breakdown,
     objectiveByCampaign: await objectiveMap(args.accountIds),
     markup: args.markup,
+    campaignIds: args.campaignIds,
   };
   const payload = await buildReport(dbRowSource(spec), spec, args.name);
   if (payload.rowCount === 0) {
@@ -465,6 +472,7 @@ export interface ClientReportInput {
   columns: string[];
   breakdown: string;
   markup?: number;
+  campaignIds?: string[];
 }
 
 /**
@@ -489,5 +497,6 @@ export async function reportForClient(
     columns,
     breakdown: normalizeBreakdown(input.breakdown),
     markup: input.markup,
+    campaignIds: input.campaignIds,
   });
 }
