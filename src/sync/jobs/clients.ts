@@ -3,31 +3,45 @@ import { db, schema } from "@/db/client";
 import { getNotionCredentials } from "@/lib/credentials";
 import { NotionClient } from "@/notion/client";
 import {
-  parseClientRow,
+  parseCampaignRow,
+  parseClientName,
   clubClients,
-  type ParsedClientRow,
+  type ParsedCampaignRow,
   type ClubbedClient,
 } from "@/notion/parse";
 
 /**
- * Pull the client ↔ ad-account board from Notion and upsert the clients table.
- * Only Notion-owned columns are written; manual_add_ids / manual_remove_ids are
- * UI state and survive every sync. Returns the number of clients, or null when
- * Notion is not configured.
+ * Pull the Campaigns board from Notion and upsert the clients table. Campaigns are grouped into
+ * clients by their "Client Account" relation to the linked Clients board (names resolved from it);
+ * an unlinked campaign falls back to grouping by its own title. Only Notion-owned columns are
+ * written; manual_add_ids / manual_remove_ids are UI state and survive every sync. Returns the
+ * number of clients, or null when Notion is not configured.
  */
 export async function syncClients(client?: NotionClient): Promise<number | null> {
   const creds = await getNotionCredentials();
   if (!creds) return null;
   const notion = client ?? new NotionClient(creds.token);
 
-  const rows: ParsedClientRow[] = [];
+  const rows: ParsedCampaignRow[] = [];
+  let clientDsId: string | undefined;
   for (const dsId of await notion.getDataSourceIds(creds.dbId)) {
+    clientDsId ??= await notion.getRelationTargetDataSource(dsId, "Client Account");
     for (const page of await notion.queryDataSource(dsId)) {
-      const row = parseClientRow(page);
+      const row = parseCampaignRow(page);
       if (row) rows.push(row);
     }
   }
-  return reconcileClients(clubClients(rows));
+
+  // Resolve client-entity names so campaigns group under their client, not their own title.
+  const clientNames = new Map<string, string>();
+  if (clientDsId) {
+    for (const page of await notion.queryDataSource(clientDsId)) {
+      const name = parseClientName(page);
+      if (name) clientNames.set(page.id, name);
+    }
+  }
+
+  return reconcileClients(clubClients(rows, clientNames));
 }
 
 /**

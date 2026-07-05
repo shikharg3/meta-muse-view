@@ -48,6 +48,22 @@ export class NotionClient {
     return ((db.data_sources as { id: string }[] | undefined) ?? []).map((d) => d.id);
   }
 
+  /**
+   * The data source a relation property points at, read from the property's schema. Lets the
+   * campaign sync discover the linked Clients board without any extra configuration.
+   */
+  async getRelationTargetDataSource(
+    dataSourceId: string,
+    propName: string,
+  ): Promise<string | undefined> {
+    const ds = await this.req(`/data_sources/${dataSourceId}`);
+    const props = ds.properties as
+      | Record<string, { type?: string; relation?: { data_source_id?: string } }>
+      | undefined;
+    const rel = props?.[propName];
+    return rel?.type === "relation" ? rel.relation?.data_source_id : undefined;
+  }
+
   /** All pages of a data source, following cursor pagination. */
   async queryDataSource(dataSourceId: string): Promise<NotionPage[]> {
     const out: NotionPage[] = [];

@@ -1,5 +1,12 @@
 import { test, expect } from "bun:test";
-import { parseAccountIds, clientKey, clientSlug, clubClients, parseClientRow } from "./parse";
+import {
+  parseAccountIds,
+  clientKey,
+  clientSlug,
+  clubClients,
+  parseCampaignRow,
+  parseClientName,
+} from "./parse";
 import { parseNotionDbId } from "./client";
 import type { NotionPage } from "./client";
 
@@ -36,54 +43,67 @@ test("clientSlug is url-safe and stable", () => {
   expect(clientSlug("")).toBe("unnamed");
 });
 
-test("clubClients unions accounts across rows and keeps the strongest status", () => {
-  const clubbed = clubClients([
-    {
-      pageId: "p1",
-      title: "wildcasino.ag (May/June 2026))",
-      activeIds: ["act_1372577337735758"],
-      otherIds: ["act_1210811414237867"],
-      status: "Full Budget Finished",
-      budget: 5000,
-      startDate: "2026-05-01",
-      endDate: "2026-06-30",
-    },
-    {
-      pageId: "p2",
-      title: "wildcasino.ag (June/July 2026)",
-      activeIds: ["act_1372577337735758"],
-      otherIds: [],
-      status: "Live",
-      budget: 7000,
-      startDate: "2026-06-01",
-      endDate: "2026-07-31",
-    },
-    {
-      pageId: "p3",
-      title: "ACR Poker",
-      activeIds: ["act_1173350144474106"],
-      otherIds: [],
-      status: "Live",
-      budget: null,
-      startDate: null,
-      endDate: null,
-    },
-  ]);
-  expect(clubbed).toHaveLength(2);
-  const wild = clubbed.find((c) => c.id === "wildcasino-ag")!;
-  expect(wild.accountIds.sort()).toEqual(["act_1210811414237867", "act_1372577337735758"].sort());
-  expect(wild.status).toBe("Live"); // Live beats Full Budget Finished
-  expect(wild.pages).toHaveLength(2);
-  expect(wild.budget).toBe(7000); // current engagement = latest end date (p2)
-  expect(wild.endDate).toBe("2026-07-31");
-  expect(wild.startDate).toBe("2026-06-01");
+test("clubClients groups differently-titled campaigns under their linked client entity", () => {
+  const clientNames = new Map([["client_omni", "omni agency"]]);
+  const clubbed = clubClients(
+    [
+      {
+        pageId: "p1",
+        title: "zaddycoin.io",
+        clientRelationIds: ["client_omni"],
+        activeIds: ["act_1372577337735758"],
+        otherIds: ["act_1210811414237867"],
+        status: "Full Budget Finished",
+        budget: 5000,
+        startDate: "2026-05-01",
+        endDate: "2026-06-30",
+      },
+      {
+        pageId: "p2",
+        title: "Farside (2)",
+        clientRelationIds: ["client_omni"],
+        activeIds: ["act_1372577337735758"],
+        otherIds: [],
+        status: "Live",
+        budget: 7000,
+        startDate: "2026-06-01",
+        endDate: "2026-07-31",
+      },
+      {
+        pageId: "p3",
+        title: "Sweatbet",
+        clientRelationIds: [],
+        activeIds: ["act_1540281067638398"],
+        otherIds: [],
+        status: "Live",
+        budget: null,
+        startDate: null,
+        endDate: null,
+      },
+    ],
+    clientNames,
+  );
+  expect(clubbed).toHaveLength(2); // omni agency (both campaigns clubbed) + Sweatbet (unlinked)
+  const omni = clubbed.find((c) => c.id === "omni-agency")!;
+  expect(omni.name).toBe("omni agency");
+  expect(omni.accountIds.sort()).toEqual(["act_1210811414237867", "act_1372577337735758"].sort());
+  expect(omni.status).toBe("Live"); // Live beats Full Budget Finished
+  expect(omni.pages).toHaveLength(2);
+  expect(omni.budget).toBe(7000); // current engagement = latest end date (p2)
+  expect(omni.endDate).toBe("2026-07-31");
+  expect(omni.startDate).toBe("2026-06-01");
+  // An unlinked campaign stands alone, grouped by its own title.
+  const sweat = clubbed.find((c) => c.id === "sweatbet")!;
+  expect(sweat.name).toBe("Sweatbet");
+  expect(sweat.accountIds).toEqual(["act_1540281067638398"]);
 });
 
-test("parseClientRow extracts columns and skips titleless rows", () => {
+test("parseCampaignRow extracts columns incl. client relation and skips titleless rows", () => {
   const page = {
     id: "p1",
     properties: {
-      Client: { type: "title", title: [{ plain_text: "bspin.io (June 2026)" }] },
+      Campaign: { type: "title", title: [{ plain_text: "Farside (2)" }] },
+      "Client Account": { type: "relation", relation: [{ id: "client_omni" }] },
       "Active Account ID": { type: "rich_text", rich_text: [{ plain_text: "1701082927919653" }] },
       "Other ad accounts": {
         type: "rich_text",
@@ -92,22 +112,31 @@ test("parseClientRow extracts columns and skips titleless rows", () => {
       "Account Status": { type: "status", status: { name: "Live" } },
     },
   } as unknown as NotionPage;
-  const row = parseClientRow(page)!;
-  expect(row.title).toBe("bspin.io (June 2026)");
+  const row = parseCampaignRow(page)!;
+  expect(row.title).toBe("Farside (2)");
+  expect(row.clientRelationIds).toEqual(["client_omni"]);
   expect(row.activeIds).toEqual(["act_1701082927919653"]);
   expect(row.otherIds).toEqual(["act_1258479753143618", "act_902315445715505"]);
   expect(row.status).toBe("Live");
-  expect(parseClientRow({ id: "x", properties: {} } as NotionPage)).toBeNull();
+  expect(parseCampaignRow({ id: "x", properties: {} } as NotionPage)).toBeNull();
+});
+
+test("parseClientName reads the Clients board title", () => {
+  const page = {
+    id: "c1",
+    properties: { "Client Name": { type: "title", title: [{ plain_text: "omni agency" }] } },
+  } as unknown as NotionPage;
+  expect(parseClientName(page)).toBe("omni agency");
 });
 
 test("parseNotionDbId accepts urls and raw ids", () => {
   expect(
     parseNotionDbId(
-      "https://app.notion.com/p/dotaudiences/154b4fac5877806cafcdf93332583727?v=a341954850e244008b242d3064133989",
+      "https://app.notion.com/p/dotaudiences/a9db4fac5877839fbcba01f33f9674ef?v=888b4fac587782b0b42a080a93abd29f",
     ),
-  ).toBe("154b4fac-5877-806c-afcd-f93332583727");
-  expect(parseNotionDbId("154b4fac-5877-806c-afcd-f93332583727")).toBe(
-    "154b4fac-5877-806c-afcd-f93332583727",
+  ).toBe("a9db4fac-5877-839f-bcba-01f33f9674ef");
+  expect(parseNotionDbId("a9db4fac-5877-839f-bcba-01f33f9674ef")).toBe(
+    "a9db4fac-5877-839f-bcba-01f33f9674ef",
   );
   expect(parseNotionDbId("not an id")).toBeNull();
 });

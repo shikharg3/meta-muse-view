@@ -233,8 +233,8 @@ export const metaCredentials = pgTable("meta_credentials", {
   updatedAt: timestamp("updated_at", { withTimezone: true }),
 });
 
-// Client ↔ ad-account mapping sourced from the Notion "Meta Campaigns" board,
-// with manual UI overrides that survive re-syncs.
+// Client ↔ ad-account mapping sourced from the Notion Campaigns board, grouped into clients by the
+// "Client Account" relation to the linked Clients board, with manual UI overrides that survive re-syncs.
 // Effective accounts = (notion ∪ manualAdd) − manualRemove.
 export const clients = pgTable("clients", {
   id: text("id").primaryKey(), // slug of the normalized client name

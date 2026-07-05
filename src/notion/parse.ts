@@ -28,9 +28,10 @@ export function clientSlug(key: string): string {
   return key.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "unnamed";
 }
 
-export interface ParsedClientRow {
+export interface ParsedCampaignRow {
   pageId: string;
   title: string;
+  clientRelationIds: string[];
   activeIds: string[];
   otherIds: string[];
   status: string | null;
@@ -53,13 +54,17 @@ export interface ClubbedClient {
 const plain = (p: NotionProp | undefined): string =>
   (p?.title ?? p?.rich_text ?? []).map((t) => t.plain_text).join("");
 
-/** Pull the columns we care about out of a Notion page; null when not a client row. */
-export function parseClientRow(page: NotionPage): ParsedClientRow | null {
-  const title = plain(page.properties?.["Client"]).trim();
+const relationIds = (p: NotionProp | undefined): string[] =>
+  ((p?.relation as { id: string }[] | undefined) ?? []).map((r) => r.id);
+
+/** Pull the columns we care about out of a campaign page; null when it has no Campaign title. */
+export function parseCampaignRow(page: NotionPage): ParsedCampaignRow | null {
+  const title = plain(page.properties?.["Campaign"]).trim();
   if (!title) return null;
   return {
     pageId: page.id,
     title,
+    clientRelationIds: relationIds(page.properties?.["Client Account"]),
     activeIds: parseAccountIds(plain(page.properties?.["Active Account ID"])),
     otherIds: parseAccountIds(plain(page.properties?.["Other ad accounts"])),
     status: page.properties?.["Account Status"]?.status?.name ?? null,
@@ -73,6 +78,11 @@ export function parseClientRow(page: NotionPage): ParsedClientRow | null {
   };
 }
 
+/** Display name of a client entity from the linked Clients board ("" when unnamed). */
+export function parseClientName(page: NotionPage): string {
+  return plain(page.properties?.["Client Name"]).trim();
+}
+
 // Highest-priority status wins when a client has multiple board rows.
 const STATUS_PRIORITY: Record<string, number> = {
   Live: 5,
@@ -83,19 +93,27 @@ const STATUS_PRIORITY: Record<string, number> = {
 };
 
 /**
- * Group rows by normalized client name; each client gets the union of every
- * ad account that ever appeared on any of its rows (active and old alike).
+ * Group campaigns into clients. A campaign groups by its linked Clients-board entity (the
+ * "Client Account" relation, name resolved via `clientNames`); an unlinked campaign falls back to
+ * grouping by its own title. Each client gets the union of every ad account across its campaigns,
+ * the strongest status, and the current engagement's budget/dates (the latest-end-date campaign).
  */
-export function clubClients(rows: ParsedClientRow[]): ClubbedClient[] {
+export function clubClients(
+  rows: ParsedCampaignRow[],
+  clientNames: Map<string, string>,
+): ClubbedClient[] {
   const byKey = new Map<string, ClubbedClient>();
   for (const row of rows) {
-    const key = clientKey(row.title);
-    const display = row.title.split("(")[0].replace(/\s+/g, " ").trim();
+    // Prefer the linked client entity; fall back to the campaign title when unlinked.
+    const relId = row.clientRelationIds[0];
+    const linkedName = relId ? clientNames.get(relId) : undefined;
+    const key = linkedName && relId ? relId : clientKey(row.title);
+    const name = (linkedName ?? row.title.split("(")[0]).replace(/\s+/g, " ").trim();
     let c = byKey.get(key);
     if (!c) {
       c = {
-        id: clientSlug(key),
-        name: display,
+        id: clientSlug(clientKey(name)),
+        name,
         status: row.status,
         accountIds: [],
         pages: [],
