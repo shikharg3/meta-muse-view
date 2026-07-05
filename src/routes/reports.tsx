@@ -17,7 +17,7 @@ export const Route = createFileRoute("/reports")({
       },
     ],
   }),
-  loader: async () => ({ clients: await listClients() }),
+  loader: async () => ({ clients: (await listClients()).filter((c) => c.removedAt == null) }),
   component: Reports,
 });
 

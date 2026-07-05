@@ -23,7 +23,7 @@ export const Route = createFileRoute("/")({
       },
     ],
   }),
-  loader: async () => ({ clients: await listClients() }),
+  loader: async () => ({ clients: (await listClients()).filter((c) => c.removedAt == null) }),
   component: Ask,
 });
 
