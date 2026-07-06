@@ -2,6 +2,7 @@ import { and, eq, gte, lte, inArray } from "drizzle-orm";
 import { db, schema } from "@/db/client";
 import { pickAction } from "@/meta/insights";
 import { resultSpec } from "@/server/creative";
+import { familyCount } from "@/server/agg";
 import { trailingRange } from "@/sync/jobs/insights";
 import type { InsightRow } from "@/meta/types";
 import { getClientRow, effectiveAccountIds } from "@/sync/jobs/clients";
@@ -50,6 +51,7 @@ interface Agg {
   results: number;
   conversions: number;
   conversionValue: number;
+  events: Map<string, number>;
 }
 
 // "Results" is objective-dependent in Ads Manager (traffic→link clicks,
@@ -81,6 +83,10 @@ const DIM_LABEL: Record<Breakdown, string> = {
 // Aggregate → metric value. Labels/kinds live in the client-safe report-options
 // module (single source of truth shared with the column-picker UI).
 const COL_META = new Map(REPORT_COLUMNS.map((c) => [c.key, c]));
+const costPer = (a: Agg, label: string): number => {
+  const n = familyCount(a.events, label);
+  return n ? a.spend / n : 0;
+};
 const VALUE_FNS: Record<string, (a: Agg) => number> = {
   spend: (a) => a.spend,
   impressions: (a) => a.impressions,
@@ -96,6 +102,14 @@ const VALUE_FNS: Record<string, (a: Agg) => number> = {
   conversions: (a) => a.conversions,
   conversion_value: (a) => a.conversionValue,
   roas: (a) => (a.spend ? a.conversionValue / a.spend : 0),
+  registrations: (a) => familyCount(a.events, "Registrations"),
+  leads: (a) => familyCount(a.events, "Leads"),
+  initiate_checkout: (a) => familyCount(a.events, "Checkouts initiated"),
+  purchases: (a) => familyCount(a.events, "Purchases"),
+  landing_page_views: (a) => familyCount(a.events, "Landing page views"),
+  cost_per_registration: (a) => costPer(a, "Registrations"),
+  cost_per_lead: (a) => costPer(a, "Leads"),
+  cost_per_purchase: (a) => costPer(a, "Purchases"),
 };
 
 export const DEFAULT_COLUMNS = DEFAULT_REPORT_COLUMN_KEYS;
@@ -257,6 +271,7 @@ const emptyAgg = (): Agg => ({
   results: 0,
   conversions: 0,
   conversionValue: 0,
+  events: new Map(),
 });
 function accumulate(a: Agg, r: InsightRow, objectiveByCampaign: Record<string, string>): void {
   a.spend += num(r.spend);
@@ -267,6 +282,8 @@ function accumulate(a: Agg, r: InsightRow, objectiveByCampaign: Record<string, s
   a.results += resultValue(r, objectiveByCampaign[String(r.campaign_id ?? "")]);
   a.conversions += pickAction(r.actions, CONVERSION_TYPE);
   a.conversionValue += pickAction(r.action_values, CONVERSION_TYPE);
+  for (const act of (r.actions as { action_type: string; value: string }[] | undefined) ?? [])
+    a.events.set(act.action_type, (a.events.get(act.action_type) ?? 0) + (Number(act.value) || 0));
 }
 
 const MAX_ROWS = 500;

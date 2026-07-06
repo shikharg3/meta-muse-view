@@ -163,3 +163,34 @@ test("buildReport applies a client markup to spend and derived cost metrics", as
   expect(p.rows[0][1]).toBeCloseTo(2.2, 6); // cpc from marked-up spend
   expect(p.subtitle).toContain("10% markup");
 });
+
+test("buildReport exposes de-duplicated funnel event columns and cost-per-event", async () => {
+  const src = rowSource({
+    act_1: [
+      row("2026-06-01", "c1", {
+        spend: "300",
+        actions: [
+          { action_type: "omni_purchase", value: "6" },
+          { action_type: "purchase", value: "6" }, // same event, different variant -> must not double-count
+          { action_type: "lead", value: "10" },
+          { action_type: "omni_complete_registration", value: "4" },
+          { action_type: "landing_page_view", value: "50" },
+        ],
+      }),
+    ],
+  });
+  const p = await buildReport(
+    src,
+    {
+      accountIds: ["act_1"],
+      since: "2026-06-01",
+      until: "2026-06-01",
+      columns: ["purchases", "leads", "registrations", "landing_page_views", "cost_per_purchase"],
+      breakdown: "none",
+      objectiveByCampaign: {},
+    },
+    "Acme",
+  );
+  // purchases de-duped to 6 (not 12); leads 10; registrations 4; LPV 50; cost/purchase = 300/6 = 50
+  expect(p.rows).toEqual([[6, 10, 4, 50, 50]]);
+});

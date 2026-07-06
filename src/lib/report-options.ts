@@ -23,6 +23,14 @@ export const REPORT_COLUMNS: ReportColumnDef[] = [
   { key: "conversions", label: "Conversions", kind: "int" },
   { key: "conversion_value", label: "Conv. Value", kind: "money" },
   { key: "roas", label: "ROAS", kind: "float" },
+  { key: "registrations", label: "Registrations", kind: "int" },
+  { key: "leads", label: "Leads", kind: "int" },
+  { key: "initiate_checkout", label: "Checkouts", kind: "int" },
+  { key: "purchases", label: "Purchases", kind: "int" },
+  { key: "landing_page_views", label: "Landing Page Views", kind: "int" },
+  { key: "cost_per_registration", label: "Cost / Reg.", kind: "money" },
+  { key: "cost_per_lead", label: "Cost / Lead", kind: "money" },
+  { key: "cost_per_purchase", label: "Cost / Purchase", kind: "money" },
 ];
 
 export const DEFAULT_REPORT_COLUMN_KEYS = ["spend", "impressions", "ctr", "cpc", "results"];

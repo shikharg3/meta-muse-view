@@ -155,3 +155,15 @@ export function canonicalEvents(
   }
   return out.sort((a, b) => b.count - a.count);
 }
+
+/**
+ * Count for one canonical event family from a map of raw action_type -> summed count, using the
+ * same first-present-variant de-dup as canonicalEvents. Lets the report engine expose per-event
+ * columns (Registrations, Leads, Purchases, …) whose numbers match the chat's event list.
+ */
+export function familyCount(sums: Map<string, number>, label: string): number {
+  const fam = EVENT_FAMILIES.find((f) => f.label === label);
+  if (!fam) return 0;
+  const key = fam.types.find((t) => sums.has(t));
+  return key ? Math.round(sums.get(key) ?? 0) : 0;
+}

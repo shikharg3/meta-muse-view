@@ -155,7 +155,7 @@ export const TOOLS: AnthropicTool[] = [
           type: "array",
           items: { type: "string" },
           description:
-            "Metrics in order. Allowed: spend, impressions, reach, clicks, link_clicks, ctr, cpc, cpm, frequency, results, cost_per_result, conversions, conversion_value, roas. Defaults to spend, impressions, ctr, cpc, results.",
+            "Metrics in order. Allowed: spend, impressions, reach, clicks, link_clicks, ctr, cpc, cpm, frequency, results, cost_per_result, conversions, conversion_value, roas, registrations, leads, initiate_checkout, purchases, landing_page_views, cost_per_registration, cost_per_lead, cost_per_purchase. Defaults to spend, impressions, ctr, cpc, results.",
         },
         breakdown: {
           type: "string",
