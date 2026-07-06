@@ -26,6 +26,10 @@ test("normalizeColumns maps aliases, dedupes, drops unknowns", () => {
     "cpm",
     "results",
   ]);
+  // New catalog keys pass straight through; "purchases" is now its own column, not conversions.
+  expect(
+    normalizeColumns(["registrations", "purchases", "landing_page_views", "cost_per_lead"]),
+  ).toEqual(["registrations", "purchases", "landing_page_views", "cost_per_lead"]);
 });
 
 test("normalizeBreakdown recognizes synonyms and defaults to none", () => {

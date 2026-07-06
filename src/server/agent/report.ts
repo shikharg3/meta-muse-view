@@ -148,7 +148,9 @@ const COLUMN_ALIASES: Record<string, string> = {
 export function normalizeColumns(input: string[]): string[] {
   const out: string[] = [];
   for (const raw of input) {
-    const k = COLUMN_ALIASES[raw.toLowerCase().replace(/[^a-z]/g, "")];
+    const key = raw.trim().toLowerCase();
+    // A direct catalog key wins (covers every column, incl. new ones); else map free text via aliases.
+    const k = COL_META.has(key) ? key : COLUMN_ALIASES[key.replace(/[^a-z]/g, "")];
     if (k && !out.includes(k)) out.push(k);
   }
   return out;
