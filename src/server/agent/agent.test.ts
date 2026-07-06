@@ -26,6 +26,13 @@ async function seed() {
       status: "Live",
       notionAccountIds: ["act_999"],
     },
+    {
+      id: "old-farside",
+      name: "Farside",
+      status: "Not started",
+      notionAccountIds: ["act_333"],
+      removedAt: new Date(),
+    },
   ]);
   await db.insert(schema.campaigns).values({
     id: "c1",
@@ -214,4 +221,24 @@ test("aggregate tools honor an explicit since/until day (yesterday ≠ days=1)",
     kpis: { spend: number };
   };
   expect(yest.kpis.spend).toBeCloseTo(500);
+}, 20000);
+
+test("resolveClient and list_clients exclude archived (off-board) clients", async () => {
+  // "Farside" exists only as an archived (removedAt) client, so it must not resolve or be listed.
+  expect(await resolveClient("Farside")).toHaveProperty("error");
+  const listed = (await runTool("list_clients", { days: 7 })) as { name: string }[];
+  expect(listed.some((c) => c.name === "Farside")).toBe(false);
+  expect(listed.some((c) => c.name === "wildcasino.ag")).toBe(true);
+}, 20000);
+
+test("list_active_campaigns returns spending campaigns mapped to their current client", async () => {
+  const camps = (await runTool("list_active_campaigns", { days: 7 })) as {
+    name: string;
+    client: string | null;
+    spend: number;
+  }[];
+  const wild = camps.find((c) => c.name === "Wild #5");
+  expect(wild).toBeDefined();
+  expect(wild!.spend).toBeGreaterThan(0);
+  expect(wild!.client).toBe("wildcasino.ag"); // current client, not an archived board entity
 }, 20000);

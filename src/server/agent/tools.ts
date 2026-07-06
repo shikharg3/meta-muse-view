@@ -3,6 +3,7 @@ import {
   fetchClientsRanked,
   fetchClientDetail,
   fetchAccountDirectory,
+  fetchActiveCampaigns,
 } from "@/server/fns/clients";
 import { fetchOverview, fetchOverviewEvents, searchEntities } from "@/server/fns/dashboard";
 import { getClientRow, effectiveAccountIds } from "@/sync/jobs/clients";
@@ -98,6 +99,26 @@ export const TOOLS: AnthropicTool[] = [
     },
   },
   {
+    name: "list_active_campaigns",
+    description:
+      "List EVERY campaign that spent more than $0 over the window (default last 30 days; for a specific day such as yesterday pass since=until=that date), with its owning ad account, owning client, Meta status, spend, impressions, CTR, CPC, and objective-aware results — sorted by spend. Use this for any 'which campaigns are active / running / spending' question. Unlike get_overview (which returns only the top few campaigns), this returns them ALL.",
+    input_schema: {
+      type: "object",
+      properties: {
+        days: {
+          type: "integer",
+          description:
+            "Trailing window ending TODAY (default 30, max 90). days=1 = today only — for a specific past day use since+until.",
+        },
+        since: {
+          type: "string",
+          description: "Start date YYYY-MM-DD (yesterday = since=until=that date); overrides days.",
+        },
+        until: { type: "string", description: "End date YYYY-MM-DD inclusive (use with since)." },
+      },
+    },
+  },
+  {
     name: "search_entities",
     description:
       "Find ad accounts and campaigns by name or id substring. Use when the question is about a specific campaign or account rather than a client.",
@@ -159,7 +180,7 @@ export interface ResolveError {
 
 /** Fuzzy-resolve a client name/id to a single client, or return candidates to disambiguate. */
 export async function resolveClient(query: string): Promise<ResolvedClient | ResolveError> {
-  const clients = await fetchClients();
+  const clients = (await fetchClients()).filter((c) => c.removedAt == null);
   if (clients.length === 0)
     return { error: "No clients are synced yet. Configure Notion in Settings." };
   const q = query.trim().toLowerCase();
@@ -187,7 +208,9 @@ export async function resolveClient(query: string): Promise<ResolvedClient | Res
 export async function runTool(name: string, input: Record<string, unknown>): Promise<unknown> {
   switch (name) {
     case "list_clients": {
-      const clients = await fetchClientsRanked(toolWindow(input));
+      const clients = (await fetchClientsRanked(toolWindow(input))).filter(
+        (c) => c.removedAt == null,
+      );
       return clients.map((c) => ({
         name: c.name,
         status: c.status,
@@ -255,6 +278,8 @@ export async function runTool(name: string, input: Record<string, unknown>): Pro
         })),
       };
     }
+    case "list_active_campaigns":
+      return await fetchActiveCampaigns(toolWindow(input));
     case "search_entities":
       return await searchEntities(String(input.query ?? ""));
     case "list_accounts":

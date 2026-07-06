@@ -413,6 +413,49 @@ export async function fetchClientCampaigns(
     .orderBy(schema.campaigns.name);
 }
 
+/**
+ * Every campaign that spent > $0 over the window, mapped to its owning ad account and CURRENT
+ * client — powers the chat "which campaigns were active" question. Returns ALL active campaigns
+ * (not a top-N), and resolves the client through non-archived rows only so stale board entities
+ * (e.g. a client that churned but whose campaigns now belong to another) don't surface.
+ */
+export async function fetchActiveCampaigns(w: DateWindow): Promise<
+  {
+    name: string;
+    account: string;
+    client: string | null;
+    status: string | null;
+    spend: number;
+    impressions: number;
+    ctr: number;
+    cpc: number;
+    results: number;
+    resultLabel: string;
+  }[]
+> {
+  const campaigns = await fetchCampaigns(w);
+  const clients = (await db.select().from(schema.clients)).filter((c) => c.removedAt == null);
+  const clientByAccount = new Map<string, string>();
+  for (const cl of clients)
+    for (const a of effectiveAccountIds(cl))
+      if (!clientByAccount.has(a)) clientByAccount.set(a, cl.name);
+  return campaigns
+    .filter((c) => c.spend > 0)
+    .sort((a, b) => b.spend - a.spend)
+    .map((c) => ({
+      name: c.name,
+      account: c.accountName,
+      client: clientByAccount.get(c.accountId) ?? null,
+      status: c.status,
+      spend: c.spend,
+      impressions: c.impressions,
+      ctr: c.ctr,
+      cpc: c.cpc,
+      results: c.results,
+      resultLabel: c.resultLabel,
+    }));
+}
+
 export interface AccountDirectoryRow {
   id: string;
   name: string | null;
