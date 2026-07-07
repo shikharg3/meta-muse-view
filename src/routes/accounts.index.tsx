@@ -8,6 +8,7 @@ import { fmtCurrency, fmtCompact, fmtPct, fmtRelTime } from "@/lib/format";
 import { ArrowUpDown, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { scopedSearch, accountScope, rangeSpec } from "@/lib/range";
+import { sortByKey } from "@/lib/sort";
 
 export const Route = createFileRoute("/accounts/")({
   head: () => ({
@@ -25,7 +26,15 @@ export const Route = createFileRoute("/accounts/")({
   component: Accounts,
 });
 
-type SortKey = "name" | "spend" | "results" | "ctr" | "cpm" | "conversions";
+type SortKey =
+  | "name"
+  | "spend"
+  | "results"
+  | "ctr"
+  | "cpm"
+  | "conversions"
+  | "status"
+  | "disabledSince";
 
 function Accounts() {
   const { accounts } = Route.useLoaderData();
@@ -43,13 +52,7 @@ function Accounts() {
         (status === "ALL" || a.status === status) &&
         (q.trim() === "" || a.name.toLowerCase().includes(q.toLowerCase()) || a.id.includes(q)),
     );
-    return [...list].sort((a, b) => {
-      const av = a[sort] as number | string;
-      const bv = b[sort] as number | string;
-      const cmp =
-        typeof av === "string" ? av.localeCompare(bv as string) : (av as number) - (bv as number);
-      return dir === "asc" ? cmp : -cmp;
-    });
+    return sortByKey(list, sort, dir);
   }, [accounts, q, sort, dir, status, scopeParam]);
 
   const toggle = (k: SortKey) => {
@@ -107,7 +110,20 @@ function Accounts() {
                   active={sort === "name"}
                   dir={dir}
                 />
-                <Th label="Status" />
+                <Th
+                  label="Status"
+                  sortable
+                  onClick={() => toggle("status")}
+                  active={sort === "status"}
+                  dir={dir}
+                />
+                <Th
+                  label="Disabled"
+                  sortable
+                  onClick={() => toggle("disabledSince")}
+                  active={sort === "disabledSince"}
+                  dir={dir}
+                />
                 <Th
                   label="Spend"
                   align="right"
@@ -173,15 +189,14 @@ function Accounts() {
                   </td>
                   <td className="px-3 py-3">
                     <StatusPill status={a.status} />
-                    {a.status === "DISABLED" && (
-                      <div
-                        className="text-[10px] text-amber-500 mt-0.5"
-                        title={a.disableReason ?? undefined}
-                      >
-                        {a.disabledSince
-                          ? `disabled ${a.disabledSince}`
-                          : "disabled (date unknown)"}
-                      </div>
+                  </td>
+                  <td className="px-3 py-3 font-mono text-[11px] text-muted-foreground">
+                    {a.disabledSince ? (
+                      <span className="text-amber-500" title={a.disableReason ?? undefined}>
+                        {a.disabledSince}
+                      </span>
+                    ) : (
+                      "—"
                     )}
                   </td>
                   <td className="px-3 py-3 text-right font-mono">{fmtCurrency(a.spend)}</td>
@@ -213,7 +228,7 @@ function Accounts() {
               ))}
               {filtered.length === 0 && (
                 <tr>
-                  <td colSpan={10} className="px-5 py-12 text-center text-sm text-muted-foreground">
+                  <td colSpan={11} className="px-5 py-12 text-center text-sm text-muted-foreground">
                     No accounts match your filters.
                   </td>
                 </tr>
