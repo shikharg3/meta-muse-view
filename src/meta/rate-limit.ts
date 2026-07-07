@@ -19,20 +19,22 @@ export function parseUsage(headers: Headers, accountId: string): Usage {
   const throttle = safeJson(headers.get("x-fb-ads-insights-throttle"));
   // An account can carry several BUC buckets (ads_management + ads_insights, …); take the worst
   // dimension across all of them so we back off on whichever bucket is closest to its limit.
-  const list = buc?.[accountId];
+  // Meta keys BUC usage by the bare numeric account id (no "act_" prefix); accept either form.
+  const list = buc?.[accountId] ?? buc?.[accountId.replace(/^act_/, "")];
   const entries = Array.isArray(list) ? (list as Record<string, unknown>[]) : [];
   let callCount = 0;
   let totalCputime = 0;
   let totalTime = 0;
   let regain = 0;
-  let tier: string | null = null;
   for (const e of entries) {
     callCount = Math.max(callCount, num(e?.call_count));
     totalCputime = Math.max(totalCputime, num(e?.total_cputime));
     totalTime = Math.max(totalTime, num(e?.total_time));
     regain = Math.max(regain, num(e?.estimated_time_to_regain_access));
-    if (!tier && typeof e?.ads_api_access_tier === "string") tier = e.ads_api_access_tier;
   }
+  // The access tier is app-level (identical across every bucket), so read it from any entry in the
+  // header — robust even if the per-account key above matched nothing.
+  const tier = bucTier(buc);
   return {
     callCount,
     totalCputime,
@@ -42,6 +44,17 @@ export function parseUsage(headers: Headers, accountId: string): Usage {
     appIdUtilPct: num(throttle?.app_id_util_pct),
     accIdUtilPct: num(throttle?.acc_id_util_pct),
   };
+}
+
+/** Extract the app-level ads_api_access_tier from any BUC bucket, regardless of its account key. */
+function bucTier(buc: Record<string, unknown> | undefined): string | null {
+  if (!buc) return null;
+  for (const arr of Object.values(buc)) {
+    if (!Array.isArray(arr)) continue;
+    for (const e of arr as Record<string, unknown>[])
+      if (typeof e?.ads_api_access_tier === "string") return e.ads_api_access_tier;
+  }
+  return null;
 }
 
 /** Worst utilization dimension (0-100), used to decide and report proactive backoff. */

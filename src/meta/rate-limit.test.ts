@@ -26,6 +26,19 @@ test("parses business-use-case usage (worst across buckets) and the insights thr
   expect(usage.tier).toBe("standard_access");
 });
 
+test("matches BUC usage keyed by the bare numeric id (Meta drops the act_ prefix)", () => {
+  const headers = new Headers({
+    "x-business-use-case-usage": JSON.stringify({
+      "1418562826357160": [
+        { type: "ads_insights", call_count: 42, ads_api_access_tier: "standard_access" },
+      ],
+    }),
+  });
+  const usage = parseUsage(headers, "act_1418562826357160");
+  expect(usage.callCount).toBe(42); // found despite the act_ prefix mismatch
+  expect(usage.tier).toBe("standard_access");
+});
+
 test("recommends backoff when any utilization (incl. call_count) crosses the threshold", () => {
   const base = {
     callCount: 0,
