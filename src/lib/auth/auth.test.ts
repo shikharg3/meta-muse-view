@@ -1,6 +1,7 @@
 import { test, expect, beforeAll } from "bun:test";
 import { hashPassword, verifyPassword } from "./password";
 import { signSession, verifySession, newSession } from "./session";
+import { handleAuth } from "./gate";
 
 beforeAll(() => {
   // session signing needs APP_ENCRYPTION_KEY
@@ -36,4 +37,44 @@ test("session round-trips and rejects tampering + expiry", () => {
   // expired session → rejected
   const expired = signSession({ uid: "u", email: "e", exp: Math.floor(Date.now() / 1000) - 10 });
   expect(verifySession(expired)).toBeNull();
+});
+
+test("Meta crawler UA gets a 200 OG stub, not a login redirect", async () => {
+  const res = await handleAuth(
+    new Request("https://analytics.madsmonitor.com/", {
+      headers: {
+        "user-agent": "facebookexternalhit/1.1 (+http://www.facebook.com/externalhit_uatext.php)",
+      },
+    }),
+  );
+  if (!res) throw new Error("expected a Response from the gate");
+  expect(res.status).toBe(200);
+  const body = await res.text();
+  expect(body).toContain('property="og:title"');
+  expect(body).toContain("https://analytics.madsmonitor.com/");
+});
+
+test("meta-externalagent crawler is matched too", async () => {
+  const res = await handleAuth(
+    new Request("https://analytics.madsmonitor.com/", {
+      headers: { "user-agent": "meta-externalagent/1.1" },
+    }),
+  );
+  if (!res) throw new Error("expected a Response from the gate");
+  expect(res.status).toBe(200);
+});
+
+test("browser with no session is redirected to /login, never a violating code", async () => {
+  const res = await handleAuth(
+    new Request("https://analytics.madsmonitor.com/", { headers: { accept: "text/html" } }),
+  );
+  if (!res) throw new Error("expected a Response from the gate");
+  expect(res.status).toBe(302);
+  expect(res.headers.get("location")).toBe("/login");
+});
+
+test("non-crawler, non-browser request with no session gets 401", async () => {
+  const res = await handleAuth(new Request("https://analytics.madsmonitor.com/api/x"));
+  if (!res) throw new Error("expected a Response from the gate");
+  expect(res.status).toBe(401);
 });

@@ -44,6 +44,41 @@ function isPublicPath(path: string): boolean {
   return isStaticAsset(path);
 }
 
+// Meta's URL crawler (App Review "Broken URL" check + Sharing Debugger) can't authenticate, yet the
+// app's public Site URL must return 200-299 to switch to Live mode. Match Meta's crawler user-agents
+// and serve a minimal Open Graph stub — no dashboard data is exposed. Meta explicitly permits
+// whitelisting its crawler user-agent strings for exactly this.
+const META_CRAWLER_UA =
+  /facebookexternalhit|facebookcatalog|facebookexternalua|meta-external(agent|fetcher)/i;
+function isMetaCrawler(ua: string | null): boolean {
+  return ua !== null && META_CRAWLER_UA.test(ua);
+}
+
+function metaCrawlerPage(url: URL): Response {
+  const origin = `${url.protocol}//${url.host}`;
+  const html = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MetaConsole — Meta Ads analytics</title>
+<meta name="description" content="Private Meta Ads analytics dashboard. Sign in to continue." />
+<meta property="og:type" content="website" />
+<meta property="og:title" content="MetaConsole — Meta Ads analytics" />
+<meta property="og:description" content="Private Meta Ads analytics dashboard." />
+<meta property="og:url" content="${origin}/" />
+</head>
+<body>
+<h1>MetaConsole</h1>
+<p>Private Meta Ads analytics dashboard. Please sign in to continue.</p>
+</body>
+</html>`;
+  return new Response(html, {
+    status: 200,
+    headers: { "content-type": "text/html; charset=utf-8" },
+  });
+}
+
 const BASIC_REALM = 'Basic realm="MetaConsole (testing)", charset="UTF-8"';
 
 /** Test-mode credentials: when both env vars are set, HTTP Basic Auth replaces login. */
@@ -150,6 +185,8 @@ export async function handleAuth(request: Request): Promise<Response | null> {
   if (basic) return handleBasicAuth(request, url, path, basic);
   if (path.startsWith("/auth/")) return authEndpoint(request, path);
   if (isPublicPath(path)) return null;
+  // Meta's URL crawler must get a direct 200 for the Site URL (App Review), never a login redirect.
+  if (isMetaCrawler(request.headers.get("user-agent"))) return metaCrawlerPage(url);
   const wantsHtml =
     request.method === "GET" && (request.headers.get("accept") ?? "").includes("text/html");
   const denied = (clear: boolean): Response => {
