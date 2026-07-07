@@ -107,37 +107,6 @@ export async function loginWithPassword(email: string, password: string): Promis
   return { ok: true, user: await ensureBootstrap(u) };
 }
 
-export async function upsertGoogleUser(g: {
-  email: string;
-  name: string | null;
-  sub: string;
-}): Promise<AuthOutcome> {
-  const existing = await findByEmail(g.email);
-  if (existing) {
-    if (existing.status === "rejected")
-      return { ok: false, error: "Your account access was declined." };
-    await db
-      .update(schema.users)
-      .set({ googleSub: g.sub, name: existing.name ?? g.name, lastLoginAt: new Date() })
-      .where(eq(schema.users.id, existing.id));
-    return { ok: true, user: await ensureBootstrap(existing) };
-  }
-  const admin = await shouldBeAdmin(g.email);
-  const [u] = await db
-    .insert(schema.users)
-    .values({
-      id: randomUUID(),
-      email: g.email,
-      name: g.name,
-      role: admin ? "admin" : "member",
-      status: admin ? "approved" : "pending",
-      googleSub: g.sub,
-      lastLoginAt: new Date(),
-    })
-    .returning();
-  return { ok: true, user: u };
-}
-
 /** Stable id/email for the shared HTTP Basic Auth test admin (see lib/auth/gate). */
 export const BASIC_AUTH_USER_ID = "basic-auth-test";
 const BASIC_AUTH_EMAIL = "basic-auth@test.local";

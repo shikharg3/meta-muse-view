@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useState } from "react";
-import { AuthCard, GoogleButton } from "@/components/auth/AuthCard";
+import { AuthCard } from "@/components/auth/AuthCard";
 
 export const Route = createFileRoute("/login")({
   head: () => ({ meta: [{ title: "Sign in — MetaConsole" }] }),
@@ -9,10 +9,7 @@ export const Route = createFileRoute("/login")({
   component: Login,
 });
 
-const ERROR_TEXT: Record<string, string> = {
-  google: "Google sign-in failed. Please try again.",
-  google_unconfigured: "Google sign-in isn't set up yet — use email & password.",
-};
+const ERROR_TEXT: Record<string, string> = {};
 
 function Login() {
   const { error } = Route.useSearch();
@@ -46,10 +43,6 @@ function Login() {
   return (
     <AuthCard title="Sign in" subtitle="MetaConsole — Meta Ads analytics">
       <div className="space-y-4">
-        <GoogleButton label="Continue with Google" />
-        <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
-          <span className="h-px flex-1 bg-border" /> or <span className="h-px flex-1 bg-border" />
-        </div>
         {banner && (
           <div className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive">
             {banner}

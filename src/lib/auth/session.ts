@@ -2,7 +2,6 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import { env } from "@/lib/env";
 
 export const SESSION_COOKIE = "mc_session";
-export const OAUTH_STATE_COOKIE = "mc_oauth_state";
 const MAX_AGE_S = 7 * 24 * 60 * 60; // 7 days
 
 export interface Session {
@@ -49,9 +48,6 @@ const base = "Path=/; HttpOnly; Secure; SameSite=Lax";
 export const sessionSetCookie = (token: string): string =>
   `${SESSION_COOKIE}=${token}; ${base}; Max-Age=${MAX_AGE_S}`;
 export const sessionClearCookie = (): string => `${SESSION_COOKIE}=; ${base}; Max-Age=0`;
-export const stateSetCookie = (state: string): string =>
-  `${OAUTH_STATE_COOKIE}=${state}; ${base}; Max-Age=600`;
-export const stateClearCookie = (): string => `${OAUTH_STATE_COOKIE}=; ${base}; Max-Age=0`;
 
 /** Read a cookie value from a raw request Cookie header (for the server.ts gate). */
 export function readCookie(request: Request, name: string): string | null {

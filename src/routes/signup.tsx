@@ -1,6 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useState } from "react";
-import { AuthCard, GoogleButton } from "@/components/auth/AuthCard";
+import { AuthCard } from "@/components/auth/AuthCard";
 
 export const Route = createFileRoute("/signup")({
   head: () => ({ meta: [{ title: "Create account — MetaConsole" }] }),
@@ -37,10 +37,6 @@ function Signup() {
   return (
     <AuthCard title="Create your account" subtitle="New accounts need admin approval before access">
       <div className="space-y-4">
-        <GoogleButton label="Sign up with Google" />
-        <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
-          <span className="h-px flex-1 bg-border" /> or <span className="h-px flex-1 bg-border" />
-        </div>
         {err && (
           <div className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive">
             {err}

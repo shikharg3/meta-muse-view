@@ -1,32 +1,15 @@
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { timingSafeEqual } from "node:crypto";
 import {
   SESSION_COOKIE,
-  OAUTH_STATE_COOKIE,
   verifySession,
   signSession,
   newSession,
   sessionSetCookie,
   sessionClearCookie,
-  stateSetCookie,
-  stateClearCookie,
   readCookie,
 } from "./session";
-import { googleConfigured, googleAuthUrl, exchangeCodeForUser } from "./google";
-import {
-  loginWithPassword,
-  signupWithPassword,
-  upsertGoogleUser,
-  findUserById,
-  ensureBasicAuthUser,
-} from "./users";
+import { loginWithPassword, signupWithPassword, findUserById, ensureBasicAuthUser } from "./users";
 import { env } from "@/lib/env";
-
-/** Public origin as seen by the browser (behind nginx: honor forwarded headers). */
-function publicOrigin(request: Request, url: URL): string {
-  const proto = request.headers.get("x-forwarded-proto") ?? url.protocol.replace(":", "");
-  const host = request.headers.get("host") ?? url.host;
-  return `${proto}://${host}`;
-}
 
 function redirect(location: string, cookies: string[] = []): Response {
   const headers = new Headers({ location });
@@ -128,30 +111,7 @@ async function handleBasicAuth(
   return redirect(url.pathname + url.search, [sessionCookieFor(user)]);
 }
 
-async function authEndpoint(request: Request, url: URL, path: string): Promise<Response> {
-  const redirectUri = `${publicOrigin(request, url)}/auth/callback`;
-
-  if (path === "/auth/google") {
-    if (!googleConfigured()) return redirect("/login?error=google_unconfigured");
-    const state = randomBytes(16).toString("hex");
-    return redirect(googleAuthUrl(redirectUri, state), [stateSetCookie(state)]);
-  }
-
-  if (path === "/auth/callback") {
-    const code = url.searchParams.get("code");
-    const state = url.searchParams.get("state");
-    const saved = readCookie(request, OAUTH_STATE_COOKIE);
-    if (!code || !state || !saved || state !== saved) {
-      return redirect("/login?error=google", [stateClearCookie()]);
-    }
-    const gUser = await exchangeCodeForUser(code, redirectUri);
-    if (!gUser) return redirect("/login?error=google", [stateClearCookie()]);
-    const res = await upsertGoogleUser({ email: gUser.email, name: gUser.name, sub: gUser.sub });
-    if (!res.ok)
-      return redirect(`/login?error=${encodeURIComponent(res.error)}`, [stateClearCookie()]);
-    return redirect("/", [stateClearCookie(), sessionCookieFor(res.user)]);
-  }
-
+async function authEndpoint(request: Request, path: string): Promise<Response> {
   if (path === "/auth/logout") {
     return redirect("/login", [sessionClearCookie()]);
   }
@@ -188,7 +148,7 @@ export async function handleAuth(request: Request): Promise<Response | null> {
   const path = url.pathname;
   const basic = basicAuthCreds();
   if (basic) return handleBasicAuth(request, url, path, basic);
-  if (path.startsWith("/auth/")) return authEndpoint(request, url, path);
+  if (path.startsWith("/auth/")) return authEndpoint(request, path);
   if (isPublicPath(path)) return null;
   const wantsHtml =
     request.method === "GET" && (request.headers.get("accept") ?? "").includes("text/html");

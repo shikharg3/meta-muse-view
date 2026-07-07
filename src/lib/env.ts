@@ -17,12 +17,8 @@ const schema = z.object({
     ),
   APP_ENCRYPTION_KEY: z.string().length(64, "APP_ENCRYPTION_KEY must be 64 hex chars (32 bytes)"),
   DATABASE_URL: z.string().min(1),
-  // Auth (Google OAuth optional; email/password works without it).
-  GOOGLE_CLIENT_ID: z.string().optional(),
-  GOOGLE_CLIENT_SECRET: z.string().optional(),
-  // Basic-auth test gate: when BOTH are set, the Google/email login is replaced by
-  // HTTP Basic Auth (a single shared credential) for testing. Unset both to restore
-  // the normal Google/email login — no code change needed.
+  // Basic-auth test gate: when BOTH are set, HTTP Basic Auth (a single shared credential) replaces
+  // the email/password login for testing. Unset both to use the normal login — no code change.
   BASIC_AUTH_USER: z.string().optional(),
   BASIC_AUTH_PASS: z.string().optional(),
   // Telegram alert delivery (optional): bot token + target chat/channel id.
