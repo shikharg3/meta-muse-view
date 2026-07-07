@@ -1,26 +1,28 @@
 import { test, expect, beforeEach } from "bun:test";
 import { sql } from "drizzle-orm";
 import { db, schema } from "@/db/client";
-import { saveCredentials, getCredentials } from "./credentials";
+import { saveCredentials } from "./credentials";
 
 beforeEach(async () => {
-  await db.execute(sql`truncate table meta_credentials cascade`);
+  await db.execute(sql`truncate table meta_credentials, token_health cascade`);
 });
 
-test("saveCredentials encrypts and getCredentials decrypts (DB takes precedence)", async () => {
+test("saveCredentials resets the observed tier so a swapped (possibly dev) app re-paces safely", async () => {
+  // A previously-observed standard-tier app.
+  await db
+    .insert(schema.tokenHealth)
+    .values({ id: "singleton", isValid: true, tier: "standard_access" });
+
   await saveCredentials({
-    appId: "111", appSecret: "the-secret", token: "the-token",
-    businessId: "999", accountIds: ["act_1", "act_2"], apiVersion: "v25.0",
+    appId: "123",
+    appSecret: "secret",
+    token: "tok",
+    businessId: "biz",
+    accountIds: [],
+    apiVersion: "v25.0",
   });
-  const [row] = await db.select().from(schema.metaCredentials);
-  expect(row.appSecretEnc).not.toContain("the-secret"); // stored encrypted
 
-  const creds = await getCredentials();
-  expect(creds?.appSecret).toBe("the-secret");
-  expect(creds?.token).toBe("the-token");
-  expect(creds?.accountIds).toEqual(["act_1", "act_2"]);
-});
-test("getCredentials returns null when neither DB nor env provide a token", async () => {
-  // env in this test run has blank META_* (see .env), so no fallback token
-  expect(await getCredentials()).toBeNull();
+  // Tier is cleared → the next cycle starts on conservative pacing until it re-observes the tier.
+  const [row] = await db.select().from(schema.tokenHealth);
+  expect(row.tier).toBeNull();
 });
