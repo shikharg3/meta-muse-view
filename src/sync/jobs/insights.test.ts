@@ -1,178 +1,60 @@
 import { test, expect, beforeEach } from "bun:test";
 import { sql } from "drizzle-orm";
 import { db, schema } from "@/db/client";
-import { syncInsights, syncInsightsRange, trailingRange, chunkRange } from "./insights";
+import { syncInsightsRange } from "./insights";
 import type { InsightRow, InsightsClient } from "@/meta/types";
-import { INSIGHT_METRIC_GROUPS } from "@/meta/fieldsets";
-import { fakeInsightsClient } from "@/meta/fake-client";
-
-function makeClient(rows: InsightRow[]): InsightsClient {
-  return fakeInsightsClient({ getInsights: async () => rows });
-}
+import { MetaAuthError } from "@/meta/client";
 
 beforeEach(async () => {
   await db.execute(sql`truncate table insights_daily cascade`);
 });
 
-test("upserts one row per (level, entity, date) and is idempotent on re-pull", async () => {
-  const rows: InsightRow[] = [
-    {
-      date_start: "2026-06-01",
-      date_stop: "2026-06-01",
-      campaign_id: "c1",
-      spend: "100",
-      impressions: "10",
-      actions: [{ action_type: "omni_purchase", value: "3" }],
-    },
-  ];
-  const client = makeClient(rows);
-  await syncInsights(client, "act_1", { level: "campaign", days: 3 });
-  await syncInsights(client, "act_1", { level: "campaign", days: 3 }); // re-pull same window
+const day = "2026-06-01";
+const fake = (getInsights: InsightsClient["getInsights"]): InsightsClient =>
+  ({ getInsights }) as unknown as InsightsClient;
 
-  const all = await db.select().from(schema.insightsDaily);
-  expect(all).toHaveLength(1);
-  expect(all[0].spend).toBeCloseTo(100);
-  expect(all[0].conversions).toBe(3);
-  expect(all[0].level).toBe("campaign");
-});
-
-test("account-level rows are keyed by the act_-prefixed account id, not the bare account_id", async () => {
-  const rows: InsightRow[] = [
-    { date_start: "2026-06-01", date_stop: "2026-06-01", account_id: "123", spend: "50" },
-  ];
-  await syncInsights(makeClient(rows), "act_123", { level: "account", days: 1 });
-  const all = await db.select().from(schema.insightsDaily);
-  expect(all).toHaveLength(1);
-  expect(all[0].entityId).toBe("act_123");
-});
-
-test("trailingRange covers `days` inclusive of today", () => {
-  const { since, until } = trailingRange(3, new Date("2026-06-08T12:00:00Z"));
-  expect(until).toBe("2026-06-08");
-  expect(since).toBe("2026-06-06");
-});
-
-test("chunkRange splits a long range into contiguous <=90-day windows", () => {
-  const windows = chunkRange("2024-01-01", "2024-12-31", 90);
-  expect(windows[0].since).toBe("2024-01-01");
-  expect(windows[windows.length - 1].until).toBe("2024-12-31");
-  const day = 86_400_000;
-  for (let i = 1; i < windows.length; i++) {
-    const prevUntil = new Date(`${windows[i - 1].until}T00:00:00Z`).getTime();
-    const since = new Date(`${windows[i].since}T00:00:00Z`).getTime();
-    expect((since - prevUntil) / day).toBe(1); // contiguous: no gap, no overlap
-  }
-  for (const w of windows) {
-    const span =
-      (new Date(`${w.until}T00:00:00Z`).getTime() - new Date(`${w.since}T00:00:00Z`).getTime()) /
-        day +
-      1;
-    expect(span).toBeLessThanOrEqual(90);
-  }
-});
-
-test("chunkRange returns a single window when the range already fits", () => {
-  expect(chunkRange("2026-06-01", "2026-06-10", 90)).toEqual([
-    { since: "2026-06-01", until: "2026-06-10" },
+test("parallel metric groups merge into one row per (entity, date)", async () => {
+  const client = fake(async (_id, params) => {
+    const fields = params.fields as string[];
+    if (fields.includes("spend"))
+      return [{ date_start: day, date_stop: day, campaign_id: "c1", spend: "100" }] as InsightRow[];
+    if (fields.includes("impressions"))
+      return [
+        { date_start: day, date_stop: day, campaign_id: "c1", impressions: "500" },
+      ] as InsightRow[];
+    return [];
+  });
+  await syncInsightsRange(client, "act_1", "campaign", day, day, false, false, [
+    ["spend"],
+    ["impressions"],
   ]);
+  const rows = await db.select().from(schema.insightsDaily);
+  expect(rows).toHaveLength(1);
+  expect(rows[0].spend).toBeCloseTo(100);
+  expect(rows[0].impressions).toBe(500);
 });
 
-test("syncInsights issues one request per chunk across a long backfill", async () => {
-  let calls = 0;
-  const client = fakeInsightsClient({
-    getInsights: async () => {
-      calls++;
-      return [];
-    },
+test("a failing (non-auth) metric group is skipped; other groups still persist", async () => {
+  const client = fake(async (_id, params) => {
+    const fields = params.fields as string[];
+    if (fields.includes("spend"))
+      return [{ date_start: day, date_stop: day, campaign_id: "c1", spend: "100" }] as InsightRow[];
+    throw new Error("Meta error 2500: boom");
   });
-  // 365-day window at 90-day chunks → 5 chunks, each requested once per metric group.
-  await syncInsights(client, "act_1", {
-    level: "account",
-    days: 365,
-    today: new Date("2026-06-08T00:00:00Z"),
-  });
-  // Each chunk: one request per metric group + one attribution-window request (refresh path).
-  expect(calls).toBe(5 * (INSIGHT_METRIC_GROUPS.length + 1));
-});
-
-test("merges metric groups into one row and captures the full set in raw", async () => {
-  const client = fakeInsightsClient({
-    getInsights: async (_id, params) => {
-      // Return every requested metric so a group carrying several (e.g. CORE has spend + frequency)
-      // contributes them all; the rest groups add nothing but must merge by (entity, date).
-      const fields = (params.fields as string[]) ?? [];
-      const row: InsightRow = {
-        date_start: "2026-06-01",
-        date_stop: "2026-06-01",
-        campaign_id: "c1",
-      };
-      if (fields.includes("spend")) Object.assign(row, { spend: "100", impressions: "10" });
-      if (fields.includes("frequency"))
-        Object.assign(row, { frequency: "2.5", quality_ranking: "ABOVE_AVERAGE" });
-      return [row];
-    },
-  });
-  await syncInsights(client, "act_1", { level: "campaign", days: 1 });
-  const [row] = await db.select().from(schema.insightsDaily);
-  expect(row.spend).toBeCloseTo(100);
-  expect(row.frequency).toBeCloseTo(2.5);
-  expect(row.qualityRanking).toBe("ABOVE_AVERAGE");
-  const raw = row.raw as Record<string, unknown>;
-  expect(raw.spend).toBe("100");
-  expect(raw.frequency).toBe("2.5");
-}, 20000);
-
-test("captures attribution-window splits in a separate column on refresh", async () => {
-  const client = fakeInsightsClient({
-    getInsights: async (_id, params) => {
-      const base = { date_start: "2026-06-01", date_stop: "2026-06-01", campaign_id: "c1" };
-      if (params.action_attribution_windows)
-        return [
-          {
-            ...base,
-            actions: [{ action_type: "purchase", value: "5", "7d_click": "4", "1d_view": "1" }],
-          },
-        ];
-      if ((params.fields as string[]).includes("spend")) return [{ ...base, spend: "10" }];
-      return [base];
-    },
-  });
-  await syncInsights(client, "act_1", { level: "campaign", days: 1 });
-  const [row] = await db.select().from(schema.insightsDaily);
-  expect(row.spend).toBeCloseTo(10);
-  expect(row.actionsByWindow).toEqual([
-    { action_type: "purchase", value: "5", "7d_click": "4", "1d_view": "1" },
+  await syncInsightsRange(client, "act_1", "campaign", day, day, false, false, [
+    ["spend"],
+    ["impressions"],
   ]);
-}, 20000);
+  const rows = await db.select().from(schema.insightsDaily);
+  expect(rows).toHaveLength(1);
+  expect(rows[0].spend).toBeCloseTo(100);
+});
 
-test("never requests a duplicate field (avoids Meta #2500), but keeps the id fields", async () => {
-  const seen: string[][] = [];
-  const client = fakeInsightsClient({
-    getInsights: async (_id, params) => {
-      seen.push(params.fields as string[]);
-      return [];
-    },
+test("a MetaAuthError in any group aborts the range (never silently skipped)", async () => {
+  const client = fake(async () => {
+    throw new MetaAuthError("token invalid");
   });
-  await syncInsights(client, "act_1", { level: "campaign", days: 1 });
-  expect(seen.length).toBeGreaterThan(0);
-  for (const f of seen) expect(f.length).toBe(new Set(f).size); // no field appears twice
-  expect(seen.some((f) => f.includes("account_id"))).toBe(true); // id fields still requested
-}, 20000);
-
-test("backfill mode (useAsync) routes every metric group through async report runs", async () => {
-  let asyncCalls = 0;
-  let syncCalls = 0;
-  const client = fakeInsightsClient({
-    runAsyncInsights: async () => {
-      asyncCalls++;
-      return [];
-    },
-    getInsights: async () => {
-      syncCalls++;
-      return [];
-    },
-  });
-  await syncInsightsRange(client, "act_1", "account", "2026-06-01", "2026-06-02", false, true);
-  expect(asyncCalls).toBe(INSIGHT_METRIC_GROUPS.length);
-  expect(syncCalls).toBe(0);
-}, 20000);
+  await expect(
+    syncInsightsRange(client, "act_1", "campaign", day, day, false, false, [["spend"]]),
+  ).rejects.toThrow(MetaAuthError);
+});

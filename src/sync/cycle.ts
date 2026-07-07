@@ -82,7 +82,7 @@ export async function backfillStep(
   today: Date,
   run: (since: string, until: string) => Promise<unknown>,
   floorDate?: string, // account creation date; backfill never walks older than this
-): Promise<void> {
+): Promise<boolean> {
   const todayYmd = today.toISOString().slice(0, 10);
   // Don't backfill older than the account existed: clamp the retention floor to the account's
   // creation date so a brand-new account finishes in ~1 chunk instead of walking empty months.
@@ -90,12 +90,13 @@ export async function backfillStep(
   const floor = floorDate && floorDate > retentionFloor ? floorDate : retentionFloor;
   const cp = await getCheckpoint(accountId, dataset);
   const doneThrough = cp?.backfilledThrough ?? todayYmd;
-  if (doneThrough <= floor) return; // fully backfilled
+  if (doneThrough <= floor) return false; // fully backfilled
   const until = addDays(doneThrough, -1);
   const cand = addDays(until, -(BACKFILL_CHUNK - 1));
   const since = cand < floor ? floor : cand;
   await run(since, until);
   await setCheckpoint(accountId, dataset, { backfilledThrough: since });
+  return true;
 }
 /** Build a MetaClient from stored creds with the given limiter (refresh and backfill differ). */
 function buildClient(
@@ -189,7 +190,7 @@ export async function backfillAccount(
   client: InsightsClient,
   id: string,
   today: Date,
-): Promise<void> {
+): Promise<boolean> {
   // Clamp the backfill floor to when the account was created — no point walking empty months
   // before it existed (a week-old account then finishes in ~1 chunk instead of days).
   const [acct] = await db
@@ -197,32 +198,40 @@ export async function backfillAccount(
     .from(schema.accounts)
     .where(eq(schema.accounts.id, id));
   const createdDate = acct?.created ? acct.created.toISOString().slice(0, 10) : undefined;
+  let advanced = false;
   for (const level of LEVELS) {
-    await backfillStep(
-      id,
-      `insights:${level}`,
-      BACKFILL_DAYS,
-      today,
-      (s, u) => syncInsightsRange(client, id, level, s, u, false, true),
-      createdDate,
-    );
+    if (
+      await backfillStep(
+        id,
+        `insights:${level}`,
+        BACKFILL_DAYS,
+        today,
+        (s, u) => syncInsightsRange(client, id, level, s, u, false, true),
+        createdDate,
+      )
+    )
+      advanced = true;
   }
   for (const level of ["account", "campaign"] as const) {
-    await backfillStep(
-      id,
-      `breakdown:${level}`,
-      BREAKDOWN_BACKFILL_DAYS,
-      today,
-      (s, u) =>
-        syncBreakdowns(client, id, {
-          groups: STANDARD_BREAKDOWN_GROUPS,
-          level,
-          since: s,
-          until: u,
-        }),
-      createdDate,
-    );
+    if (
+      await backfillStep(
+        id,
+        `breakdown:${level}`,
+        BREAKDOWN_BACKFILL_DAYS,
+        today,
+        (s, u) =>
+          syncBreakdowns(client, id, {
+            groups: STANDARD_BREAKDOWN_GROUPS,
+            level,
+            since: s,
+            until: u,
+          }),
+        createdDate,
+      )
+    )
+      advanced = true;
   }
+  return advanced;
 }
 
 /** Bounded-concurrency map: `n` workers pull from a shared queue until it drains. */
@@ -353,19 +362,25 @@ export async function runBackfillCycle(deadlineMs?: number): Promise<void> {
   const creds = await getCredentials();
   if (!creds) return;
   const pacing = pacingFor(normalizeTier(await getStoredTier()));
-  const client = buildClient(
-    creds,
-    new Limiter(pacing.backfill.concurrency, pacing.backfill.intervalMs),
-  );
+  const client = buildClient(creds, new Limiter(pacing.backfill.http, pacing.backfill.intervalMs));
   const ids = (await db.select({ id: schema.accounts.id }).from(schema.accounts)).map((r) => r.id);
-  const today = new Date();
-  await mapPool(ids, pacing.backfill.concurrency, async (id) => {
-    if (deadlineMs && Date.now() >= deadlineMs) return;
-    try {
-      await backfillAccount(client, id, today);
-    } catch (e) {
-      console.error(`[backfill] ${id} failed:`, e instanceof Error ? e.message : e);
-    }
-  });
+  const pastDeadline = (): boolean => deadlineMs !== undefined && Date.now() >= deadlineMs;
+  // Advance every account by one chunk per pass, looping until nothing is left to backfill or the
+  // deadline hits (each pass no-ops cheaply for already-complete accounts). Parallel metric groups
+  // + the wider limiter make a pass fast, so full history clears in a few passes instead of one
+  // chunk per hourly cycle.
+  let advanced = true;
+  while (advanced && !pastDeadline()) {
+    advanced = false;
+    const today = new Date();
+    await mapPool(ids, pacing.backfill.accounts, async (id) => {
+      if (pastDeadline()) return;
+      try {
+        if (await backfillAccount(client, id, today)) advanced = true;
+      } catch (e) {
+        console.error(`[backfill] ${id} failed:`, e instanceof Error ? e.message : e);
+      }
+    });
+  }
   await recordObservedTier(client.observedTier());
 }

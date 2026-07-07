@@ -67,7 +67,8 @@ test("pacingFor: standard fans out wider than dev; unknown stays conservative", 
   const dev = pacingFor("development");
   const unknown = pacingFor(null);
   expect(std.refresh.concurrency).toBeGreaterThan(dev.refresh.concurrency);
-  expect(std.backfill.concurrency).toBeGreaterThan(dev.backfill.concurrency);
+  expect(std.backfill.http).toBeGreaterThan(dev.backfill.http);
+  expect(std.backfill.accounts).toBeGreaterThan(dev.backfill.accounts);
   // null (unknown, e.g. a fresh app after a ban) must match dev — never assume standard.
   expect(unknown).toEqual(dev);
 });

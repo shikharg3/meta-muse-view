@@ -71,8 +71,11 @@ export async function syncInsightsRange(
     // Request every metric in compatible groups, merged by (entity, date) so each daily row carries
     // the full metric set. The merged row is stored in `raw`; high-value metrics are promoted.
     const byKey = new Map<string, InsightRow>();
-    for (const group of groups) {
-      try {
+    // Fetch every metric group concurrently. The client's Limiter still caps real HTTP concurrency,
+    // but firing them together overlaps the async reports' 5s poll latency instead of serializing it
+    // — 15 groups × 4 levels run serially was the backfill bottleneck.
+    const groupRows = await Promise.all(
+      groups.map(async (group) => {
         const params = {
           level,
           time_range: { since: window.since, until: window.until },
@@ -82,23 +85,27 @@ export async function syncInsightsRange(
           fields: [...new Set([...group, "account_id", "campaign_id", "adset_id", "ad_id"])],
           use_unified_attribution_setting: true,
         };
-        const rows = useAsync
-          ? await client.runAsyncInsights(accountId, params, { memoKey: `insights:${level}:` })
-          : await client.getInsights(accountId, params);
-        for (const r of rows) {
-          const entityId =
-            level === "account" ? accountId : String(r[ID_FIELD[level]] ?? accountId);
-          const key = `${entityId}:${String(r.date_start)}`;
-          const merged = byKey.get(key) ?? ({ date_start: String(r.date_start) } as InsightRow);
-          Object.assign(merged, r);
-          byKey.set(key, merged);
+        try {
+          return useAsync
+            ? await client.runAsyncInsights(accountId, params, { memoKey: `insights:${level}:` })
+            : await client.getInsights(accountId, params);
+        } catch (e) {
+          if (e instanceof MetaAuthError) throw e; // a dead token must abort, not silently skip
+          console.error(
+            `[insights] ${level} metric group skipped:`,
+            e instanceof Error ? e.message : e,
+          );
+          return [] as InsightRow[];
         }
-      } catch (e) {
-        if (e instanceof MetaAuthError) throw e; // a dead token must abort, not silently skip
-        console.error(
-          `[insights] ${level} metric group skipped:`,
-          e instanceof Error ? e.message : e,
-        );
+      }),
+    );
+    for (const rows of groupRows) {
+      for (const r of rows) {
+        const entityId = level === "account" ? accountId : String(r[ID_FIELD[level]] ?? accountId);
+        const key = `${entityId}:${String(r.date_start)}`;
+        const merged = byKey.get(key) ?? ({ date_start: String(r.date_start) } as InsightRow);
+        Object.assign(merged, r);
+        byKey.set(key, merged);
       }
     }
     // Optionally capture conversions split by attribution window — a dedicated request stored in a

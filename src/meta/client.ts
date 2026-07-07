@@ -40,7 +40,7 @@ export class MetaClient implements InsightsClient {
   private maxRetries: number;
   private limiter?: Limiter;
   private fieldStore?: FieldStore;
-  private loaded = new Set<string>();
+  private loaded = new Map<string, Promise<void>>();
   private onEvent?: (e: MetaApiEvent) => void;
   private lastProactive = new Map<string, number>();
   private lastTier: string | null = null;
@@ -222,20 +222,27 @@ export class MetaClient implements InsightsClient {
   }
 
   /** Load a key's persisted blocklist once, so bisection discovery isn't repeated each process. */
-  private async ensureLoaded(memoKey: string): Promise<void> {
-    if (this.loaded.has(memoKey)) return;
-    this.loaded.add(memoKey);
-    if (!this.fieldStore) return;
-    try {
-      const persisted = await this.fieldStore.load(memoKey);
-      if (persisted.length > 0) {
-        const set = this.badFields.get(memoKey) ?? new Set<string>();
-        for (const f of persisted) set.add(f);
-        this.badFields.set(memoKey, set);
+  private ensureLoaded(memoKey: string): Promise<void> {
+    // Cache the in-flight load promise (not just a "started" flag) so concurrent callers for the
+    // same key — e.g. the parallel metric groups — all await the SAME load and share the blocklist,
+    // instead of racing past an empty one and each re-running bisection discovery.
+    let pending = this.loaded.get(memoKey);
+    if (pending) return pending;
+    pending = (async () => {
+      if (!this.fieldStore) return;
+      try {
+        const persisted = await this.fieldStore.load(memoKey);
+        if (persisted.length > 0) {
+          const set = this.badFields.get(memoKey) ?? new Set<string>();
+          for (const f of persisted) set.add(f);
+          this.badFields.set(memoKey, set);
+        }
+      } catch {
+        // best-effort cache; fall back to live discovery
       }
-    } catch {
-      // best-effort cache; fall back to live discovery
-    }
+    })();
+    this.loaded.set(memoKey, pending);
+    return pending;
   }
 
   /** #100 (nonexisting), #10 (permission), #3 (unknown), and "should not be queried with other

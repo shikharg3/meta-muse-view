@@ -88,7 +88,9 @@ export function normalizeTier(raw: string | null | undefined): AccessTier | null
 
 export interface Pacing {
   refresh: { concurrency: number; intervalMs: number };
-  backfill: { concurrency: number; intervalMs: number };
+  // Backfill fans metric-groups out concurrently, so `accounts` (parallel accounts / mapPool width)
+  // and `http` (the Limiter's real HTTP-concurrency cap) are tuned separately.
+  backfill: { accounts: number; http: number; intervalMs: number };
 }
 
 /**
@@ -102,10 +104,10 @@ export function pacingFor(tier: AccessTier | null): Pacing {
   if (tier === "standard")
     return {
       refresh: { concurrency: 6, intervalMs: 60 },
-      backfill: { concurrency: 8, intervalMs: 80 },
+      backfill: { accounts: 6, http: 14, intervalMs: 40 },
     };
   return {
     refresh: { concurrency: 1, intervalMs: 250 },
-    backfill: { concurrency: 3, intervalMs: 150 },
+    backfill: { accounts: 3, http: 3, intervalMs: 150 },
   };
 }
