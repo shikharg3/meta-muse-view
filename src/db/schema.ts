@@ -215,6 +215,7 @@ export const tokenHealth = pgTable("token_health", {
   isValid: boolean("is_valid").notNull().default(false),
   scopes: jsonb("scopes"),
   note: text("note"),
+  tier: text("tier"), // last observed ads_api_access_tier ("standard_access" | "development_access")
 });
 
 export const metaCredentials = pgTable("meta_credentials", {

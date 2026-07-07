@@ -77,6 +77,21 @@ export async function recordTokenHealth(client: InsightsClient): Promise<boolean
   return isValid;
 }
 
+/** Persist the access tier observed from live BUC headers so the next cycle can size its pacing. */
+export async function recordObservedTier(tier: string | null): Promise<void> {
+  if (!tier) return;
+  await db.update(schema.tokenHealth).set({ tier }).where(eq(schema.tokenHealth.id, "singleton"));
+}
+
+/** Last observed access tier (null when never seen), read before a cycle to choose pacing. */
+export async function getStoredTier(): Promise<string | null> {
+  const [row] = await db
+    .select({ tier: schema.tokenHealth.tier })
+    .from(schema.tokenHealth)
+    .where(eq(schema.tokenHealth.id, "singleton"));
+  return row?.tier ?? null;
+}
+
 export interface Checkpoint {
   backfilledThrough: string | null;
   cursor: string | null;

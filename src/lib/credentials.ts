@@ -43,6 +43,12 @@ export async function saveCredentials(input: CredentialsInput): Promise<void> {
     .insert(schema.metaCredentials)
     .values(row)
     .onConflictDoUpdate({ target: schema.metaCredentials.id, set: row });
+  // A credential change may be a swap to a different (possibly dev-tier) app. Reset the observed
+  // access tier so the next sync starts on conservative pacing until it re-observes the real tier.
+  await db
+    .update(schema.tokenHealth)
+    .set({ tier: null })
+    .where(eq(schema.tokenHealth.id, "singleton"));
 }
 
 export async function getCredentials(): Promise<Credentials | null> {

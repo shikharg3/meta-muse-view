@@ -3,6 +3,7 @@ import type { InsightsClient } from "@/meta/types";
 import { db, schema } from "@/db/client";
 import { eq } from "drizzle-orm";
 import { Limiter } from "@/meta/limiter";
+import { pacingFor, normalizeTier } from "@/meta/rate-limit";
 import { getCredentials } from "@/lib/credentials";
 import { syncStructure, syncAccounts } from "./jobs/structure";
 import { syncInsights, syncInsightsRange } from "./jobs/insights";
@@ -22,6 +23,8 @@ import {
   getStructuredAccountIds,
   recordSyncEvent,
   pruneSyncEvents,
+  recordObservedTier,
+  getStoredTier,
 } from "./state";
 import { runOnce, type Jobs } from "./run";
 import { detectSpendDropAlerts } from "./alerts";
@@ -36,7 +39,6 @@ export const BREAKDOWN_REFRESH_DAYS = 28;
 
 const BACKFILL_CHUNK = 90;
 const LEVELS = ["account", "campaign", "adset", "ad"] as const;
-const BACKFILL_CONCURRENCY = 3; // accounts backfilled in parallel; the refresh stays serial
 const STANDARD_BREAKDOWN_GROUPS = BREAKDOWN_GROUPS.filter((g) => !g[0].endsWith("_asset"));
 const ASSET_BREAKDOWN_GROUPS = BREAKDOWN_GROUPS.filter((g) => g[0].endsWith("_asset"));
 
@@ -271,7 +273,12 @@ export async function runCycle(opts: { full?: boolean } = {}): Promise<void> {
       );
       return;
     }
-    const client = buildClient(creds, new Limiter(1, 250));
+    // Size pacing from the last observed access tier (persisted). Unknown/dev → conservative.
+    const pacing = pacingFor(normalizeTier(await getStoredTier()));
+    const client = buildClient(
+      creds,
+      new Limiter(pacing.refresh.concurrency, pacing.refresh.intervalMs),
+    );
     // Record token health up front so a deleted/expired app is captured even when
     // the account enumeration below throws (otherwise the badge stays stale-green).
     // If the token is invalid/expired, ABORT loudly instead of running a hollow cycle that writes
@@ -321,6 +328,9 @@ export async function runCycle(opts: { full?: boolean } = {}): Promise<void> {
         `(${fresh} never synced → first${skipped ? `, ${skipped} disabled skipped` : ""})`,
     );
     await runOnce({ client, accountIds: refreshIds, jobs: buildRefreshJobs(opts.full ?? false) });
+    // Persist the tier seen on this cycle's live headers so the next cycle sizes pacing correctly
+    // (a downgrade after an app swap pulls concurrency back down automatically).
+    await recordObservedTier(client.observedTier());
     try {
       const n = await detectSpendDropAlerts();
       if (n > 0) console.log(`[sync] alerts: ${n} new spend-drop alert(s)`);
@@ -335,17 +345,21 @@ export async function runCycle(opts: { full?: boolean } = {}): Promise<void> {
 
 /**
  * Advance the historical backfill for every known account in bounded parallel
- * (BACKFILL_CONCURRENCY). Runs separately from the hourly refresh so deep history never delays
+ * (tier-sized concurrency). Runs separately from the hourly refresh so deep history never delays
  * recent data, and stops at `deadlineMs` (the worker passes the time left until the next refresh).
  * Uses a wider-concurrency limiter than the refresh to overlap the async report polling latency.
  */
 export async function runBackfillCycle(deadlineMs?: number): Promise<void> {
   const creds = await getCredentials();
   if (!creds) return;
-  const client = buildClient(creds, new Limiter(BACKFILL_CONCURRENCY, 150));
+  const pacing = pacingFor(normalizeTier(await getStoredTier()));
+  const client = buildClient(
+    creds,
+    new Limiter(pacing.backfill.concurrency, pacing.backfill.intervalMs),
+  );
   const ids = (await db.select({ id: schema.accounts.id }).from(schema.accounts)).map((r) => r.id);
   const today = new Date();
-  await mapPool(ids, BACKFILL_CONCURRENCY, async (id) => {
+  await mapPool(ids, pacing.backfill.concurrency, async (id) => {
     if (deadlineMs && Date.now() >= deadlineMs) return;
     try {
       await backfillAccount(client, id, today);
@@ -353,4 +367,5 @@ export async function runBackfillCycle(deadlineMs?: number): Promise<void> {
       console.error(`[backfill] ${id} failed:`, e instanceof Error ? e.message : e);
     }
   });
+  await recordObservedTier(client.observedTier());
 }

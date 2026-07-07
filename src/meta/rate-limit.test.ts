@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { parseUsage, shouldBackoff } from "./rate-limit";
+import { parseUsage, shouldBackoff, pacingFor, normalizeTier } from "./rate-limit";
 
 test("parses business-use-case usage (worst across buckets) and the insights throttle header", () => {
   const headers = new Headers({
@@ -12,6 +12,7 @@ test("parses business-use-case usage (worst across buckets) and the insights thr
           total_cputime: 80,
           total_time: 20,
           estimated_time_to_regain_access: 7,
+          ads_api_access_tier: "standard_access",
         },
       ],
     }),
@@ -22,6 +23,7 @@ test("parses business-use-case usage (worst across buckets) and the insights thr
   expect(usage.totalCputime).toBe(80);
   expect(usage.estimatedTimeToRegainAccess).toBe(7);
   expect(usage.accIdUtilPct).toBe(95);
+  expect(usage.tier).toBe("standard_access");
 });
 
 test("recommends backoff when any utilization (incl. call_count) crosses the threshold", () => {
@@ -32,9 +34,27 @@ test("recommends backoff when any utilization (incl. call_count) crosses the thr
     appIdUtilPct: 0,
     accIdUtilPct: 0,
     estimatedTimeToRegainAccess: 0,
+    tier: null,
   };
   expect(shouldBackoff({ ...base, totalCputime: 90 })).toBe(true);
   expect(shouldBackoff({ ...base, callCount: 88 })).toBe(true); // call_count alone triggers
   expect(shouldBackoff({ ...base, accIdUtilPct: 99 })).toBe(true);
   expect(shouldBackoff(base)).toBe(false);
+});
+
+test("normalizeTier maps Meta's raw header values", () => {
+  expect(normalizeTier("standard_access")).toBe("standard");
+  expect(normalizeTier("development_access")).toBe("development");
+  expect(normalizeTier(null)).toBeNull();
+  expect(normalizeTier("something_else")).toBeNull();
+});
+
+test("pacingFor: standard fans out wider than dev; unknown stays conservative", () => {
+  const std = pacingFor("standard");
+  const dev = pacingFor("development");
+  const unknown = pacingFor(null);
+  expect(std.refresh.concurrency).toBeGreaterThan(dev.refresh.concurrency);
+  expect(std.backfill.concurrency).toBeGreaterThan(dev.backfill.concurrency);
+  // null (unknown, e.g. a fresh app after a ban) must match dev — never assume standard.
+  expect(unknown).toEqual(dev);
 });

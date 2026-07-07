@@ -43,6 +43,7 @@ export class MetaClient implements InsightsClient {
   private loaded = new Set<string>();
   private onEvent?: (e: MetaApiEvent) => void;
   private lastProactive = new Map<string, number>();
+  private lastTier: string | null = null;
 
   constructor(
     private creds: MetaCredentials,
@@ -65,6 +66,11 @@ export class MetaClient implements InsightsClient {
   /** Route a request through the optional limiter (concurrency + pacing); identity when unset. */
   private gate<T>(fn: () => Promise<T>): Promise<T> {
     return this.limiter ? this.limiter.run(fn) : fn();
+  }
+
+  /** Last `ads_api_access_tier` seen on a BUC usage header (drives tier-adaptive pacing). */
+  observedTier(): string | null {
+    return this.lastTier;
   }
 
   /** Forward a notable API event to the sink (if any). Proactive-backoff events are coalesced per
@@ -160,6 +166,7 @@ export class MetaClient implements InsightsClient {
       }
       if (accountId) {
         const usage = parseUsage(res.headers, accountId);
+        if (usage.tier) this.lastTier = usage.tier;
         if (shouldBackoff(usage)) {
           this.emit({
             kind: "rate_limit",

@@ -79,6 +79,17 @@ function SyncStatus() {
             label="Token checked"
             value={s.rateLimit.tokenCheckedAt ? fmtRelTime(s.rateLimit.tokenCheckedAt) : "—"}
           />
+          <Tile
+            label="Access tier"
+            value={
+              s.rateLimit.tier === "standard"
+                ? "Standard"
+                : s.rateLimit.tier === "development"
+                  ? "Dev tier"
+                  : "unknown"
+            }
+            tone={s.rateLimit.tier === "standard" ? "ok" : s.rateLimit.tier ? "warn" : undefined}
+          />
         </div>
         <div
           className={cn(

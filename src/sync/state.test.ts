@@ -10,6 +10,8 @@ import {
   recordSyncEvent,
   getRecentSyncEvents,
   pruneSyncEvents,
+  recordObservedTier,
+  getStoredTier,
 } from "./state";
 import type { InsightsClient } from "@/meta/types";
 
@@ -94,4 +96,16 @@ test("sync events round-trip newest-first and prune by age", async () => {
   const afterPrune = await getRecentSyncEvents(10);
   expect(afterPrune).toHaveLength(1); // the 10-day-old event is gone
   expect(afterPrune[0].code).toBe(17);
+});
+
+test("observed tier persists on the singleton row; a null observation never clobbers it", async () => {
+  expect(await getStoredTier()).toBeNull(); // no row yet → unknown
+  await recordTokenHealth({
+    debugToken: async () => ({ is_valid: true, scopes: [] as string[] }),
+  } as InsightsClient);
+  expect(await getStoredTier()).toBeNull(); // row exists but tier not observed yet
+  await recordObservedTier("standard_access");
+  expect(await getStoredTier()).toBe("standard_access");
+  await recordObservedTier(null); // a blank observation must preserve the last known tier
+  expect(await getStoredTier()).toBe("standard_access");
 });

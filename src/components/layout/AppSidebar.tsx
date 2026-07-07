@@ -28,6 +28,7 @@ import {
   SidebarFooter,
 } from "@/components/ui/sidebar";
 import type { PublicUser } from "@/lib/auth/users";
+import { MetaStatus } from "./MetaStatus";
 
 const main = [
   { title: "Ask", url: "/", icon: Sparkles },
@@ -109,6 +110,7 @@ export function AppSidebar({ user }: { user: PublicUser }) {
         )}
       </SidebarContent>
       <SidebarFooter>
+        <MetaStatus />
         <div className="flex items-center gap-2.5 rounded-md bg-sidebar-accent/40 p-2 group-data-[collapsible=icon]:bg-transparent group-data-[collapsible=icon]:p-0">
           <div className="size-8 rounded-full bg-muted grid place-items-center text-[10px] font-semibold shrink-0 uppercase">
             {(user.name || user.email).slice(0, 2)}

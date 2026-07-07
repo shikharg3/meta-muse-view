@@ -3,6 +3,7 @@ import { db, schema } from "@/db/client";
 import { requireAdmin } from "./auth";
 import { getRecentSyncEvents } from "@/sync/state";
 import { BACKFILL_DAYS, BREAKDOWN_BACKFILL_DAYS } from "@/sync/cycle";
+import { normalizeTier, type AccessTier } from "@/meta/rate-limit";
 
 export interface DatasetProgress {
   remainingChunks: number; // 90-day chunk-advances left to reach the retention floor
@@ -25,7 +26,12 @@ export interface SyncStatusView {
   accounts: { total: number; structured: number; insighted: number; errored: number };
   refresh: { lastAt: string | null; oldestAt: string | null };
   backfill: { insights: DatasetProgress; breakdown: DatasetProgress };
-  rateLimit: { eventsLast24h: number; tokenValid: boolean | null; tokenCheckedAt: string | null };
+  rateLimit: {
+    eventsLast24h: number;
+    tokenValid: boolean | null;
+    tokenCheckedAt: string | null;
+    tier: AccessTier | null;
+  };
   events: SyncEventView[];
   errors: { accountId: string; error: string; at: string | null }[];
 }
@@ -81,7 +87,11 @@ export async function fetchSyncStatus(): Promise<SyncStatusView> {
     backfillProgress("breakdown:%", BREAKDOWN_BACKFILL_DAYS),
     getRecentSyncEvents(25),
     db
-      .select({ valid: schema.tokenHealth.isValid, at: schema.tokenHealth.checkedAt })
+      .select({
+        valid: schema.tokenHealth.isValid,
+        at: schema.tokenHealth.checkedAt,
+        tier: schema.tokenHealth.tier,
+      })
       .from(schema.tokenHealth)
       .orderBy(desc(schema.tokenHealth.checkedAt))
       .limit(1),
@@ -107,6 +117,7 @@ export async function fetchSyncStatus(): Promise<SyncStatusView> {
       eventsLast24h: events.filter((e) => e.at.getTime() >= dayAgo).length,
       tokenValid: token[0]?.valid ?? null,
       tokenCheckedAt: token[0]?.at ? token[0].at.toISOString() : null,
+      tier: normalizeTier(token[0]?.tier ?? null),
     },
     events: events.map((e) => ({
       at: e.at.toISOString(),
