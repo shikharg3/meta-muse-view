@@ -207,6 +207,29 @@ async function fetchTrend(w: DateWindow, entityId?: string): Promise<TrendPoint[
   }));
 }
 
+/** accountId → the date it most recently flipped to DISABLED, from the `ad_account_update_status`
+ *  change-log (Meta exposes no explicit disable timestamp, so this is the best signal). Absent for
+ *  ids with no synced status-change event. */
+export async function disabledSinceMap(disabledIds: string[]): Promise<Map<string, string>> {
+  const map = new Map<string, string>();
+  if (disabledIds.length === 0) return map;
+  const ev = await db
+    .select({
+      accountId: schema.metaActivities.accountId,
+      at: sql<string>`max(${schema.metaActivities.eventTime})`,
+    })
+    .from(schema.metaActivities)
+    .where(
+      and(
+        eq(schema.metaActivities.eventType, "ad_account_update_status"),
+        inArray(schema.metaActivities.accountId, disabledIds),
+      ),
+    )
+    .groupBy(schema.metaActivities.accountId);
+  for (const r of ev) if (r.at) map.set(r.accountId, String(r.at).slice(0, 10));
+  return map;
+}
+
 export async function fetchAccounts(w: DateWindow): Promise<AdAccount[]> {
   const accounts = await db.select().from(schema.accounts);
   const totals = await totalsByEntity("account", w);
@@ -241,23 +264,7 @@ export async function fetchAccounts(w: DateWindow): Promise<AdAccount[]> {
   const disabledIds = accounts
     .filter((a) => accountStatus(a.status) === "DISABLED")
     .map((a) => a.id);
-  const disabledSince = new Map<string, string>();
-  if (disabledIds.length > 0) {
-    const ev = await db
-      .select({
-        accountId: schema.metaActivities.accountId,
-        at: sql<string>`max(${schema.metaActivities.eventTime})`,
-      })
-      .from(schema.metaActivities)
-      .where(
-        and(
-          eq(schema.metaActivities.eventType, "ad_account_update_status"),
-          inArray(schema.metaActivities.accountId, disabledIds),
-        ),
-      )
-      .groupBy(schema.metaActivities.accountId);
-    for (const r of ev) if (r.at) disabledSince.set(r.accountId, String(r.at).slice(0, 10));
-  }
+  const disabledSince = await disabledSinceMap(disabledIds);
 
   // "Last checked" = the most recent structure/insights sync for the account (null if never synced).
   const syncRows = await db

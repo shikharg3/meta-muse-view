@@ -4,6 +4,7 @@ import { accountStatus, deriveKpis, deriveRoas, pctDelta } from "@/server/agg";
 import { db, schema } from "@/db/client";
 import {
   fetchAccounts,
+  disabledSinceMap,
   fetchBusinessSummary,
   fetchCampaigns,
   searchEntities,
@@ -39,7 +40,7 @@ test("deriveRoas guards divide-by-zero", () => {
 });
 
 beforeEach(async () => {
-  await db.execute(dsql`truncate table accounts, insights_daily cascade`);
+  await db.execute(dsql`truncate table accounts, insights_daily, meta_activities cascade`);
 });
 
 test("fetchAccounts aggregates insights_daily into KPIs", async () => {
@@ -274,3 +275,37 @@ test("windowDeltas yields nulls when the previous window is empty", async () => 
   expect(d.spend).toBeNull();
   expect(d.roas).toBeNull();
 }, 20000);
+
+test("disabledSinceMap returns the latest ad_account_update_status date per account", async () => {
+  await db.insert(schema.metaActivities).values([
+    {
+      id: "e1",
+      accountId: "act_x",
+      eventType: "ad_account_update_status",
+      eventTime: new Date("2026-07-01T12:00:00Z"),
+    },
+    {
+      id: "e2",
+      accountId: "act_x",
+      eventType: "ad_account_update_status",
+      eventTime: new Date("2026-07-07T12:00:00Z"), // latest for act_x
+    },
+    {
+      id: "e3",
+      accountId: "act_x",
+      eventType: "spend_cap_reset", // wrong type → ignored even though it's newer
+      eventTime: new Date("2026-07-08T12:00:00Z"),
+    },
+    {
+      id: "e4",
+      accountId: "act_y",
+      eventType: "ad_account_update_status",
+      eventTime: new Date("2026-06-15T12:00:00Z"),
+    },
+  ]);
+  const map = await disabledSinceMap(["act_x", "act_y", "act_z"]);
+  expect(map.get("act_x")).toBe("2026-07-07"); // latest status-change, not the newer spend_cap event
+  expect(map.get("act_y")).toBe("2026-06-15");
+  expect(map.get("act_z")).toBeUndefined(); // no status-change events
+  expect((await disabledSinceMap([])).size).toBe(0); // empty input short-circuits
+});

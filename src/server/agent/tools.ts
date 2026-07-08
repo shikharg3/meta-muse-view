@@ -131,7 +131,7 @@ export const TOOLS: AnthropicTool[] = [
   {
     name: "list_accounts",
     description:
-      "List every ad account with its Meta status — ACTIVE, PAUSED, or DISABLED (DISABLED = suspended/disabled by Meta, with the disable reason) — the client that owns it, and that client's Notion board status (e.g. Live, Paused). Use this for any question about suspended/disabled accounts, or to cross-reference Notion campaign status against account suspension. Returns all accounts in one call (no per-client looping).",
+      "List every ad account with its Meta status — ACTIVE, PAUSED, or DISABLED (DISABLED = suspended/disabled by Meta, with the disable reason) — the client that owns it, and that client's Notion board status (e.g. Live, Paused). Each DISABLED account also carries `disabledSince`: the date (YYYY-MM-DD) it was disabled, from Meta's account-status-change log (null only when that change wasn't captured). Use this for any question about suspended/disabled accounts — INCLUDING when they were disabled (e.g. 'disabled yesterday/today/this week' → compare `disabledSince` to the date) — or to cross-reference Notion campaign status against account suspension. Returns all accounts in one call (no per-client looping).",
     input_schema: { type: "object", properties: {} },
   },
   {

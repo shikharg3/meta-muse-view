@@ -8,7 +8,7 @@ import {
   type ClientEvent,
 } from "@/server/agg";
 import { type DateWindow } from "@/lib/range";
-import { fetchCampaigns, objectiveResults } from "./dashboard";
+import { fetchCampaigns, objectiveResults, disabledSinceMap } from "./dashboard";
 import { effectiveAccountIds, getClientRow } from "@/sync/jobs/clients";
 import type { Campaign, Kpis, AccountStatus } from "@/lib/types";
 import { disableReasonLabel } from "@/lib/format";
@@ -461,6 +461,7 @@ export interface AccountDirectoryRow {
   name: string | null;
   status: AccountStatus; // ACTIVE | PAUSED | DISABLED | PENDING (DISABLED = suspended by Meta)
   disableReason: string | null;
+  disabledSince: string | null; // date it flipped to DISABLED (YYYY-MM-DD), or null if not synced
   client: string | null; // client that owns this account, if mapped
   clientStatus: string | null; // that client's Notion board status (Live/Paused/…)
 }
@@ -488,6 +489,9 @@ export async function fetchAccountDirectory(): Promise<AccountDirectoryRow[]> {
       if (!owner.has(aid)) owner.set(aid, { name: c.name, status: c.status ?? null });
     }
   }
+  const disabledSince = await disabledSinceMap(
+    accts.filter((a) => accountStatus(a.status) === "DISABLED").map((a) => a.id),
+  );
   return accts.map((a) => {
     const status = accountStatus(a.status);
     const o = owner.get(a.id);
@@ -496,6 +500,7 @@ export async function fetchAccountDirectory(): Promise<AccountDirectoryRow[]> {
       name: a.name,
       status,
       disableReason: status === "DISABLED" ? disableReasonLabel(a.disableReason) : null,
+      disabledSince: status === "DISABLED" ? (disabledSince.get(a.id) ?? null) : null,
       client: o?.name ?? null,
       clientStatus: o?.status ?? null,
     };
