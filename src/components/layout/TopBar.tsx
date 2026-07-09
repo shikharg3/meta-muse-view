@@ -27,13 +27,15 @@ function SyncFreshness({ lastSyncAt, isAdmin }: { lastSyncAt: string | null; isA
   const ageMin = lastSyncAt ? (Date.now() - new Date(lastSyncAt).getTime()) / 60_000 : Infinity;
   const tone = ageMin <= 120 ? "bg-success" : ageMin <= 360 ? "bg-warning" : "bg-destructive";
   const cls =
-    "hidden xl:flex items-center gap-1.5 rounded-md border border-border bg-card px-2.5 h-9 text-[11px] text-muted-foreground";
-  const title = lastSyncAt ? `Last insights sync: ${lastSyncAt}` : "No sync has completed yet";
+    "hidden sm:flex items-center gap-1.5 rounded-md border border-border bg-card px-2.5 h-9 text-[11px] text-muted-foreground";
+  const title = lastSyncAt
+    ? `Last successful data refresh: ${new Date(lastSyncAt).toLocaleString()}`
+    : "No sync has completed yet";
   const inner = (
     <>
       <span className={cn("size-1.5 rounded-full", tone)} />
       <span className="font-mono">
-        {lastSyncAt ? `synced ${fmtRelTime(lastSyncAt)}` : "never synced"}
+        {lastSyncAt ? `refreshed ${fmtRelTime(lastSyncAt)}` : "never synced"}
       </span>
     </>
   );

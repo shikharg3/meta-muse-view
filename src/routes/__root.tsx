@@ -16,6 +16,7 @@ import { reportLovableError } from "../lib/lovable-error-reporting";
 import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/layout/AppSidebar";
 import { TopBar } from "@/components/layout/TopBar";
+import { StaleDataBanner } from "@/components/layout/StaleDataBanner";
 import { getAccountOptions, getBusinessSummary } from "@/lib/api/dashboard";
 import { getClientFilterOptions } from "@/lib/api/clients";
 import { getCurrentUser } from "@/lib/api/auth";
@@ -197,6 +198,7 @@ function RootComponent() {
               filterClients={filterClients}
               isAdmin={user.role === "admin"}
             />
+            <StaleDataBanner />
             <main className="flex-1 overflow-x-hidden">
               <Outlet />
             </main>
