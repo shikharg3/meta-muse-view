@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
 import { Search, ChevronRight } from "lucide-react";
 import { rangeSearch } from "@/lib/range";
 
-export const Route = createFileRoute("/clients")({
+export const Route = createFileRoute("/clients/")({
   head: () => ({ meta: [{ title: "Clients — MetaConsole" }] }),
   validateSearch: rangeSearch,
   loader: async () => ({ clients: await listClients() }),
