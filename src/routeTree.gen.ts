@@ -24,6 +24,7 @@ import { Route as AlertsRouteImport } from './routes/alerts'
 import { Route as ActivityRouteImport } from './routes/activity'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as AccountsIndexRouteImport } from './routes/accounts.index'
+import { Route as ClientsIdRouteImport } from './routes/clients.$id'
 import { Route as AccountsIdRouteImport } from './routes/accounts.$id'
 
 const UsersRoute = UsersRouteImport.update({
@@ -101,6 +102,11 @@ const AccountsIndexRoute = AccountsIndexRouteImport.update({
   path: '/accounts/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ClientsIdRoute = ClientsIdRouteImport.update({
+  id: '/$id',
+  path: '/$id',
+  getParentRoute: () => ClientsRoute,
+} as any)
 const AccountsIdRoute = AccountsIdRouteImport.update({
   id: '/accounts/$id',
   path: '/accounts/$id',
@@ -113,7 +119,7 @@ export interface FileRoutesByFullPath {
   '/alerts': typeof AlertsRoute
   '/audiences': typeof AudiencesRoute
   '/campaigns': typeof CampaignsRoute
-  '/clients': typeof ClientsRoute
+  '/clients': typeof ClientsRouteWithChildren
   '/creatives': typeof CreativesRoute
   '/login': typeof LoginRoute
   '/overview': typeof OverviewRoute
@@ -123,6 +129,7 @@ export interface FileRoutesByFullPath {
   '/sync': typeof SyncRoute
   '/users': typeof UsersRoute
   '/accounts/$id': typeof AccountsIdRoute
+  '/clients/$id': typeof ClientsIdRoute
   '/accounts/': typeof AccountsIndexRoute
 }
 export interface FileRoutesByTo {
@@ -131,7 +138,7 @@ export interface FileRoutesByTo {
   '/alerts': typeof AlertsRoute
   '/audiences': typeof AudiencesRoute
   '/campaigns': typeof CampaignsRoute
-  '/clients': typeof ClientsRoute
+  '/clients': typeof ClientsRouteWithChildren
   '/creatives': typeof CreativesRoute
   '/login': typeof LoginRoute
   '/overview': typeof OverviewRoute
@@ -141,6 +148,7 @@ export interface FileRoutesByTo {
   '/sync': typeof SyncRoute
   '/users': typeof UsersRoute
   '/accounts/$id': typeof AccountsIdRoute
+  '/clients/$id': typeof ClientsIdRoute
   '/accounts': typeof AccountsIndexRoute
 }
 export interface FileRoutesById {
@@ -150,7 +158,7 @@ export interface FileRoutesById {
   '/alerts': typeof AlertsRoute
   '/audiences': typeof AudiencesRoute
   '/campaigns': typeof CampaignsRoute
-  '/clients': typeof ClientsRoute
+  '/clients': typeof ClientsRouteWithChildren
   '/creatives': typeof CreativesRoute
   '/login': typeof LoginRoute
   '/overview': typeof OverviewRoute
@@ -160,6 +168,7 @@ export interface FileRoutesById {
   '/sync': typeof SyncRoute
   '/users': typeof UsersRoute
   '/accounts/$id': typeof AccountsIdRoute
+  '/clients/$id': typeof ClientsIdRoute
   '/accounts/': typeof AccountsIndexRoute
 }
 export interface FileRouteTypes {
@@ -180,6 +189,7 @@ export interface FileRouteTypes {
     | '/sync'
     | '/users'
     | '/accounts/$id'
+    | '/clients/$id'
     | '/accounts/'
   fileRoutesByTo: FileRoutesByTo
   to:
@@ -198,6 +208,7 @@ export interface FileRouteTypes {
     | '/sync'
     | '/users'
     | '/accounts/$id'
+    | '/clients/$id'
     | '/accounts'
   id:
     | '__root__'
@@ -216,6 +227,7 @@ export interface FileRouteTypes {
     | '/sync'
     | '/users'
     | '/accounts/$id'
+    | '/clients/$id'
     | '/accounts/'
   fileRoutesById: FileRoutesById
 }
@@ -225,7 +237,7 @@ export interface RootRouteChildren {
   AlertsRoute: typeof AlertsRoute
   AudiencesRoute: typeof AudiencesRoute
   CampaignsRoute: typeof CampaignsRoute
-  ClientsRoute: typeof ClientsRoute
+  ClientsRoute: typeof ClientsRouteWithChildren
   CreativesRoute: typeof CreativesRoute
   LoginRoute: typeof LoginRoute
   OverviewRoute: typeof OverviewRoute
@@ -345,6 +357,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AccountsIndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/clients/$id': {
+      id: '/clients/$id'
+      path: '/$id'
+      fullPath: '/clients/$id'
+      preLoaderRoute: typeof ClientsIdRouteImport
+      parentRoute: typeof ClientsRoute
+    }
     '/accounts/$id': {
       id: '/accounts/$id'
       path: '/accounts/$id'
@@ -355,13 +374,24 @@ declare module '@tanstack/react-router' {
   }
 }
 
+interface ClientsRouteChildren {
+  ClientsIdRoute: typeof ClientsIdRoute
+}
+
+const ClientsRouteChildren: ClientsRouteChildren = {
+  ClientsIdRoute: ClientsIdRoute,
+}
+
+const ClientsRouteWithChildren =
+  ClientsRoute._addFileChildren(ClientsRouteChildren)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ActivityRoute: ActivityRoute,
   AlertsRoute: AlertsRoute,
   AudiencesRoute: AudiencesRoute,
   CampaignsRoute: CampaignsRoute,
-  ClientsRoute: ClientsRoute,
+  ClientsRoute: ClientsRouteWithChildren,
   CreativesRoute: CreativesRoute,
   LoginRoute: LoginRoute,
   OverviewRoute: OverviewRoute,

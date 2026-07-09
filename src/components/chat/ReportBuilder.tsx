@@ -36,11 +36,12 @@ interface Props {
   busy: boolean;
   onSubmit: (req: ReportRequest) => void;
   onClose?: () => void;
+  lockedClient?: { id: string; name: string }; // pre-selected + locked (used on the client page)
 }
 
-export function ReportBuilder({ clients, busy, onSubmit, onClose }: Props) {
-  const [clientId, setClientId] = useState("");
-  const [clientName, setClientName] = useState("");
+export function ReportBuilder({ clients, busy, onSubmit, onClose, lockedClient }: Props) {
+  const [clientId, setClientId] = useState(lockedClient?.id ?? "");
+  const [clientName, setClientName] = useState(lockedClient?.name ?? "");
   const [pickerOpen, setPickerOpen] = useState(false);
   const [custom, setCustom] = useState(false);
   const [days, setDays] = useState(7);
@@ -127,7 +128,10 @@ export function ReportBuilder({ clients, busy, onSubmit, onClose }: Props) {
       <Field label="Client">
         <Popover open={pickerOpen} onOpenChange={setPickerOpen}>
           <PopoverTrigger asChild>
-            <button className="flex w-full items-center gap-2 rounded-md border border-border bg-background hover:bg-accent px-3 h-9 text-xs transition-colors">
+            <button
+              disabled={!!lockedClient}
+              className="flex w-full items-center gap-2 rounded-md border border-border bg-background enabled:hover:bg-accent px-3 h-9 text-xs transition-colors"
+            >
               <Briefcase className="size-3.5 text-muted-foreground" />
               <span
                 className={cn("flex-1 text-left truncate", !clientName && "text-muted-foreground")}
