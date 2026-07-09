@@ -218,6 +218,15 @@ export const tokenHealth = pgTable("token_health", {
   tier: text("tier"), // last observed ads_api_access_tier ("standard_access" | "development_access")
 });
 
+// Per-service background-sync health (e.g. the Notion client-board sync) so a silent failure surfaces
+// in the UI instead of only in server logs. One row per service, upserted on each attempt.
+export const serviceHealth = pgTable("service_health", {
+  service: text("service").primaryKey(), // e.g. "notion"
+  ok: boolean("ok").notNull(),
+  checkedAt: timestamp("checked_at", { withTimezone: true }).notNull(),
+  note: text("note"),
+});
+
 export const metaCredentials = pgTable("meta_credentials", {
   id: text("id").primaryKey().default("singleton"),
   appId: text("app_id"),

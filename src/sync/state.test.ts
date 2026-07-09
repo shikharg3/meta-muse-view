@@ -12,12 +12,14 @@ import {
   pruneSyncEvents,
   recordObservedTier,
   getStoredTier,
+  recordServiceHealth,
+  getServiceHealth,
 } from "./state";
 import type { InsightsClient } from "@/meta/types";
 
 beforeEach(async () => {
   await db.execute(
-    sql`truncate table sync_state, token_health, sync_checkpoints, sync_events cascade`,
+    sql`truncate table sync_state, token_health, sync_checkpoints, sync_events, service_health cascade`,
   );
 });
 
@@ -108,4 +110,18 @@ test("observed tier persists on the singleton row; a null observation never clob
   expect(await getStoredTier()).toBe("standard_access");
   await recordObservedTier(null); // a blank observation must preserve the last known tier
   expect(await getStoredTier()).toBe("standard_access");
+});
+
+test("service health round-trips and upserts one row per service", async () => {
+  expect(await getServiceHealth("notion")).toBeNull(); // never run
+  await recordServiceHealth("notion", false, "Notion 404: share the board");
+  let h = await getServiceHealth("notion");
+  expect(h?.ok).toBe(false);
+  expect(h?.note).toBe("Notion 404: share the board");
+  expect(h?.checkedAt).not.toBeNull();
+  await recordServiceHealth("notion", true, null); // recovery upserts the same singleton row
+  h = await getServiceHealth("notion");
+  expect(h?.ok).toBe(true);
+  expect(h?.note).toBeNull();
+  expect(await getServiceHealth("other")).toBeNull(); // distinct service is independent
 });

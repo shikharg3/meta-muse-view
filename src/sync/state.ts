@@ -92,6 +92,39 @@ export async function getStoredTier(): Promise<string | null> {
   return row?.tier ?? null;
 }
 
+export interface ServiceHealth {
+  ok: boolean;
+  checkedAt: string | null;
+  note: string | null;
+}
+
+/** Upsert a background service's sync health (e.g. "notion") so a silent failure surfaces in the UI. */
+export async function recordServiceHealth(
+  service: string,
+  ok: boolean,
+  note: string | null,
+): Promise<void> {
+  const vals = { service, ok, checkedAt: new Date(), note };
+  await db
+    .insert(schema.serviceHealth)
+    .values(vals)
+    .onConflictDoUpdate({ target: schema.serviceHealth.service, set: vals });
+}
+
+/** Read a service's last recorded health, or null when it has never run. */
+export async function getServiceHealth(service: string): Promise<ServiceHealth | null> {
+  const [row] = await db
+    .select()
+    .from(schema.serviceHealth)
+    .where(eq(schema.serviceHealth.service, service));
+  if (!row) return null;
+  return {
+    ok: row.ok,
+    checkedAt: row.checkedAt ? row.checkedAt.toISOString() : null,
+    note: row.note ?? null,
+  };
+}
+
 export interface Checkpoint {
   backfilledThrough: string | null;
   cursor: string | null;

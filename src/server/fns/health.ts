@@ -1,12 +1,14 @@
 import { eq } from "drizzle-orm";
 import { db, schema } from "@/db/client";
 import { normalizeTier, type AccessTier } from "@/meta/rate-limit";
+import { getServiceHealth, type ServiceHealth } from "@/sync/state";
 
 export interface MetaHealth {
   tokenValid: boolean | null; // null = never checked yet
   checkedAt: string | null; // ISO of the last token_health check
   tier: AccessTier | null; // last observed access tier
   note: string | null; // last error note, if any
+  notion: ServiceHealth | null; // background Notion client-sync health (null = never run)
 }
 
 /** Lightweight Meta app + system-token health for the always-visible sidebar status badge.
@@ -21,12 +23,14 @@ export async function fetchMetaHealth(): Promise<MetaHealth> {
     })
     .from(schema.tokenHealth)
     .where(eq(schema.tokenHealth.id, "singleton"));
-  if (!row) return { tokenValid: null, checkedAt: null, tier: null, note: null };
+  const notion = await getServiceHealth("notion");
+  if (!row) return { tokenValid: null, checkedAt: null, tier: null, note: null, notion };
   return {
     // Never checked (no timestamp) reads as "unknown" rather than a scary "invalid".
     tokenValid: row.checkedAt ? row.isValid : null,
     checkedAt: row.checkedAt ? row.checkedAt.toISOString() : null,
     tier: normalizeTier(row.tier),
     note: row.note ?? null,
+    notion,
   };
 }

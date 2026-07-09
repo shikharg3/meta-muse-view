@@ -1,7 +1,7 @@
 import { sql, desc, eq } from "drizzle-orm";
 import { db, schema } from "@/db/client";
 import { requireAdmin } from "./auth";
-import { getRecentSyncEvents } from "@/sync/state";
+import { getRecentSyncEvents, getServiceHealth, type ServiceHealth } from "@/sync/state";
 import { BACKFILL_DAYS, BREAKDOWN_BACKFILL_DAYS } from "@/sync/cycle";
 import { normalizeTier, type AccessTier } from "@/meta/rate-limit";
 
@@ -32,6 +32,7 @@ export interface SyncStatusView {
     tokenCheckedAt: string | null;
     tier: AccessTier | null;
   };
+  notion: ServiceHealth | null;
   events: SyncEventView[];
   errors: { accountId: string; error: string; at: string | null }[];
 }
@@ -101,6 +102,7 @@ export async function fetchSyncStatus(): Promise<SyncStatusView> {
   const dayAgo = Date.now() - 24 * 3_600_000;
   const c = cov[0];
   const r = ref[0];
+  const notion = await getServiceHealth("notion");
   return {
     accounts: {
       total: Number(c?.total ?? 0),
@@ -119,6 +121,7 @@ export async function fetchSyncStatus(): Promise<SyncStatusView> {
       tokenCheckedAt: token[0]?.at ? token[0].at.toISOString() : null,
       tier: normalizeTier(token[0]?.tier ?? null),
     },
+    notion,
     events: events.map((e) => ({
       at: e.at.toISOString(),
       kind: e.kind,

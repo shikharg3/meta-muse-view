@@ -90,7 +90,18 @@ function SyncStatus() {
             }
             tone={s.rateLimit.tier === "standard" ? "ok" : s.rateLimit.tier ? "warn" : undefined}
           />
+          <Tile
+            label="Notion sync"
+            value={s.notion ? (s.notion.ok ? "OK" : "failing") : "—"}
+            tone={s.notion ? (s.notion.ok ? "ok" : "bad") : undefined}
+          />
         </div>
+        {s.notion && !s.notion.ok && (
+          <div className="text-xs text-destructive">
+            Notion client-board sync failing{s.notion.note ? `: ${s.notion.note}` : ""} — re-share
+            the board with the integration.
+          </div>
+        )}
         <div
           className={cn(
             "text-xs flex items-center gap-1.5",

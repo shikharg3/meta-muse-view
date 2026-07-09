@@ -25,6 +25,7 @@ import {
   pruneSyncEvents,
   recordObservedTier,
   getStoredTier,
+  recordServiceHealth,
 } from "./state";
 import { runOnce, type Jobs } from "./run";
 import { detectSpendDropAlerts } from "./alerts";
@@ -270,9 +271,13 @@ export async function runCycle(opts: { full?: boolean } = {}): Promise<void> {
     // Notion client board first: independent of Meta credentials and non-fatal.
     try {
       const n = await syncClients();
-      if (n !== null) console.log(`[sync] notion clients: ${n}`);
+      if (n !== null) {
+        console.log(`[sync] notion clients: ${n}`);
+        await recordServiceHealth("notion", true, null);
+      }
     } catch (e) {
       console.error("[sync] notion clients failed:", e);
+      await recordServiceHealth("notion", false, e instanceof Error ? e.message : String(e));
     }
 
     const creds = await getCredentials();
