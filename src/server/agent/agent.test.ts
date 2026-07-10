@@ -73,15 +73,6 @@ async function seed() {
       clicks: 100,
       actions: [{ action_type: "lead", value: "20" }],
     },
-    {
-      level: "account",
-      entityId: "act_555",
-      date: today,
-      accountId: "act_555",
-      spend: 100,
-      impressions: 1000,
-      clicks: 50,
-    },
   ]);
 }
 
@@ -103,15 +94,15 @@ test("resolveClient falls back to a Notion brand title, mapping it to its agency
   expect((r as { siblingBrands?: string[] }).siblingBrands).toContain("Slots.lv");
   // A pure client-NAME match still wins over brand fallback.
   expect(await resolveClient("wild")).toMatchObject({ id: "wildcasino-ag" });
-  // get_client_stats resolves the brand and surfaces matchedBrand + the client-level figures.
+  // get_client_stats resolves the brand, surfaces matchedBrand, and returns the agency client's account.
   const stats = (await runTool("get_client_stats", { client: "Lucky Rebel", days: 7 })) as {
     client: string;
     matchedBrand?: string;
-    kpis: { spend: number };
+    accounts: { id: string }[];
   };
   expect(stats.client).toBe("OneAgency");
   expect(stats.matchedBrand).toBe("Lucky Rebel");
-  expect(stats.kpis.spend).toBeCloseTo(100);
+  expect(stats.accounts.map((a) => a.id)).toEqual(["act_555"]);
 }, 20000);
 
 test("get_client_stats returns grounded KPIs across the client's accounts", async () => {
