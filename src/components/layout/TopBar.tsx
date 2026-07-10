@@ -65,34 +65,6 @@ function SyncFreshness({ isAdmin }: { isAdmin: boolean }) {
   );
 }
 
-/** Refetches all route loaders, with a spinner + disabled state so it's clear something happened. */
-function RefreshButton() {
-  const router = useRouter();
-  const [refreshing, setRefreshing] = useState(false);
-  const refresh = async () => {
-    if (refreshing) return;
-    setRefreshing(true);
-    try {
-      // Guarantee a visible spinner even when the refetch is near-instant.
-      await Promise.all([router.invalidate(), new Promise((r) => setTimeout(r, 600))]);
-    } finally {
-      setRefreshing(false);
-    }
-  };
-  return (
-    <Button
-      variant="outline"
-      size="sm"
-      className="hidden sm:inline-flex h-9 text-xs"
-      onClick={() => void refresh()}
-      disabled={refreshing}
-    >
-      <RefreshCw className={cn("size-3.5", refreshing && "animate-spin")} />
-      {refreshing ? "Refreshing…" : "Refresh"}
-    </Button>
-  );
-}
-
 /** Admin-only: triggers a real Meta Marketing API sync in the background. */
 function SyncNowButton({ running }: { running: boolean }) {
   const router = useRouter();
@@ -187,7 +159,6 @@ export function TopBar({
       <RangePicker />
 
       {isAdmin && <SyncNowButton running={business.syncRunning} />}
-      <RefreshButton />
       <Button size="sm" className="h-9 text-xs" onClick={onExport} disabled={!kind}>
         <Download className="size-3.5" /> Export
       </Button>

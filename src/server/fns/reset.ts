@@ -33,11 +33,14 @@ export async function resetAndResync(): Promise<ResetResult> {
   return { ok: true, syncStarted: true };
 }
 
-/** Kick a fresh sync cycle in the background (no wipe). Admin-only. */
+/** Kick a fresh CORE refresh (headline metrics, active accounts — fast) in the background; no wipe.
+ *  The daily full pass still covers all metrics + breakdowns. Admin-only. */
 export async function triggerSync(): Promise<{ ok: true; started: boolean }> {
   await requireAdmin();
   if (isCycleRunning()) return { ok: true, started: false };
-  await audit("sync.manual", "triggered a manual sync");
-  void runCycle({ full: true }).catch((e) => console.error("[sync] manual sync failed:", e));
+  await audit("sync.manual", "triggered a manual core refresh");
+  void runCycle({ full: false }).catch((e) =>
+    console.error("[sync] manual core refresh failed:", e),
+  );
   return { ok: true, started: true };
 }

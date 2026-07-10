@@ -23,7 +23,7 @@ export const resetAndResync = createServerFn({ method: "POST" }).handler(() =>
   resetAndResyncImpl(),
 );
 
-/** Kicks a fresh Meta sync in the background (no wipe). Admin-only. */
+/** Kicks a fresh core refresh (headline metrics) from Meta in the background; no wipe. Admin-only. */
 export const syncNow = createServerFn({ method: "POST" }).handler(() => triggerSync());
 
 export const saveNotionSettings = createServerFn({ method: "POST" })
