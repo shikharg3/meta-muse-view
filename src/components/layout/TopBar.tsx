@@ -1,5 +1,6 @@
 import { Link, useRouter, useRouterState, useSearch } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
 import { CloudDownload, Download, RefreshCw } from "lucide-react";
@@ -9,6 +10,7 @@ import { GlobalSearch } from "./GlobalSearch";
 import { RangePicker } from "./RangePicker";
 import { getExportCsv } from "@/lib/api/dashboard";
 import { syncNow } from "@/lib/api/settings";
+import { getMetaHealth } from "@/lib/api/health";
 import { toRange, isYmd } from "@/lib/range";
 import { fmtRelTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -22,26 +24,38 @@ function csvKindForPath(path: string): CsvKind | null {
   return null;
 }
 
-/** Data-freshness chip: last completed insights sync, colored by staleness. */
-function SyncFreshness({ lastSyncAt, isAdmin }: { lastSyncAt: string | null; isAdmin: boolean }) {
-  const ageMin = lastSyncAt ? (Date.now() - new Date(lastSyncAt).getTime()) / 60_000 : Infinity;
-  const tone = ageMin <= 120 ? "bg-success" : ageMin <= 360 ? "bg-warning" : "bg-destructive";
-  const cls =
-    "hidden sm:flex items-center gap-1.5 rounded-md border border-border bg-card px-2.5 h-9 text-[11px] text-muted-foreground";
-  const title = lastSyncAt
-    ? `Last successful data refresh: ${new Date(lastSyncAt).toLocaleString()}`
+/** Always-on data-freshness pill: pastel green when the sync is current, pastel red when data is
+ *  stale (>3h ≈ several missed hourly cycles). Polls the shared health query so it stays live
+ *  without a navigation, and links admins to Settings → Sync. */
+function SyncFreshness({ isAdmin }: { isAdmin: boolean }) {
+  const { data } = useQuery({
+    queryKey: ["meta-health"],
+    queryFn: () => getMetaHealth(),
+    refetchInterval: 60_000,
+    staleTime: 30_000,
+  });
+  const last = data?.lastRefreshAt ?? null;
+  const ageMin = last ? (Date.now() - Date.parse(last)) / 60_000 : Infinity;
+  const stale = ageMin > 180;
+  const title = last
+    ? `Last successful data refresh: ${new Date(last).toLocaleString()}${stale ? " — sync looks stale" : ""}`
     : "No sync has completed yet";
+  const cls = cn(
+    "flex items-center gap-1.5 rounded-md border px-2.5 h-9 text-[11px] font-medium transition-colors",
+    stale
+      ? "border-rose-300 bg-rose-200 text-rose-900"
+      : "border-emerald-300 bg-emerald-200 text-emerald-900",
+  );
   const inner = (
     <>
-      <span className={cn("size-1.5 rounded-full", tone)} />
-      <span className="font-mono">
-        {lastSyncAt ? `refreshed ${fmtRelTime(lastSyncAt)}` : "never synced"}
+      <RefreshCw className="size-3 shrink-0" />
+      <span className="font-mono whitespace-nowrap">
+        {last ? `Updated ${fmtRelTime(last)}` : "Never synced"}
       </span>
     </>
   );
-  // Only admins can reach Settings, so only they get the link.
   return isAdmin ? (
-    <Link to="/settings" title={title} className={cn(cls, "hover:bg-accent transition-colors")}>
+    <Link to="/settings" title={title} className={cn(cls, "hover:opacity-90")}>
       {inner}
     </Link>
   ) : (
@@ -169,7 +183,7 @@ export function TopBar({
 
       <div className="flex-1 lg:hidden" />
 
-      <SyncFreshness lastSyncAt={business.lastSyncAt} isAdmin={isAdmin} />
+      <SyncFreshness isAdmin={isAdmin} />
       <RangePicker />
 
       {isAdmin && <SyncNowButton running={business.syncRunning} />}
