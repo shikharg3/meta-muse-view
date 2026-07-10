@@ -226,6 +226,10 @@ test("searchEntities maps a Notion brand title to its holding client (excludes r
   expect((await searchEntities("lucky rebel")).brands).toEqual([
     { brand: "Lucky Rebel", clientId: "oneagency", clientName: "OneAgency" },
   ]);
+  // spacing/punctuation-insensitive: "LuckyRebel" (no space) resolves the same brand
+  expect((await searchEntities("LuckyRebel")).brands).toEqual([
+    { brand: "Lucky Rebel", clientId: "oneagency", clientName: "OneAgency" },
+  ]);
   // substring match; brands of removed clients are excluded
   expect((await searchEntities("lucky")).brands.map((b) => b.brand)).toEqual(["Lucky Rebel"]);
   expect((await searchEntities("")).brands).toEqual([]);

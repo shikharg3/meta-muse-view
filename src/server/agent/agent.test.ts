@@ -92,6 +92,11 @@ test("resolveClient falls back to a Notion brand title, mapping it to its agency
   const r = await resolveClient("Lucky Rebel");
   expect(r).toMatchObject({ id: "oneagency", name: "OneAgency", matchedBrand: "Lucky Rebel" });
   expect((r as { siblingBrands?: string[] }).siblingBrands).toContain("Slots.lv");
+  // Punctuation/spacing-insensitive: "LuckyRebel" (no space) resolves the same brand.
+  expect(await resolveClient("LuckyRebel")).toMatchObject({
+    id: "oneagency",
+    matchedBrand: "Lucky Rebel",
+  });
   // A pure client-NAME match still wins over brand fallback.
   expect(await resolveClient("wild")).toMatchObject({ id: "wildcasino-ag" });
   // get_client_stats resolves the brand, surfaces matchedBrand, and returns the agency client's account.

@@ -749,6 +749,7 @@ export async function searchEntities(q: string): Promise<{
   if (!term) return { clients: [], accounts: [], campaigns: [], brands: [] };
   const like = `%${term}%`;
   const lower = term.toLowerCase();
+  const nlower = lower.replace(/[^a-z0-9]+/g, ""); // spacing/punct-insensitive ("LuckyRebel" ~ "Lucky Rebel")
   const [clients, accounts, campaigns, liveClients] = await Promise.all([
     db
       .select({ id: schema.clients.id, name: schema.clients.name, status: schema.clients.status })
@@ -779,7 +780,10 @@ export async function searchEntities(q: string): Promise<{
   const brands: { brand: string; clientId: string; clientName: string }[] = [];
   for (const c of liveClients) {
     for (const t of brandTitles(c.raw)) {
-      if (t.toLowerCase() !== c.name.toLowerCase() && t.toLowerCase().includes(lower)) {
+      const tl = t.toLowerCase();
+      const matches =
+        tl.includes(lower) || (nlower !== "" && tl.replace(/[^a-z0-9]+/g, "").includes(nlower));
+      if (tl !== c.name.toLowerCase() && matches) {
         brands.push({ brand: t, clientId: c.id, clientName: c.name });
       }
     }

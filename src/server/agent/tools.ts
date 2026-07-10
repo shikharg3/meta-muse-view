@@ -214,10 +214,13 @@ export async function resolveClient(query: string): Promise<ResolvedClient | Res
     }
     return hits;
   };
-  const exactBrands = findBrandHits((b) => b.toLowerCase() === q);
+  // Match punctuation/spacing-insensitively so "LuckyRebel" finds the brand "Lucky Rebel".
+  const nq = q.replace(/[^a-z0-9]+/g, "");
+  const bnorm = (b: string) => b.toLowerCase().replace(/[^a-z0-9]+/g, "");
+  const exactBrands = findBrandHits((b) => b.toLowerCase() === q || (nq !== "" && bnorm(b) === nq));
   const brandHits = exactBrands.length
     ? exactBrands
-    : findBrandHits((b) => b.toLowerCase().includes(q));
+    : findBrandHits((b) => b.toLowerCase().includes(q) || (nq !== "" && bnorm(b).includes(nq)));
   if (brandHits.length === 1) {
     const h = brandHits[0];
     return {
