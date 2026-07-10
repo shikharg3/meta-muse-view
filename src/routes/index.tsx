@@ -1,29 +1,54 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useEffect, useRef, useState } from "react";
-import { Sparkles, Send, Wrench, AlertCircle, Loader2, FileText, Plus } from "lucide-react";
-import { sendChat } from "@/lib/api/chat";
+import {
+  Sparkles,
+  Send,
+  Wrench,
+  AlertCircle,
+  Loader2,
+  FileText,
+  Plus,
+  History,
+  Trash2,
+  Pencil,
+  MessageSquarePlus,
+} from "lucide-react";
+import { sendChat, saveReport } from "@/lib/api/chat";
+import {
+  listConversations,
+  getConversation,
+  renameConversation,
+  deleteConversation,
+} from "@/lib/api/conversations";
 import { generateClientReport } from "@/lib/api/report";
 import { listClients } from "@/lib/api/clients";
 import type { ChatResult, ToolTrace } from "@/server/agent/chat";
+import type {
+  StoredMessage,
+  ConversationSummary,
+  MessagePayload,
+} from "@/server/fns/conversations";
 import type { ReportPayload } from "@/server/agent/report";
 import { ReportBuilder, type ReportRequest } from "@/components/chat/ReportBuilder";
 import { ReportBlock } from "@/components/chat/ReportBlock";
 import { Markdown } from "@/components/chat/Markdown";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { fmtCurrency, fmtCompact, fmtPct } from "@/lib/format";
+import { fmtCurrency, fmtCompact, fmtPct, fmtRelTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/")({
-  head: () => ({
-    meta: [
-      { title: "Ask — MetaConsole" },
-      {
-        name: "description",
-        content: "Ask questions about your Meta Ads performance in plain English.",
-      },
-    ],
-  }),
-  loader: async () => ({ clients: (await listClients()).filter((c) => c.removedAt == null) }),
+  head: () => ({ meta: [{ title: "Ask — MetaConsole" }] }),
+  loader: async () => {
+    const [clients, conversations] = await Promise.all([
+      listClients().then((cs) => cs.filter((c) => c.removedAt == null)),
+      listConversations(),
+    ]);
+    const first = conversations[0];
+    const initial = first
+      ? { id: first.id, messages: (await getConversation({ data: first.id })) ?? [] }
+      : null;
+    return { clients, conversations, initial };
+  },
   component: Ask,
 });
 
@@ -34,6 +59,7 @@ interface UiMessage {
   report?: ReportPayload | null;
   toolCalls?: ToolTrace[];
   error?: string;
+  costUsd?: number;
 }
 
 const SUGGESTIONS = [
@@ -47,16 +73,40 @@ const SLASH_HINT =
   "Tip: type /reports to generate a CSV/PDF, e.g. /reports last 7 days for PlayW3 by day with spend, results, cpc, ctr, cpm";
 
 const TOOL_LABEL: Record<string, string> = {
-  list_clients: "listed clients",
-  get_client_stats: "fetched client stats",
-  get_overview: "fetched overview",
-  search_entities: "searched entities",
-  generate_report: "generated report",
+  list_clients: "clients",
+  list_active_campaigns: "active campaigns",
+  get_client_stats: "client stats",
+  get_overview: "overview",
+  list_accounts: "accounts",
+  search_entities: "search",
+  generate_report: "report",
 };
 
+const fmtCost = (usd: number): string => (usd >= 1 ? `$${usd.toFixed(2)}` : `$${usd.toFixed(4)}`);
+
+/** Rehydrate persisted messages (payload jsonb → typed cards/report/toolCalls/error). */
+function toUiMessages(stored: StoredMessage[]): UiMessage[] {
+  return stored.map((m) => {
+    const p: Partial<MessagePayload> = m.payload ?? {};
+    return {
+      role: m.role,
+      content: m.content,
+      cards: p.cards ?? null,
+      report: p.report ?? null,
+      toolCalls: p.toolCalls ?? undefined,
+      error: p.error,
+      costUsd: m.costUsd ?? undefined,
+    };
+  });
+}
+
 function Ask() {
-  const { clients } = Route.useLoaderData();
-  const [messages, setMessages] = useState<UiMessage[]>([]);
+  const { clients, initial, conversations: initialConversations } = Route.useLoaderData();
+  const [conversations, setConversations] = useState<ConversationSummary[]>(initialConversations);
+  const [activeId, setActiveId] = useState<string | null>(initial?.id ?? null);
+  const [messages, setMessages] = useState<UiMessage[]>(
+    initial ? toUiMessages(initial.messages) : [],
+  );
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [builderOpen, setBuilderOpen] = useState(false);
@@ -67,17 +117,45 @@ function Ask() {
     scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
   }, [messages, loading]);
 
+  const refreshList = async () => setConversations(await listConversations());
+
+  const newChat = () => {
+    setActiveId(null);
+    setMessages([]);
+    setBuilderOpen(false);
+  };
+
+  const loadConversation = async (id: string) => {
+    if (loading) return;
+    const stored = await getConversation({ data: id });
+    if (!stored) return;
+    setActiveId(id);
+    setMessages(toUiMessages(stored));
+    setBuilderOpen(false);
+  };
+
+  const removeConversation = async (id: string) => {
+    await deleteConversation({ data: id });
+    if (id === activeId) newChat();
+    await refreshList();
+  };
+
+  const rename = async (id: string, current: string) => {
+    const title = window.prompt("Rename conversation", current)?.trim();
+    if (!title) return;
+    await renameConversation({ data: { id, title } });
+    await refreshList();
+  };
+
   const send = async (text: string) => {
     const q = text.trim();
     if (!q || loading) return;
-    const history = [...messages, { role: "user" as const, content: q }];
-    setMessages(history);
+    setMessages((prev) => [...prev, { role: "user", content: q }]);
     setInput("");
     setLoading(true);
     try {
-      const res = await sendChat({
-        data: { messages: history.map((m) => ({ role: m.role, content: m.content })) },
-      });
+      const res = await sendChat({ data: { conversationId: activeId, message: q } });
+      setActiveId(res.conversationId);
       setMessages((prev) => [
         ...prev,
         {
@@ -87,8 +165,10 @@ function Ask() {
           report: res.report,
           toolCalls: res.toolCalls,
           error: res.error,
+          costUsd: res.costUsd,
         },
       ]);
+      void refreshList();
     } catch (e) {
       setMessages((prev) => [
         ...prev,
@@ -99,8 +179,7 @@ function Ask() {
     }
   };
 
-  // Direct (no-LLM) report path from the builder: run it and drop the result
-  // into the thread as a normal assistant turn.
+  // Direct (no-LLM) report path from the builder: run it, persist it to the thread, and render it.
   const runReport = async (req: ReportRequest) => {
     setBuilderOpen(false);
     if (loading) return;
@@ -119,17 +198,24 @@ function Ask() {
           campaignIds: req.campaignIds,
         },
       });
-      const errored = "error" in res;
-      setMessages((prev) => [
-        ...prev,
-        errored
-          ? { role: "assistant", content: "", error: res.error }
-          : {
-              role: "assistant",
-              content: `Here's your report for ${req.clientName}.`,
-              report: res,
-            },
-      ]);
+      if ("error" in res) {
+        setMessages((prev) => [...prev, { role: "assistant", content: "", error: res.error }]);
+      } else {
+        const saved = await saveReport({
+          data: {
+            conversationId: activeId,
+            summary: req.summary,
+            clientName: req.clientName,
+            report: res,
+          },
+        });
+        setActiveId(saved.conversationId);
+        setMessages((prev) => [
+          ...prev,
+          { role: "assistant", content: `Here's your report for ${req.clientName}.`, report: res },
+        ]);
+        void refreshList();
+      }
     } catch (e) {
       setMessages((prev) => [
         ...prev,
@@ -141,9 +227,27 @@ function Ask() {
   };
 
   const empty = messages.length === 0;
+  const activeTitle = conversations.find((c) => c.id === activeId)?.title ?? "New chat";
 
   return (
     <div className="flex flex-col h-[calc(100vh-3.5rem)]">
+      <div className="shrink-0 h-11 border-b border-border flex items-center gap-2 px-4 md:px-6">
+        <ConversationMenu
+          conversations={conversations}
+          activeId={activeId}
+          onSelect={(id) => void loadConversation(id)}
+          onDelete={(id) => void removeConversation(id)}
+          onRename={(id, t) => void rename(id, t)}
+        />
+        <span className="text-sm font-medium truncate flex-1 min-w-0">{activeTitle}</span>
+        <button
+          onClick={newChat}
+          className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card hover:bg-accent px-2.5 h-8 text-xs font-medium"
+        >
+          <MessageSquarePlus className="size-3.5" /> New chat
+        </button>
+      </div>
+
       <div ref={scrollRef} className="flex-1 overflow-y-auto">
         <div className="mx-auto max-w-3xl px-4 md:px-6 py-8">
           {empty ? (
@@ -259,7 +363,7 @@ function Ask() {
               onChange={(e) => {
                 const v = e.target.value;
                 setInput(v);
-                setMenuOpen(v === "/"); // hint menu only while input is bare "/"; never steals focus
+                setMenuOpen(v === "/");
               }}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
@@ -289,6 +393,82 @@ function Ask() {
   );
 }
 
+function ConversationMenu({
+  conversations,
+  activeId,
+  onSelect,
+  onDelete,
+  onRename,
+}: {
+  conversations: ConversationSummary[];
+  activeId: string | null;
+  onSelect: (id: string) => void;
+  onDelete: (id: string) => void;
+  onRename: (id: string, title: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          title="Conversation history"
+          className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card hover:bg-accent px-2.5 h-8 text-xs font-medium text-muted-foreground"
+        >
+          <History className="size-3.5" /> History
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="p-1.5 w-80">
+        <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold px-2 py-1">
+          Conversations
+        </div>
+        <div className="max-h-[60vh] overflow-y-auto">
+          {conversations.length === 0 && (
+            <div className="px-2 py-6 text-center text-xs text-muted-foreground">
+              No conversations yet.
+            </div>
+          )}
+          {conversations.map((c) => (
+            <div
+              key={c.id}
+              className={cn(
+                "group flex items-center gap-1 rounded-md px-2 py-1.5",
+                c.id === activeId ? "bg-accent" : "hover:bg-accent/50",
+              )}
+            >
+              <button
+                onClick={() => {
+                  onSelect(c.id);
+                  setOpen(false);
+                }}
+                className="min-w-0 flex-1 text-left"
+              >
+                <div className="text-xs font-medium truncate">{c.title}</div>
+                <div className="text-[10px] text-muted-foreground">{fmtRelTime(c.updatedAt)}</div>
+              </button>
+              <button
+                onClick={() => onRename(c.id, c.title)}
+                title="Rename"
+                className="size-6 grid place-items-center rounded text-muted-foreground opacity-0 group-hover:opacity-100 hover:bg-background"
+              >
+                <Pencil className="size-3" />
+              </button>
+              <button
+                onClick={() => {
+                  if (window.confirm(`Delete "${c.title}"? This can't be undone.`)) onDelete(c.id);
+                }}
+                title="Delete"
+                className="size-6 grid place-items-center rounded text-muted-foreground opacity-0 group-hover:opacity-100 hover:bg-destructive/10 hover:text-destructive"
+              >
+                <Trash2 className="size-3" />
+              </button>
+            </div>
+          ))}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 function Message({ message }: { message: UiMessage }) {
   if (message.role === "user") {
     return (
@@ -315,22 +495,32 @@ function Message({ message }: { message: UiMessage }) {
         )}
         {message.cards && <KpiStrip title={message.cards.title} kpis={message.cards.kpis} />}
         {message.report && <ReportBlock report={message.report} />}
-        {message.toolCalls && message.toolCalls.length > 0 && (
-          <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-            <Wrench className="size-3 text-muted-foreground" />
-            {message.toolCalls.map((t, i) => (
-              <span
-                key={i}
-                className={cn(
-                  "rounded px-1.5 py-0.5 text-[10px] font-mono",
-                  t.ok ? "bg-accent text-muted-foreground" : "bg-destructive/10 text-destructive",
-                )}
-              >
-                {TOOL_LABEL[t.name] ?? t.name}
-              </span>
-            ))}
-          </div>
-        )}
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5 pt-0.5">
+          {message.toolCalls && message.toolCalls.length > 0 && (
+            <>
+              <Wrench className="size-3 text-muted-foreground" />
+              {message.toolCalls.map((t, i) => (
+                <span
+                  key={i}
+                  className={cn(
+                    "rounded px-1.5 py-0.5 text-[10px] font-mono",
+                    t.ok ? "bg-accent text-muted-foreground" : "bg-destructive/10 text-destructive",
+                  )}
+                >
+                  {TOOL_LABEL[t.name] ?? t.name}
+                </span>
+              ))}
+            </>
+          )}
+          {message.costUsd != null && message.costUsd > 0 && (
+            <span
+              className="ml-auto text-[10px] font-mono text-muted-foreground"
+              title="Model cost for this turn (Opus 4.8, incl. prompt caching)"
+            >
+              {fmtCost(message.costUsd)}
+            </span>
+          )}
+        </div>
       </div>
     </div>
   );

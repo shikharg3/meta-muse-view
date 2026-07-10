@@ -277,6 +277,40 @@ export const users = pgTable("users", {
   lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
 });
 
+// Persisted chat history for the in-app assistant, scoped per user. Deleting a user cascades to their
+// conversations, and deleting a conversation cascades to its messages.
+export const conversations = pgTable(
+  "conversations",
+  {
+    id: text("id").primaryKey(), // crypto.randomUUID()
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    title: text("title").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [index("conversations_user_idx").on(t.userId)],
+);
+
+// One row per chat turn message. `payload` carries structured assistant output (e.g. cards) and
+// `costUsd` the per-message LLM cost; both are null for user messages.
+export const chatMessages = pgTable(
+  "chat_messages",
+  {
+    id: text("id").primaryKey(), // crypto.randomUUID()
+    conversationId: text("conversation_id")
+      .notNull()
+      .references(() => conversations.id, { onDelete: "cascade" }),
+    role: text("role").notNull(), // "user" | "assistant"
+    content: text("content").notNull(),
+    payload: jsonb("payload"),
+    costUsd: doublePrecision("cost_usd"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [index("chat_messages_conversation_idx").on(t.conversationId)],
+);
+
 // Admin action trail (approvals, role changes, mapping edits, resets, credential saves).
 export const auditLog = pgTable("audit_log", {
   id: text("id").primaryKey(),

@@ -7,6 +7,7 @@ import {
   type LlmClient,
 } from "./anthropic";
 import { TOOLS, runTool } from "./tools";
+import { costUsd, type TokenUsage } from "./pricing";
 import { summarizeReportForLlm, type ReportPayload } from "./report";
 import type { Kpis } from "@/lib/types";
 
@@ -27,6 +28,8 @@ export interface ChatResult {
   cards: { title: string; kpis: Kpis } | null;
   /** Full report payload from a generate_report call, for the UI to render + download. */
   report: ReportPayload | null;
+  /** Total USD spent on model tokens for the whole turn (all loop iterations). */
+  costUsd: number;
   error?: string;
 }
 
@@ -80,10 +83,14 @@ export async function runAgentLoop(
   history: ChatMessage[],
   opts: { model: string; effort: string },
 ): Promise<ChatResult> {
-  const messages: AnthropicMessage[] = history.map((m) => ({ role: m.role, content: m.content }));
+  // Only show the model the last 25 turns (user+assistant pairs) to bound context.
+  const CONTEXT_TURNS = 25;
+  const windowed = history.slice(-CONTEXT_TURNS * 2);
+  const messages: AnthropicMessage[] = windowed.map((m) => ({ role: m.role, content: m.content }));
   const toolCalls: ToolTrace[] = [];
   let cards: ChatResult["cards"] = null;
   let report: ChatResult["report"] = null;
+  const acc: TokenUsage = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 };
 
   for (let i = 0; i < MAX_ITERATIONS; i++) {
     const resp = await llm.createMessage({
@@ -96,9 +103,19 @@ export async function runAgentLoop(
     // Preserve the full content (incl. thinking blocks) verbatim — required for
     // tool-use continuations with extended thinking.
     messages.push({ role: "assistant", content: resp.content });
+    acc.input += resp.usage.input_tokens ?? 0;
+    acc.output += resp.usage.output_tokens ?? 0;
+    acc.cacheWrite += resp.usage.cache_creation_input_tokens ?? 0;
+    acc.cacheRead += resp.usage.cache_read_input_tokens ?? 0;
 
     if (resp.stop_reason !== "tool_use") {
-      return { reply: textOf(resp.content), toolCalls, cards, report };
+      return {
+        reply: textOf(resp.content),
+        toolCalls,
+        cards,
+        report,
+        costUsd: costUsd(opts.model, acc),
+      };
     }
 
     const results: ContentBlock[] = [];
@@ -137,6 +154,7 @@ export async function runAgentLoop(
     toolCalls,
     cards,
     report,
+    costUsd: costUsd(opts.model, acc),
   };
 }
 
@@ -149,6 +167,7 @@ export async function chatTurn(history: ChatMessage[]): Promise<ChatResult> {
       toolCalls: [],
       cards: null,
       report: null,
+      costUsd: 0,
       error: "No Claude API key configured. Add one in Settings → Assistant.",
     };
   }
@@ -162,6 +181,7 @@ export async function chatTurn(history: ChatMessage[]): Promise<ChatResult> {
       toolCalls: [],
       cards: null,
       report: null,
+      costUsd: 0,
       error: e instanceof Error ? e.message : String(e),
     };
   }

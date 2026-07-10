@@ -38,7 +38,13 @@ export interface AnthropicTool {
 export interface AnthropicResponse {
   stop_reason: string;
   content: ContentBlock[];
-  usage: { input_tokens: number; output_tokens: number };
+  usage: {
+    input_tokens: number;
+    output_tokens: number;
+    // Present only when prompt caching is active.
+    cache_creation_input_tokens?: number;
+    cache_read_input_tokens?: number;
+  };
 }
 
 export interface CreateMessageParams {
@@ -62,6 +68,21 @@ export class AnthropicClient implements LlmClient {
   ) {}
 
   async createMessage(params: CreateMessageParams): Promise<AnthropicResponse> {
+    // Prompt caching (GA): mark the system prompt and the final tool as cache
+    // breakpoints. cache_control isn't on AnthropicTool, so widen locally.
+    const cacheControl = { type: "ephemeral" as const };
+    const tools = params.tools.map((t, i) =>
+      i === params.tools.length - 1 ? { ...t, cache_control: cacheControl } : t,
+    );
+    const body: Record<string, unknown> = {
+      model: params.model,
+      max_tokens: params.maxTokens ?? 4096,
+      thinking: { type: "adaptive" },
+      output_config: { effort: params.effort },
+      system: [{ type: "text", text: params.system, cache_control: cacheControl }],
+      tools,
+      messages: params.messages,
+    };
     const res = await this.fetchImpl(URL, {
       method: "POST",
       headers: {
@@ -69,15 +90,7 @@ export class AnthropicClient implements LlmClient {
         "anthropic-version": VERSION,
         "content-type": "application/json",
       },
-      body: JSON.stringify({
-        model: params.model,
-        max_tokens: params.maxTokens ?? 4096,
-        thinking: { type: "adaptive" },
-        output_config: { effort: params.effort },
-        system: params.system,
-        tools: params.tools,
-        messages: params.messages,
-      }),
+      body: JSON.stringify(body),
     });
     const json = (await res.json()) as Record<string, unknown>;
     if (!res.ok) {
