@@ -12,6 +12,7 @@ async function seed() {
   await db.insert(schema.accounts).values([
     { id: "act_111", name: "Wild Main", currency: "USD" },
     { id: "act_222", name: "Wild Old", currency: "USD" },
+    { id: "act_555", name: "GatherOne", currency: "USD" },
   ]);
   await db.insert(schema.clients).values([
     {
@@ -32,6 +33,16 @@ async function seed() {
       status: "Not started",
       notionAccountIds: ["act_333"],
       removedAt: new Date(),
+    },
+    {
+      id: "oneagency",
+      name: "OneAgency",
+      status: "Live",
+      notionAccountIds: ["act_555"],
+      raw: [
+        { pageId: "p1", title: "Lucky Rebel" },
+        { pageId: "p2", title: "Slots.lv" },
+      ],
     },
   ]);
   await db.insert(schema.campaigns).values({
@@ -62,6 +73,15 @@ async function seed() {
       clicks: 100,
       actions: [{ action_type: "lead", value: "20" }],
     },
+    {
+      level: "account",
+      entityId: "act_555",
+      date: today,
+      accountId: "act_555",
+      spend: 100,
+      impressions: 1000,
+      clicks: 50,
+    },
   ]);
 }
 
@@ -74,6 +94,24 @@ test("resolveClient handles exact, fuzzy, ambiguous, and missing", async () => {
   const none = await resolveClient("nonexistent-xyz");
   expect(none).toHaveProperty("error");
   expect((none as { candidates: string[] }).candidates.length).toBeGreaterThan(0);
+}, 20000);
+
+test("resolveClient falls back to a Notion brand title, mapping it to its agency client", async () => {
+  // "Lucky Rebel" is not a client name — it's a brand row grouped under agency client "OneAgency".
+  const r = await resolveClient("Lucky Rebel");
+  expect(r).toMatchObject({ id: "oneagency", name: "OneAgency", matchedBrand: "Lucky Rebel" });
+  expect((r as { siblingBrands?: string[] }).siblingBrands).toContain("Slots.lv");
+  // A pure client-NAME match still wins over brand fallback.
+  expect(await resolveClient("wild")).toMatchObject({ id: "wildcasino-ag" });
+  // get_client_stats resolves the brand and surfaces matchedBrand + the client-level figures.
+  const stats = (await runTool("get_client_stats", { client: "Lucky Rebel", days: 7 })) as {
+    client: string;
+    matchedBrand?: string;
+    kpis: { spend: number };
+  };
+  expect(stats.client).toBe("OneAgency");
+  expect(stats.matchedBrand).toBe("Lucky Rebel");
+  expect(stats.kpis.spend).toBeCloseTo(100);
 }, 20000);
 
 test("get_client_stats returns grounded KPIs across the client's accounts", async () => {

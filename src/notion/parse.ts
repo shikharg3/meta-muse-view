@@ -28,6 +28,21 @@ export function clientSlug(key: string): string {
   return key.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "unnamed";
 }
 
+/**
+ * Distinct campaign-row (brand) titles from a client's stored `raw` pages
+ * (`[{ pageId, title }]`). Agency clients group several brand rows under one
+ * Client-Account entity, so these titles are the brand aliases users search by.
+ */
+export function brandTitles(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const out: string[] = [];
+  for (const p of raw) {
+    const t = (p as { title?: unknown }).title;
+    if (typeof t === "string" && t.trim()) out.push(t.trim());
+  }
+  return [...new Set(out)];
+}
+
 export interface ParsedCampaignRow {
   pageId: string;
   title: string;

@@ -1,4 +1,4 @@
-import { and, eq, gte, ilike, inArray, lt, lte, or, sql, type SQL } from "drizzle-orm";
+import { and, eq, gte, ilike, inArray, isNull, lt, lte, or, sql, type SQL } from "drizzle-orm";
 import { disableReasonLabel } from "@/lib/format";
 import { summarizeTargeting } from "./targeting";
 import { db, schema } from "@/db/client";
@@ -11,6 +11,7 @@ import {
   type Totals,
 } from "@/server/agg";
 import { addDays, type DateWindow } from "@/lib/range";
+import { brandTitles } from "@/notion/parse";
 import { creativeFormat, creativeImageUrl, hueFromId, resultSpec } from "@/server/creative";
 import type {
   AdAccount,
@@ -742,11 +743,13 @@ export async function searchEntities(q: string): Promise<{
   clients: { id: string; name: string; status: string | null }[];
   accounts: { id: string; name: string }[];
   campaigns: { id: string; name: string; accountId: string }[];
+  brands: { brand: string; clientId: string; clientName: string }[];
 }> {
   const term = q.trim();
-  if (!term) return { clients: [], accounts: [], campaigns: [] };
+  if (!term) return { clients: [], accounts: [], campaigns: [], brands: [] };
   const like = `%${term}%`;
-  const [clients, accounts, campaigns] = await Promise.all([
+  const lower = term.toLowerCase();
+  const [clients, accounts, campaigns, liveClients] = await Promise.all([
     db
       .select({ id: schema.clients.id, name: schema.clients.name, status: schema.clients.status })
       .from(schema.clients)
@@ -766,8 +769,23 @@ export async function searchEntities(q: string): Promise<{
       .from(schema.campaigns)
       .where(ilike(schema.campaigns.name, like))
       .limit(8),
+    db
+      .select({ id: schema.clients.id, name: schema.clients.name, raw: schema.clients.raw })
+      .from(schema.clients)
+      .where(isNull(schema.clients.removedAt)),
   ]);
-  return { clients, accounts, campaigns };
+  // Brand (Notion campaign-row title) -> holding client, so a brand query ("Lucky Rebel") reaches
+  // the agency client that groups it ("OneAgency"). Skip titles equal to the client's own name.
+  const brands: { brand: string; clientId: string; clientName: string }[] = [];
+  for (const c of liveClients) {
+    for (const t of brandTitles(c.raw)) {
+      if (t.toLowerCase() !== c.name.toLowerCase() && t.toLowerCase().includes(lower)) {
+        brands.push({ brand: t, clientId: c.id, clientName: c.name });
+      }
+    }
+    if (brands.length >= 8) break;
+  }
+  return { clients, accounts, campaigns, brands: brands.slice(0, 8) };
 }
 
 export const CSV_KINDS = ["accounts", "campaigns", "creatives", "breakdowns"] as const;

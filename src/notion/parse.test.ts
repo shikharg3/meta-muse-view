@@ -6,6 +6,7 @@ import {
   clubClients,
   parseCampaignRow,
   parseClientName,
+  brandTitles,
 } from "./parse";
 import { parseNotionDbId } from "./client";
 import type { NotionPage } from "./client";
@@ -26,6 +27,20 @@ test("parseAccountIds handles commas, newlines, junk, and dedupes", () => {
     parseAccountIds("776152568765079\n\nbhttps://www.fortunegalaxy.io/   \n776152568765079"),
   ).toEqual(["act_776152568765079"]);
   expect(parseAccountIds("")).toEqual([]);
+});
+
+test("brandTitles extracts distinct row titles from stored raw pages", () => {
+  expect(
+    brandTitles([
+      { pageId: "p1", title: "Lucky Rebel" },
+      { pageId: "p2", title: "Slots.lv" },
+      { pageId: "p3", title: "Lucky Rebel" }, // dupe collapses
+      { pageId: "p4", title: "  " }, // blank dropped
+    ]),
+  ).toEqual(["Lucky Rebel", "Slots.lv"]);
+  expect(brandTitles(null)).toEqual([]);
+  expect(brandTitles(undefined)).toEqual([]);
+  expect(brandTitles("not-an-array")).toEqual([]);
 });
 
 test("clientKey strips parenthetical suffixes and normalizes whitespace", () => {

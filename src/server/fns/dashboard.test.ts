@@ -202,6 +202,35 @@ test("searchEntities matches accounts by name/id and campaigns by name", async (
   expect((await searchEntities("")).accounts).toEqual([]);
 }, 20000);
 
+test("searchEntities maps a Notion brand title to its holding client (excludes removed)", async () => {
+  await db.execute(dsql`truncate table clients cascade`);
+  await db.insert(schema.clients).values([
+    {
+      id: "oneagency",
+      name: "OneAgency",
+      status: "Live",
+      notionAccountIds: [],
+      raw: [
+        { pageId: "p1", title: "Lucky Rebel" },
+        { pageId: "p2", title: "Slots.lv" },
+      ],
+    },
+    {
+      id: "ghost",
+      name: "Ghost Co",
+      status: "Live",
+      raw: [{ pageId: "p3", title: "Lucky Ghost" }],
+      removedAt: new Date(),
+    },
+  ]);
+  expect((await searchEntities("lucky rebel")).brands).toEqual([
+    { brand: "Lucky Rebel", clientId: "oneagency", clientName: "OneAgency" },
+  ]);
+  // substring match; brands of removed clients are excluded
+  expect((await searchEntities("lucky")).brands.map((b) => b.brand)).toEqual(["Lucky Rebel"]);
+  expect((await searchEntities("")).brands).toEqual([]);
+}, 20000);
+
 test("windowDeltas compares the trailing window to the preceding one, per entity", async () => {
   await db.execute(dsql`truncate table accounts, insights_daily cascade`);
   const day = (back: number) => new Date(Date.now() - back * 864e5).toISOString().slice(0, 10);

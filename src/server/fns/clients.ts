@@ -12,6 +12,7 @@ import { fetchCampaigns, objectiveResults, disabledSinceMap } from "./dashboard"
 import { effectiveAccountIds, getClientRow } from "@/sync/jobs/clients";
 import type { Campaign, Kpis, AccountStatus } from "@/lib/types";
 import { disableReasonLabel } from "@/lib/format";
+import { brandTitles } from "@/notion/parse";
 import { currentUser, audit } from "@/server/fns/auth";
 
 const num = (v: unknown): number => Number(v ?? 0);
@@ -23,6 +24,9 @@ export interface ClientSummary {
   accountCount: number;
   syncedAt: string | null;
   removedAt: string | null; // set when the client is no longer on the Notion board (data retained)
+  /** Notion campaign-row (brand) titles grouped under this client, excluding the client's own name.
+   * Populated for agency clients that group several brands under one Client-Account entity. */
+  brands: string[];
 }
 
 export interface ClientAccountRow {
@@ -69,6 +73,7 @@ export async function fetchClients(): Promise<ClientSummary[]> {
       accountCount: effectiveAccountIds(r).length,
       syncedAt: r.syncedAt?.toISOString() ?? null,
       removedAt: r.removedAt?.toISOString() ?? null,
+      brands: brandTitles(r.raw).filter((t) => t.toLowerCase() !== r.name.toLowerCase()),
     }))
     .sort((a, b) => a.name.localeCompare(b.name));
 }
@@ -139,6 +144,7 @@ export async function fetchClientsRanked(w: DateWindow): Promise<ClientRanked[]>
         accountCount: ids.length,
         syncedAt: r.syncedAt?.toISOString() ?? null,
         removedAt: r.removedAt?.toISOString() ?? null,
+        brands: brandTitles(r.raw).filter((t) => t.toLowerCase() !== r.name.toLowerCase()),
         spend,
         impressions,
         results: resultVal,

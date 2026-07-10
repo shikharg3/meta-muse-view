@@ -17,8 +17,9 @@ type Results = {
   clients: { id: string; name: string; status: string | null }[];
   accounts: { id: string; name: string }[];
   campaigns: { id: string; name: string; accountId: string }[];
+  brands: { brand: string; clientId: string; clientName: string }[];
 };
-const EMPTY: Results = { clients: [], accounts: [], campaigns: [] };
+const EMPTY: Results = { clients: [], accounts: [], campaigns: [], brands: [] };
 
 type Scope = "all" | "clients" | "accounts" | "campaigns";
 const SCOPES: { key: Scope; label: string }[] = [
@@ -127,6 +128,22 @@ export function GlobalSearch() {
                       <span className="truncate">{c.name}</span>
                       <span className="ml-auto text-[10px] text-muted-foreground">
                         {c.status ?? "client"}
+                      </span>
+                    </CommandItem>
+                  ))}
+                </CommandGroup>
+              )}
+              {show("clients") && res.brands.length > 0 && (
+                <CommandGroup heading="Brands">
+                  {res.brands.map((b) => (
+                    <CommandItem
+                      key={`br:${b.clientId}:${b.brand}`}
+                      value={`br:${b.clientId}:${b.brand}`}
+                      onSelect={() => goClient(b.clientId)}
+                    >
+                      <span className="truncate">{b.brand}</span>
+                      <span className="ml-auto text-[10px] text-muted-foreground">
+                        {b.clientName}
                       </span>
                     </CommandItem>
                   ))}

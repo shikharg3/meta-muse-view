@@ -56,7 +56,7 @@ export const TOOLS: AnthropicTool[] = [
   {
     name: "get_client_stats",
     description:
-      "Performance for one client across every ad account they've ever used: overall KPIs (spend, impressions, clicks, CTR, CPC); a per-account breakdown where each account carries its Meta `status` (ACTIVE or DISABLED) and `disableReason` — i.e. whether Meta has suspended/disabled that account; and their campaigns (status, spend, CTR, CPC, results). The client-level `status` is the Notion board status. The client name is fuzzy-matched.",
+      "Performance for one client across every ad account they've ever used: overall KPIs (spend, impressions, clicks, CTR, CPC); a per-account breakdown where each account carries its Meta `status` (ACTIVE or DISABLED) and `disableReason` — i.e. whether Meta has suspended/disabled that account; and their campaigns (status, spend, CTR, CPC, results). The client-level `status` is the Notion board status. The `client` is fuzzy-matched by client name OR by a brand grouped under it — e.g. 'Lucky Rebel' resolves to its agency client 'OneAgency'; when matched by brand the result carries `matchedBrand` and a `brandNote` you MUST relay (figures are client-level, not per-brand).",
     input_schema: {
       type: "object",
       properties: {
@@ -121,7 +121,7 @@ export const TOOLS: AnthropicTool[] = [
   {
     name: "search_entities",
     description:
-      "Find ad accounts and campaigns by name or id substring. Use when the question is about a specific campaign or account rather than a client.",
+      "Find ad accounts, campaigns, and Notion brands by name/id substring. Returns matching `accounts`, `campaigns`, and `brands` — a brand is a Notion campaign-row title mapped to the agency client that groups it (e.g. brand 'Lucky Rebel' → client 'OneAgency'). Use when a name is not itself a client and might be a specific campaign, account, or a brand grouped under an agency client.",
     input_schema: {
       type: "object",
       properties: { query: { type: "string" } },
@@ -172,6 +172,10 @@ export const TOOLS: AnthropicTool[] = [
 export interface ResolvedClient {
   id: string;
   name: string;
+  /** Set when resolved by a Notion campaign-row (brand) title rather than the client's own name. */
+  matchedBrand?: string;
+  /** Other brands grouped under this (agency) client — lets the model add a per-brand caveat. */
+  siblingBrands?: string[];
 }
 export interface ResolveError {
   error: string;
@@ -197,6 +201,36 @@ export async function resolveClient(query: string): Promise<ResolvedClient | Res
     return {
       error: `Multiple clients match "${query}". Ask the user which one.`,
       candidates: matches.map((m) => m.name).slice(0, 10),
+    };
+
+  // No client-NAME match: fall back to Notion brand (campaign-row) titles. Agency clients group
+  // several brands under one name (e.g. brand "Lucky Rebel" lives under client "OneAgency"), so a
+  // brand query must resolve to its holding client instead of dead-ending as "no client".
+  const findBrandHits = (match: (b: string) => boolean) => {
+    const hits: { id: string; name: string; brand: string; brands: string[] }[] = [];
+    for (const c of clients) {
+      const brand = c.brands.find(match);
+      if (brand) hits.push({ id: c.id, name: c.name, brand, brands: c.brands });
+    }
+    return hits;
+  };
+  const exactBrands = findBrandHits((b) => b.toLowerCase() === q);
+  const brandHits = exactBrands.length
+    ? exactBrands
+    : findBrandHits((b) => b.toLowerCase().includes(q));
+  if (brandHits.length === 1) {
+    const h = brandHits[0];
+    return {
+      id: h.id,
+      name: h.name,
+      matchedBrand: h.brand,
+      siblingBrands: h.brands.filter((b) => b !== h.brand),
+    };
+  }
+  if (brandHits.length > 1)
+    return {
+      error: `"${query}" matches brands under multiple clients. Ask the user which client.`,
+      candidates: brandHits.map((h) => `${h.brand} → ${h.name}`).slice(0, 10),
     };
   return {
     error: `No client matches "${query}".`,
@@ -227,6 +261,12 @@ export async function runTool(name: string, input: Record<string, unknown>): Pro
       if (!detail) return { error: `Client "${resolved.name}" has no data.` };
       return {
         client: detail.name,
+        ...(resolved.matchedBrand
+          ? {
+              matchedBrand: resolved.matchedBrand,
+              brandNote: `"${resolved.matchedBrand}" is a brand grouped under agency client "${detail.name}"${resolved.siblingBrands?.length ? ` (alongside ${resolved.siblingBrands.join(", ")})` : ""}; figures below are for the whole client and are not split per brand.`,
+            }
+          : {}),
         status: detail.status,
         kpis: detail.kpis,
         events: detail.events,
