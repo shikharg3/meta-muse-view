@@ -499,6 +499,293 @@ export async function fetchCampaigns(w: DateWindow, accountIds?: string[]): Prom
   });
 }
 
+export interface AdEntityRow {
+  name: string;
+  /** Owning campaign (ad-set level) or owning ad set (ad level). */
+  parent: string;
+  account: string;
+  status: string | null;
+  spend: number;
+  impressions: number;
+  ctr: number;
+  cpc: number;
+  results: number;
+  resultLabel: string;
+  /** De-duplicated conversion/engagement events for this entity (purchases, leads, registrations…). */
+  events: ClientEvent[];
+  /** Number of entities summed into this row when grouped by name (absent/1 when ungrouped). */
+  merged?: number;
+}
+
+/** A client's accounts (optionally narrowed to one campaign) to break down at ad-set/ad grain. */
+export interface AdScope {
+  accountIds: string[];
+  campaignId?: string;
+}
+
+/**
+ * Ad-set-level (or ad-level) rows for a scope, each with media KPIs, the objective result, and the
+ * full de-duplicated conversion breakdown for that entity. `groupByName` sums entities that share a
+ * name — e.g. state-named ad sets spread across several campaigns collapse into one row per state.
+ */
+export async function fetchAdEntities(
+  scope: AdScope,
+  level: "adset" | "ad",
+  w: DateWindow,
+  opts: { groupByName?: boolean } = {},
+): Promise<AdEntityRow[]> {
+  const acctIds = scope.accountIds;
+  if (acctIds.length === 0) return [];
+  const [campaignRows, adsetRows, adRows, accountRows, insightRows] = await Promise.all([
+    db
+      .select({
+        id: schema.campaigns.id,
+        name: schema.campaigns.name,
+        objective: schema.campaigns.objective,
+      })
+      .from(schema.campaigns)
+      .where(inArray(schema.campaigns.accountId, acctIds)),
+    db
+      .select({
+        id: schema.adSets.id,
+        name: schema.adSets.name,
+        campaignId: schema.adSets.campaignId,
+        accountId: schema.adSets.accountId,
+        status: schema.adSets.status,
+      })
+      .from(schema.adSets)
+      .where(inArray(schema.adSets.accountId, acctIds)),
+    level === "ad"
+      ? db
+          .select({
+            id: schema.ads.id,
+            name: schema.ads.name,
+            adSetId: schema.ads.adSetId,
+            accountId: schema.ads.accountId,
+            status: schema.ads.status,
+          })
+          .from(schema.ads)
+          .where(inArray(schema.ads.accountId, acctIds))
+      : Promise.resolve(
+          [] as {
+            id: string;
+            name: string;
+            adSetId: string;
+            accountId: string;
+            status: string | null;
+          }[],
+        ),
+    db
+      .select({ id: schema.accounts.id, name: schema.accounts.name })
+      .from(schema.accounts)
+      .where(inArray(schema.accounts.id, acctIds)),
+    db
+      .select({
+        entityId: schema.insightsDaily.entityId,
+        spend: schema.insightsDaily.spend,
+        impressions: schema.insightsDaily.impressions,
+        clicks: schema.insightsDaily.clicks,
+        reach: schema.insightsDaily.reach,
+        conversions: schema.insightsDaily.conversions,
+        revenue: schema.insightsDaily.conversionValues,
+        actions: schema.insightsDaily.actions,
+        actionValues: schema.insightsDaily.actionValues,
+      })
+      .from(schema.insightsDaily)
+      .where(
+        and(
+          eq(schema.insightsDaily.level, level),
+          gte(schema.insightsDaily.date, w.since),
+          lte(schema.insightsDaily.date, w.until),
+          inArray(schema.insightsDaily.accountId, acctIds),
+        ),
+      ),
+  ]);
+  const accName = new Map(accountRows.map((a) => [a.id, a.name]));
+  const campById = new Map(campaignRows.map((c) => [c.id, c]));
+  const adsetById = new Map(adsetRows.map((s) => [s.id, s]));
+
+  // Entity metadata for the requested level, narrowed to the campaign when scoped.
+  interface Meta {
+    name: string;
+    parent: string;
+    accountId: string;
+    status: string | null;
+    objective: string | null;
+  }
+  const meta = new Map<string, Meta>();
+  if (level === "adset") {
+    for (const s of adsetRows) {
+      if (scope.campaignId && s.campaignId !== scope.campaignId) continue;
+      const c = campById.get(s.campaignId);
+      meta.set(s.id, {
+        name: s.name,
+        parent: c?.name ?? s.campaignId,
+        accountId: s.accountId,
+        status: s.status,
+        objective: c?.objective ?? null,
+      });
+    }
+  } else {
+    for (const a of adRows) {
+      const s = adsetById.get(a.adSetId);
+      if (scope.campaignId && s?.campaignId !== scope.campaignId) continue;
+      const c = s ? campById.get(s.campaignId) : undefined;
+      meta.set(a.id, {
+        name: a.name,
+        parent: s?.name ?? a.adSetId,
+        accountId: a.accountId,
+        status: a.status,
+        objective: c?.objective ?? null,
+      });
+    }
+  }
+
+  // Bucket insight rows by entity (or by name when grouping), summing media + collecting raw
+  // actions so canonicalEvents can de-dupe conversions the same way the client view does.
+  interface Bucket {
+    name: string;
+    parents: Set<string>;
+    accounts: Set<string>;
+    status: string | null;
+    spend: number;
+    impressions: number;
+    clicks: number;
+    reach: number;
+    conversions: number;
+    revenue: number;
+    rows: { actions: unknown; actionValues: unknown }[];
+    actionSums: Map<string, number>;
+    resTypeSpend: Map<string, number>;
+    resTypeLabel: Map<string, string>;
+    merged: number;
+  }
+  const buckets = new Map<string, Bucket>();
+  const seen = new Set<string>();
+  for (const r of insightRows) {
+    const m = meta.get(r.entityId);
+    if (!m) continue;
+    const key = opts.groupByName ? m.name.toLowerCase() : r.entityId;
+    let b = buckets.get(key);
+    if (!b) {
+      b = {
+        name: m.name,
+        parents: new Set(),
+        accounts: new Set(),
+        status: m.status,
+        spend: 0,
+        impressions: 0,
+        clicks: 0,
+        reach: 0,
+        conversions: 0,
+        revenue: 0,
+        rows: [],
+        actionSums: new Map(),
+        resTypeSpend: new Map(),
+        resTypeLabel: new Map(),
+        merged: 0,
+      };
+      buckets.set(key, b);
+    }
+    b.parents.add(m.parent);
+    b.accounts.add(accName.get(m.accountId) ?? m.accountId);
+    b.spend += num(r.spend);
+    b.impressions += num(r.impressions);
+    b.clicks += num(r.clicks);
+    b.reach = Math.max(b.reach, num(r.reach));
+    b.conversions += num(r.conversions);
+    b.revenue += num(r.revenue);
+    b.rows.push({ actions: r.actions, actionValues: r.actionValues });
+    for (const el of (r.actions as { action_type: string; value: string }[] | null) ?? [])
+      b.actionSums.set(
+        el.action_type,
+        (b.actionSums.get(el.action_type) ?? 0) + (Number(el.value) || 0),
+      );
+    // Attribute the entity's objective result to its label (dominant label wins when grouped).
+    if (!seen.has(r.entityId)) {
+      seen.add(r.entityId);
+      b.merged += 1;
+    }
+    const rs = resultSpec(m.objective);
+    b.resTypeSpend.set(rs.type, (b.resTypeSpend.get(rs.type) ?? 0) + num(r.spend));
+    b.resTypeLabel.set(rs.type, rs.label);
+  }
+
+  const round2 = (n: number) => Math.round(n * 100) / 100;
+  const rows = [...buckets.values()].map((b) => {
+    const k = deriveKpis({
+      spend: b.spend,
+      impressions: b.impressions,
+      clicks: b.clicks,
+      conversions: b.conversions,
+      revenue: b.revenue,
+      reach: b.reach,
+    });
+    // Objective result: the metric for the dominant-by-spend objective (reach for awareness).
+    let domType = "omni_purchase";
+    let bestSpend = -1;
+    for (const [t, sp] of b.resTypeSpend)
+      if (sp > bestSpend) {
+        bestSpend = sp;
+        domType = t;
+      }
+    const results = domType === "reach" ? b.reach : (b.actionSums.get(domType) ?? 0);
+    const label = b.resTypeLabel.get(domType) ?? "Results";
+    return {
+      name: b.name,
+      parent: b.parents.size === 1 ? [...b.parents][0] : `${b.parents.size} campaigns`,
+      account: b.accounts.size === 1 ? [...b.accounts][0] : `${b.accounts.size} accounts`,
+      status: b.merged === 1 ? b.status : null,
+      spend: round2(k.spend),
+      impressions: k.impressions,
+      ctr: round2(k.ctr),
+      cpc: round2(k.cpc),
+      results: Math.round(results),
+      resultLabel: label,
+      events: canonicalEvents(b.rows),
+      ...(b.merged > 1 ? { merged: b.merged } : {}),
+    };
+  });
+  rows.sort((a, b) => b.spend - a.spend);
+  return rows;
+}
+
+/**
+ * Resolve a subject to an ad-set/ad scope by matching a CAMPAIGN then an ACCOUNT (client matching is
+ * handled by the caller via resolveClient). Returns the scope, an ambiguity candidate list, or null.
+ */
+export async function resolveAdScopeSubject(
+  subject: string,
+): Promise<{ scope: AdScope; label: string } | { candidates: string[] } | null> {
+  const s = subject.trim();
+  if (!s) return null;
+  const like = `%${s}%`;
+  const camps = await db
+    .select({
+      id: schema.campaigns.id,
+      name: schema.campaigns.name,
+      accountId: schema.campaigns.accountId,
+    })
+    .from(schema.campaigns)
+    .where(or(eq(schema.campaigns.id, s), ilike(schema.campaigns.name, like)))
+    .limit(6);
+  if (camps.length === 1)
+    return {
+      scope: { accountIds: [camps[0].accountId], campaignId: camps[0].id },
+      label: `campaign "${camps[0].name}"`,
+    };
+  if (camps.length > 1) return { candidates: camps.map((c) => c.name) };
+  const accts = await db
+    .select({ id: schema.accounts.id, name: schema.accounts.name })
+    .from(schema.accounts)
+    .where(or(eq(schema.accounts.id, s), ilike(schema.accounts.name, like)))
+    .limit(6);
+  if (accts.length === 1)
+    return { scope: { accountIds: [accts[0].id] }, label: `account "${accts[0].name}"` };
+  if (accts.length > 1) return { candidates: accts.map((a) => a.name) };
+  return null;
+}
+
 export interface AccountMeta {
   amountSpent: number | null;
   balance: number | null;

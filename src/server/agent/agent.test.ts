@@ -74,6 +74,96 @@ async function seed() {
       actions: [{ action_type: "lead", value: "20" }],
     },
   ]);
+  // Ad-set fixture: a client whose ad sets are named by US state, spread across two campaigns.
+  await db.insert(schema.accounts).values({ id: "act_777", name: "State Ads", currency: "USD" });
+  await db.insert(schema.clients).values({
+    id: "statewise",
+    name: "Statewise",
+    status: "Live",
+    notionAccountIds: ["act_777"],
+  });
+  await db.insert(schema.campaigns).values([
+    {
+      id: "c_broad",
+      accountId: "act_777",
+      name: "SW Broad",
+      objective: "OUTCOME_SALES",
+      status: "ACTIVE",
+    },
+    {
+      id: "c_lal",
+      accountId: "act_777",
+      name: "SW LAL",
+      objective: "OUTCOME_SALES",
+      status: "ACTIVE",
+    },
+  ]);
+  await db.insert(schema.adSets).values([
+    {
+      id: "s_ca_b",
+      campaignId: "c_broad",
+      accountId: "act_777",
+      name: "California",
+      status: "ACTIVE",
+    },
+    {
+      id: "s_ca_l",
+      campaignId: "c_lal",
+      accountId: "act_777",
+      name: "California",
+      status: "ACTIVE",
+    },
+    { id: "s_tx_b", campaignId: "c_broad", accountId: "act_777", name: "Texas", status: "PAUSED" },
+  ]);
+  await db.insert(schema.ads).values({
+    id: "ad_ca1",
+    adSetId: "s_ca_b",
+    accountId: "act_777",
+    name: "Creative A",
+    status: "ACTIVE",
+  });
+  await db.insert(schema.insightsDaily).values([
+    {
+      level: "adset",
+      entityId: "s_ca_b",
+      date: today,
+      accountId: "act_777",
+      spend: 100,
+      impressions: 1000,
+      clicks: 40,
+      actions: [{ action_type: "omni_purchase", value: "2" }],
+    },
+    {
+      level: "adset",
+      entityId: "s_ca_l",
+      date: today,
+      accountId: "act_777",
+      spend: 50,
+      impressions: 500,
+      clicks: 20,
+      actions: [{ action_type: "omni_purchase", value: "3" }],
+    },
+    {
+      level: "adset",
+      entityId: "s_tx_b",
+      date: today,
+      accountId: "act_777",
+      spend: 80,
+      impressions: 800,
+      clicks: 30,
+      actions: [{ action_type: "omni_purchase", value: "1" }],
+    },
+    {
+      level: "ad",
+      entityId: "ad_ca1",
+      date: today,
+      accountId: "act_777",
+      spend: 60,
+      impressions: 600,
+      clicks: 25,
+      actions: [{ action_type: "omni_purchase", value: "2" }],
+    },
+  ]);
 }
 
 beforeEach(seed);
@@ -275,4 +365,55 @@ test("list_active_campaigns returns spending campaigns mapped to their current c
   expect(wild).toBeDefined();
   expect(wild!.spend).toBeGreaterThan(0);
   expect(wild!.client).toBe("wildcasino.ag"); // current client, not an archived board entity
+}, 20000);
+
+test("get_ad_sets returns per-ad-set conversions and sums by name (state) across campaigns", async () => {
+  // Ungrouped: one row per ad set — California appears under both campaigns.
+  const ungrouped = (await runTool("get_ad_sets", { subject: "Statewise", days: 30 })) as {
+    adSets: { name: string; parent: string; spend: number }[];
+  };
+  expect(ungrouped.adSets.map((a) => a.name).sort()).toEqual(["California", "California", "Texas"]);
+
+  // group_by_name: the two California ad sets collapse into one; spend + conversions sum.
+  const grouped = (await runTool("get_ad_sets", {
+    subject: "Statewise",
+    group_by_name: true,
+    days: 30,
+  })) as {
+    groupedByName: boolean;
+    adSets: {
+      name: string;
+      spend: number;
+      merged?: number;
+      events: { label: string; count: number }[];
+    }[];
+  };
+  expect(grouped.groupedByName).toBe(true);
+  const ca = grouped.adSets.find((a) => a.name === "California");
+  if (!ca) throw new Error("California row missing");
+  expect(ca.merged).toBe(2);
+  expect(ca.spend).toBeCloseTo(150);
+  expect(ca.events.find((e) => e.label === "Purchases")?.count).toBe(5);
+  const tx = grouped.adSets.find((a) => a.name === "Texas");
+  expect(tx?.events.find((e) => e.label === "Purchases")?.count).toBe(1);
+}, 20000);
+
+test("get_ad_sets level='ad' returns ad-level rows under their ad set", async () => {
+  const r = (await runTool("get_ad_sets", { subject: "Statewise", level: "ad", days: 30 })) as {
+    level: string;
+    ads: { name: string; parent: string; spend: number }[];
+  };
+  expect(r.level).toBe("ad");
+  const ad = r.ads.find((a) => a.name === "Creative A");
+  if (!ad) throw new Error("ad missing");
+  expect(ad.parent).toBe("California"); // parent = owning ad set
+  expect(ad.spend).toBeCloseTo(60);
+}, 20000);
+
+test("get_ad_sets resolves a campaign subject to just its ad sets", async () => {
+  const r = (await runTool("get_ad_sets", { subject: "SW Broad", days: 30 })) as {
+    adSets: { name: string }[];
+  };
+  // SW Broad holds California + Texas (not the LAL campaign's California).
+  expect(r.adSets.map((a) => a.name).sort()).toEqual(["California", "Texas"]);
 }, 20000);

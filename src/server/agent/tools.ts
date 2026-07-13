@@ -5,7 +5,14 @@ import {
   fetchAccountDirectory,
   fetchActiveCampaigns,
 } from "@/server/fns/clients";
-import { fetchOverview, fetchOverviewEvents, searchEntities } from "@/server/fns/dashboard";
+import {
+  fetchOverview,
+  fetchOverviewEvents,
+  searchEntities,
+  fetchAdEntities,
+  resolveAdScopeSubject,
+  type AdScope,
+} from "@/server/fns/dashboard";
 import { getClientRow, effectiveAccountIds } from "@/sync/jobs/clients";
 import { runReport, resolveRange, normalizeColumns, normalizeBreakdown } from "./report";
 import type { AnthropicTool } from "./anthropic";
@@ -126,6 +133,42 @@ export const TOOLS: AnthropicTool[] = [
       type: "object",
       properties: { query: { type: "string" } },
       required: ["query"],
+    },
+  },
+  {
+    name: "get_ad_sets",
+    description:
+      "Ad-set-level (or ad-level) performance for a client, campaign, or ad account: one row per ad set (or ad) with spend, impressions, CTR, CPC, the objective result, AND the full conversion/event breakdown for THAT ad set (purchases, leads, registrations, …). Use this for ANY question at ad-set or ad grain — e.g. per-ad-set conversions, best/worst ad sets. Advertisers often name each ad set after what it targets (commonly one US state per ad set); when the user asks 'per state' (or per whatever the ad sets are named), pass group_by_name=true to SUM ad sets that share a name across campaigns into ONE row each — that yields per-state conversions and is more reliable than the region/geo breakdown. Set level='ad' for per-ad (creative) rows.",
+    input_schema: {
+      type: "object",
+      properties: {
+        subject: {
+          type: "string",
+          description:
+            "Client, campaign, or ad-account name/id. Fuzzy-matched — a client resolves to all its ad sets; a campaign to just its own.",
+        },
+        level: {
+          type: "string",
+          enum: ["adset", "ad"],
+          description: "Grain: 'adset' (default) or 'ad'.",
+        },
+        group_by_name: {
+          type: "boolean",
+          description:
+            "Sum entities that share a name (e.g. state-named ad sets across campaigns → one row per state, with combined conversions). Default false.",
+        },
+        days: {
+          type: "integer",
+          description:
+            "Trailing window ending TODAY (default 30, max 90). For a specific day/range use since+until.",
+        },
+        since: {
+          type: "string",
+          description: "Start date YYYY-MM-DD (with until); overrides days.",
+        },
+        until: { type: "string", description: "End date YYYY-MM-DD inclusive (with since)." },
+      },
+      required: ["subject"],
     },
   },
   {
@@ -325,6 +368,8 @@ export async function runTool(name: string, input: Record<string, unknown>): Pro
       return await fetchActiveCampaigns(toolWindow(input));
     case "search_entities":
       return await searchEntities(String(input.query ?? ""));
+    case "get_ad_sets":
+      return await getAdSetsTool(input);
     case "list_accounts":
       return await fetchAccountDirectory();
     case "generate_report":
@@ -353,6 +398,54 @@ async function resolveSubject(subject: string): Promise<SubjectResolution> {
       candidates: ents.accounts.map((a) => a.name).slice(0, 10),
     };
   return client; // client-resolution error + candidates
+}
+
+/** Resolve an ad-set/ad subject to a scope: a client's accounts, or one campaign/account. */
+async function resolveAdScope(
+  subject: string,
+): Promise<{ scope: AdScope; label: string } | ResolveError> {
+  const s = subject.trim();
+  if (!s) return { error: "Which client, campaign, or ad account?" };
+  const client = await resolveClient(s);
+  if (!("error" in client)) {
+    const row = await getClientRow(client.id);
+    return {
+      scope: { accountIds: row ? effectiveAccountIds(row) : [] },
+      label: client.matchedBrand
+        ? `${client.matchedBrand} (under client ${client.name})`
+        : `client ${client.name}`,
+    };
+  }
+  const found = await resolveAdScopeSubject(s);
+  if (found && "scope" in found) return found;
+  if (found)
+    return {
+      error: `"${subject}" matches multiple campaigns/accounts. Ask the user which one.`,
+      candidates: found.candidates,
+    };
+  return client; // client-resolution error + candidates
+}
+
+async function getAdSetsTool(input: Record<string, unknown>): Promise<unknown> {
+  const resolved = await resolveAdScope(String(input.subject ?? ""));
+  if ("error" in resolved) return resolved;
+  const level = input.level === "ad" ? "ad" : "adset";
+  const groupByName = Boolean(input.group_by_name);
+  const rows = await fetchAdEntities(resolved.scope, level, toolWindow(input), { groupByName });
+  if (rows.length === 0)
+    return {
+      subject: resolved.label,
+      level,
+      note: `No ${level} data found for ${resolved.label} in this window.`,
+    };
+  return {
+    subject: resolved.label,
+    level,
+    groupedByName: groupByName,
+    count: rows.length,
+    [level === "ad" ? "ads" : "adSets"]: rows.slice(0, 60),
+    ...(rows.length > 60 ? { truncated: `showing top 60 of ${rows.length} by spend` } : {}),
+  };
 }
 
 /**
