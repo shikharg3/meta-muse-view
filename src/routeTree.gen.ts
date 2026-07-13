@@ -16,7 +16,9 @@ import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as ReportsRouteImport } from './routes/reports'
 import { Route as OverviewRouteImport } from './routes/overview'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as FinanceRouteImport } from './routes/finance'
 import { Route as CreativesRouteImport } from './routes/creatives'
+import { Route as ChatHistoryRouteImport } from './routes/chat-history'
 import { Route as CampaignsRouteImport } from './routes/campaigns'
 import { Route as AudiencesRouteImport } from './routes/audiences'
 import { Route as AlertsRouteImport } from './routes/alerts'
@@ -62,9 +64,19 @@ const LoginRoute = LoginRouteImport.update({
   path: '/login',
   getParentRoute: () => rootRouteImport,
 } as any)
+const FinanceRoute = FinanceRouteImport.update({
+  id: '/finance',
+  path: '/finance',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const CreativesRoute = CreativesRouteImport.update({
   id: '/creatives',
   path: '/creatives',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ChatHistoryRoute = ChatHistoryRouteImport.update({
+  id: '/chat-history',
+  path: '/chat-history',
   getParentRoute: () => rootRouteImport,
 } as any)
 const CampaignsRoute = CampaignsRouteImport.update({
@@ -119,7 +131,9 @@ export interface FileRoutesByFullPath {
   '/alerts': typeof AlertsRoute
   '/audiences': typeof AudiencesRoute
   '/campaigns': typeof CampaignsRoute
+  '/chat-history': typeof ChatHistoryRoute
   '/creatives': typeof CreativesRoute
+  '/finance': typeof FinanceRoute
   '/login': typeof LoginRoute
   '/overview': typeof OverviewRoute
   '/reports': typeof ReportsRoute
@@ -138,7 +152,9 @@ export interface FileRoutesByTo {
   '/alerts': typeof AlertsRoute
   '/audiences': typeof AudiencesRoute
   '/campaigns': typeof CampaignsRoute
+  '/chat-history': typeof ChatHistoryRoute
   '/creatives': typeof CreativesRoute
+  '/finance': typeof FinanceRoute
   '/login': typeof LoginRoute
   '/overview': typeof OverviewRoute
   '/reports': typeof ReportsRoute
@@ -158,7 +174,9 @@ export interface FileRoutesById {
   '/alerts': typeof AlertsRoute
   '/audiences': typeof AudiencesRoute
   '/campaigns': typeof CampaignsRoute
+  '/chat-history': typeof ChatHistoryRoute
   '/creatives': typeof CreativesRoute
+  '/finance': typeof FinanceRoute
   '/login': typeof LoginRoute
   '/overview': typeof OverviewRoute
   '/reports': typeof ReportsRoute
@@ -179,7 +197,9 @@ export interface FileRouteTypes {
     | '/alerts'
     | '/audiences'
     | '/campaigns'
+    | '/chat-history'
     | '/creatives'
+    | '/finance'
     | '/login'
     | '/overview'
     | '/reports'
@@ -198,7 +218,9 @@ export interface FileRouteTypes {
     | '/alerts'
     | '/audiences'
     | '/campaigns'
+    | '/chat-history'
     | '/creatives'
+    | '/finance'
     | '/login'
     | '/overview'
     | '/reports'
@@ -217,7 +239,9 @@ export interface FileRouteTypes {
     | '/alerts'
     | '/audiences'
     | '/campaigns'
+    | '/chat-history'
     | '/creatives'
+    | '/finance'
     | '/login'
     | '/overview'
     | '/reports'
@@ -237,7 +261,9 @@ export interface RootRouteChildren {
   AlertsRoute: typeof AlertsRoute
   AudiencesRoute: typeof AudiencesRoute
   CampaignsRoute: typeof CampaignsRoute
+  ChatHistoryRoute: typeof ChatHistoryRoute
   CreativesRoute: typeof CreativesRoute
+  FinanceRoute: typeof FinanceRoute
   LoginRoute: typeof LoginRoute
   OverviewRoute: typeof OverviewRoute
   ReportsRoute: typeof ReportsRoute
@@ -302,11 +328,25 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof LoginRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/finance': {
+      id: '/finance'
+      path: '/finance'
+      fullPath: '/finance'
+      preLoaderRoute: typeof FinanceRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/creatives': {
       id: '/creatives'
       path: '/creatives'
       fullPath: '/creatives'
       preLoaderRoute: typeof CreativesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/chat-history': {
+      id: '/chat-history'
+      path: '/chat-history'
+      fullPath: '/chat-history'
+      preLoaderRoute: typeof ChatHistoryRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/campaigns': {
@@ -381,7 +421,9 @@ const rootRouteChildren: RootRouteChildren = {
   AlertsRoute: AlertsRoute,
   AudiencesRoute: AudiencesRoute,
   CampaignsRoute: CampaignsRoute,
+  ChatHistoryRoute: ChatHistoryRoute,
   CreativesRoute: CreativesRoute,
+  FinanceRoute: FinanceRoute,
   LoginRoute: LoginRoute,
   OverviewRoute: OverviewRoute,
   ReportsRoute: ReportsRoute,

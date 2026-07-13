@@ -1,10 +1,13 @@
 import { createServerFn } from "@tanstack/react-start";
 import { currentUser } from "@/server/fns/auth";
+import { isSuperadmin } from "@/lib/auth/roles";
 import {
   listConversations as listFn,
   getConversation as getFn,
   renameConversation as renameFn,
   deleteConversation as deleteFn,
+  listAllConversations,
+  getAnyConversation,
 } from "@/server/fns/conversations";
 
 async function requireUid(): Promise<string> {
@@ -28,3 +31,21 @@ export const renameConversation = createServerFn({ method: "POST" })
 export const deleteConversation = createServerFn({ method: "POST" })
   .inputValidator((id: string) => id)
   .handler(async ({ data }) => deleteFn(await requireUid(), data));
+
+// ── Superadmin-only cross-user chat history ─────────────────────────────────────────────────────
+
+export const adminListConversations = createServerFn({ method: "GET" })
+  .inputValidator((userId: string | undefined) => userId)
+  .handler(async ({ data }) => {
+    const me = await currentUser();
+    if (!isSuperadmin(me?.role)) return { error: "Forbidden" as const };
+    return { conversations: await listAllConversations(data || undefined) };
+  });
+
+export const adminGetConversation = createServerFn({ method: "GET" })
+  .inputValidator((id: string) => id)
+  .handler(async ({ data }) => {
+    const me = await currentUser();
+    if (!isSuperadmin(me?.role)) return { error: "Forbidden" as const };
+    return { conversation: await getAnyConversation(data) };
+  });

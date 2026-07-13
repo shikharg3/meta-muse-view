@@ -10,6 +10,8 @@ import {
   setUserStatus,
   setUserRole,
   deleteUser,
+  isAdmin,
+  isSuperadmin,
   type PublicUser,
   type AdminUser,
   type UserStatus,
@@ -27,7 +29,14 @@ export async function currentUser(): Promise<PublicUser | null> {
 /** Throw unless the caller is an approved admin — for sensitive (settings/reset/mapping) fns. */
 export async function requireAdmin(): Promise<PublicUser> {
   const me = await currentUser();
-  if (me?.role !== "admin") throw new Error("Forbidden: admin access required.");
+  if (!me || !isAdmin(me.role)) throw new Error("Forbidden: admin access required.");
+  return me;
+}
+
+/** Throw unless the caller is a superadmin — for cross-user chat history + finance. */
+export async function requireSuperadmin(): Promise<PublicUser> {
+  const me = await currentUser();
+  if (!me || !isSuperadmin(me.role)) throw new Error("Forbidden: superadmin access required.");
   return me;
 }
 
@@ -49,7 +58,7 @@ export interface AuditEntry {
 
 export async function listUsersForAdmin(): Promise<{ users: AdminUser[] } | { error: string }> {
   const me = await currentUser();
-  if (me?.role !== "admin") return { error: "Forbidden" };
+  if (!me || !isAdmin(me.role)) return { error: "Forbidden" };
   return { users: await listAllUsers() };
 }
 
@@ -58,10 +67,12 @@ export async function updateUserStatus(
   status: UserStatus,
 ): Promise<{ ok: boolean; error?: string }> {
   const me = await currentUser();
-  if (me?.role !== "admin") return { ok: false, error: "Forbidden" };
+  if (!me || !isAdmin(me.role)) return { ok: false, error: "Forbidden" };
   if (me.id === id && status !== "approved")
     return { ok: false, error: "You can't change your own access." };
   const target = (await listAllUsers()).find((u) => u.id === id);
+  if (target?.role === "superadmin" && !isSuperadmin(me.role))
+    return { ok: false, error: "Only a superadmin can change a superadmin's access." };
   await setUserStatus(id, status);
   await audit(`user.${status}`, `${status} ${target?.email ?? id}`);
   return { ok: true };
@@ -72,9 +83,12 @@ export async function updateUserRole(
   role: UserRole,
 ): Promise<{ ok: boolean; error?: string }> {
   const me = await currentUser();
-  if (me?.role !== "admin") return { ok: false, error: "Forbidden" };
+  if (!me || !isAdmin(me.role)) return { ok: false, error: "Forbidden" };
   if (me.id === id) return { ok: false, error: "You can't change your own role." };
   const target = (await listAllUsers()).find((u) => u.id === id);
+  // Only a superadmin may grant or remove the superadmin role.
+  if ((role === "superadmin" || target?.role === "superadmin") && !isSuperadmin(me.role))
+    return { ok: false, error: "Only a superadmin can manage the superadmin role." };
   await setUserRole(id, role);
   await audit("user.role", `set ${target?.email ?? id} to ${role}`);
   return { ok: true };
@@ -82,9 +96,11 @@ export async function updateUserRole(
 
 export async function removeUser(id: string): Promise<{ ok: boolean; error?: string }> {
   const me = await currentUser();
-  if (me?.role !== "admin") return { ok: false, error: "Forbidden" };
+  if (!me || !isAdmin(me.role)) return { ok: false, error: "Forbidden" };
   if (me.id === id) return { ok: false, error: "You can't delete your own account." };
   const target = (await listAllUsers()).find((u) => u.id === id);
+  if (target?.role === "superadmin" && !isSuperadmin(me.role))
+    return { ok: false, error: "Only a superadmin can delete a superadmin." };
   await deleteUser(id);
   await audit("user.delete", `deleted ${target?.email ?? id}`);
   return { ok: true };
@@ -92,7 +108,7 @@ export async function removeUser(id: string): Promise<{ ok: boolean; error?: str
 
 export async function listAuditLog(): Promise<{ entries: AuditEntry[] } | { error: string }> {
   const me = await currentUser();
-  if (me?.role !== "admin") return { error: "Forbidden" };
+  if (!me || !isAdmin(me.role)) return { error: "Forbidden" };
   const rows = await db
     .select()
     .from(schema.auditLog)

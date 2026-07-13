@@ -21,6 +21,7 @@ import { getAccountOptions, getBusinessSummary } from "@/lib/api/dashboard";
 import { getClientFilterOptions } from "@/lib/api/clients";
 import { getCurrentUser } from "@/lib/api/auth";
 import type { PublicUser } from "@/lib/auth/users";
+import { isAdmin } from "@/lib/auth/roles";
 
 function NotFoundComponent() {
   return (
@@ -196,7 +197,7 @@ function RootComponent() {
               business={business!}
               accounts={accounts}
               filterClients={filterClients}
-              isAdmin={user.role === "admin"}
+              isAdmin={isAdmin(user.role)}
             />
             <StaleDataBanner />
             <main className="flex-1 overflow-x-hidden">

@@ -12,6 +12,7 @@ import {
   testConnection,
 } from "@/lib/api/settings";
 import { getCurrentUser } from "@/lib/api/auth";
+import { isAdmin } from "@/lib/auth/roles";
 import { CHAT_MODELS, CHAT_EFFORTS } from "@/lib/chat-options";
 import {
   Activity,
@@ -29,7 +30,7 @@ export const Route = createFileRoute("/settings")({
   head: () => ({ meta: [{ title: "Settings — MetaConsole" }] }),
   loader: async () => {
     const me = await getCurrentUser();
-    if (me?.role !== "admin") throw redirect({ to: "/" });
+    if (!isAdmin(me?.role)) throw redirect({ to: "/" });
     return await getSettings();
   },
   component: Settings,

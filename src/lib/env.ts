@@ -34,6 +34,16 @@ const schema = z.object({
         .map((x) => x.trim().toLowerCase())
         .filter(Boolean),
     ),
+  // Emails auto-promoted to SUPERADMIN (a superset of admin) on sign-up/login (comma-separated).
+  AUTH_SUPERADMINS: z
+    .string()
+    .default("")
+    .transform((s) =>
+      s
+        .split(",")
+        .map((x) => x.trim().toLowerCase())
+        .filter(Boolean),
+    ),
 });
 
 export type Env = z.infer<typeof schema>;

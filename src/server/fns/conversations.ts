@@ -1,4 +1,4 @@
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { db, schema } from "@/db/client";
 import type { ChatResult, ToolTrace } from "@/server/agent/chat";
 
@@ -142,4 +142,106 @@ export async function appendTurn(
     .update(schema.conversations)
     .set({ updatedAt: new Date() })
     .where(eq(schema.conversations.id, conversationId));
+}
+
+// ── Superadmin-only cross-user views (see requireSuperadmin gate in the API layer) ──────────────
+
+export interface AdminConversation {
+  id: string;
+  title: string;
+  updatedAt: string;
+  userId: string;
+  userEmail: string;
+  userName: string | null;
+  messages: number;
+  costUsd: number;
+}
+
+/** Every conversation across ALL users (optionally one user), with per-conversation message count
+ * and total cost. Superadmin-only — bypasses the per-user ownership scoping above. */
+export async function listAllConversations(userId?: string): Promise<AdminConversation[]> {
+  const convs = await db
+    .select({
+      id: schema.conversations.id,
+      title: schema.conversations.title,
+      updatedAt: schema.conversations.updatedAt,
+      userId: schema.conversations.userId,
+      email: schema.users.email,
+      name: schema.users.name,
+    })
+    .from(schema.conversations)
+    .innerJoin(schema.users, eq(schema.conversations.userId, schema.users.id))
+    .where(userId ? eq(schema.conversations.userId, userId) : undefined)
+    .orderBy(desc(schema.conversations.updatedAt));
+  if (convs.length === 0) return [];
+  const agg = await db
+    .select({
+      conversationId: schema.chatMessages.conversationId,
+      messages: sql<number>`count(*)`,
+      cost: sql<number>`coalesce(sum(${schema.chatMessages.costUsd}),0)`,
+    })
+    .from(schema.chatMessages)
+    .groupBy(schema.chatMessages.conversationId);
+  const aggById = new Map(agg.map((a) => [a.conversationId, a]));
+  return convs.map((c) => {
+    const a = aggById.get(c.id);
+    return {
+      id: c.id,
+      title: c.title,
+      updatedAt: c.updatedAt.toISOString(),
+      userId: c.userId,
+      userEmail: c.email,
+      userName: c.name,
+      messages: Number(a?.messages ?? 0),
+      costUsd: Number(a?.cost ?? 0),
+    };
+  });
+}
+
+export interface AdminConversationDetail {
+  id: string;
+  title: string;
+  userEmail: string;
+  userName: string | null;
+  messages: StoredMessage[];
+}
+
+/** Full message transcript for ANY conversation (no ownership check). Superadmin-only. */
+export async function getAnyConversation(
+  conversationId: string,
+): Promise<AdminConversationDetail | null> {
+  const [conv] = await db
+    .select({
+      id: schema.conversations.id,
+      title: schema.conversations.title,
+      email: schema.users.email,
+      name: schema.users.name,
+    })
+    .from(schema.conversations)
+    .innerJoin(schema.users, eq(schema.conversations.userId, schema.users.id))
+    .where(eq(schema.conversations.id, conversationId))
+    .limit(1);
+  if (!conv) return null;
+  const rows = await db
+    .select({
+      role: schema.chatMessages.role,
+      content: schema.chatMessages.content,
+      payload: schema.chatMessages.payload,
+      costUsd: schema.chatMessages.costUsd,
+    })
+    .from(schema.chatMessages)
+    .where(eq(schema.chatMessages.conversationId, conversationId))
+    .orderBy(asc(schema.chatMessages.createdAt));
+  return {
+    id: conv.id,
+    title: conv.title,
+    userEmail: conv.email,
+    userName: conv.name,
+    messages: rows.map((r) => ({
+      role: r.role as StoredMessage["role"],
+      content: r.content,
+      payload: r.payload as MessagePayload | null,
+      costUsd: r.costUsd,
+    })),
+  };
 }

@@ -7,6 +7,7 @@ import { ReportBuilder, type ReportRequest } from "@/components/chat/ReportBuild
 import { ReportBlock } from "@/components/chat/ReportBlock";
 import { getClientDetail, getClientBudgets, mutateClientAccounts } from "@/lib/api/clients";
 import { getCurrentUser } from "@/lib/api/auth";
+import { isAdmin } from "@/lib/auth/roles";
 import { generateClientReport } from "@/lib/api/report";
 import type { ReportPayload } from "@/server/agent/report";
 import { rangeSearch, rangeSpec, rangeLabel } from "@/lib/range";
@@ -22,7 +23,7 @@ export const Route = createFileRoute("/clients/$id")({
       getCurrentUser(),
     ]);
     if (!detail) throw notFound();
-    return { detail, budgets, isAdmin: me?.role === "admin" };
+    return { detail, budgets, isAdmin: isAdmin(me?.role) };
   },
   head: ({ loaderData }) => ({
     meta: [{ title: `${loaderData?.detail.name ?? "Client"} — MetaConsole` }],

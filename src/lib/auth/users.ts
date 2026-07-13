@@ -3,9 +3,11 @@ import { randomUUID } from "node:crypto";
 import { db, schema } from "@/db/client";
 import { env } from "@/lib/env";
 import { hashPassword, verifyPassword } from "./password";
+import { isAdmin, isSuperadmin, type UserRole } from "./roles";
 
 export type UserRow = typeof schema.users.$inferSelect;
-export type UserRole = "admin" | "member";
+export { isAdmin, isSuperadmin };
+export type { UserRole };
 export type UserStatus = "pending" | "approved" | "rejected";
 
 export interface PublicUser {
@@ -29,20 +31,20 @@ export function toPublicUser(u: UserRow): PublicUser {
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 const isBootstrapAdmin = (email: string): boolean =>
   env().AUTH_BOOTSTRAP_ADMINS.includes(email.toLowerCase());
+const isSuperadminEmail = (email: string): boolean =>
+  env().AUTH_SUPERADMINS.includes(email.toLowerCase());
 
 async function isFirstUser(): Promise<boolean> {
   const [r] = await db.select({ n: sql<number>`count(*)` }).from(schema.users);
   return Number(r?.n ?? 0) === 0;
 }
 
-/**
- * Initial admin policy: if bootstrap admin email(s) are configured, ONLY those
- * are admins; otherwise the first account ever created bootstraps as admin.
- */
-async function shouldBeAdmin(email: string): Promise<boolean> {
+/** The role an email bootstraps into: superadmin > admin, else null (a normal pending member). */
+async function bootstrapRole(email: string): Promise<UserRole | null> {
+  if (isSuperadminEmail(email)) return "superadmin";
   const admins = env().AUTH_BOOTSTRAP_ADMINS;
-  if (admins.length) return admins.includes(email.toLowerCase());
-  return await isFirstUser();
+  if (admins.length) return admins.includes(email.toLowerCase()) ? "admin" : null;
+  return (await isFirstUser()) ? "admin" : null;
 }
 
 export async function findUserById(id: string): Promise<UserRow | null> {
@@ -59,14 +61,19 @@ async function findByEmail(email: string): Promise<UserRow | null> {
 
 export type AuthOutcome = { ok: true; user: UserRow } | { ok: false; error: string };
 
-/** Promote a bootstrap-admin email to admin/approved even if it signed up earlier. */
+/** Promote a bootstrap-admin / superadmin email to its role + approved even if it signed up earlier. */
 async function ensureBootstrap(u: UserRow): Promise<UserRow> {
-  if (isBootstrapAdmin(u.email) && (u.role !== "admin" || u.status !== "approved")) {
+  const target: UserRole | null = isSuperadminEmail(u.email)
+    ? "superadmin"
+    : isBootstrapAdmin(u.email)
+      ? "admin"
+      : null;
+  if (target && (u.role !== target || u.status !== "approved")) {
     await db
       .update(schema.users)
-      .set({ role: "admin", status: "approved" })
+      .set({ role: target, status: "approved" })
       .where(eq(schema.users.id, u.id));
-    return { ...u, role: "admin", status: "approved" };
+    return { ...u, role: target, status: "approved" };
   }
   return u;
 }
@@ -81,7 +88,7 @@ export async function signupWithPassword(
   if (password.length < 8) return { ok: false, error: "Password must be at least 8 characters." };
   if (await findByEmail(e))
     return { ok: false, error: "An account with that email already exists — try logging in." };
-  const admin = await shouldBeAdmin(e);
+  const bootRole = await bootstrapRole(e);
   const [u] = await db
     .insert(schema.users)
     .values({
@@ -89,8 +96,8 @@ export async function signupWithPassword(
       email: e,
       name: name.trim() || null,
       passwordHash: await hashPassword(password),
-      role: admin ? "admin" : "member",
-      status: admin ? "approved" : "pending",
+      role: bootRole ?? "member",
+      status: bootRole ? "approved" : "pending",
       lastLoginAt: new Date(),
     })
     .returning();

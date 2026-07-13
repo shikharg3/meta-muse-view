@@ -14,6 +14,7 @@ import type { Campaign, Kpis, AccountStatus } from "@/lib/types";
 import { disableReasonLabel } from "@/lib/format";
 import { brandTitles } from "@/notion/parse";
 import { currentUser, audit } from "@/server/fns/auth";
+import { isAdmin } from "@/lib/auth/users";
 
 const num = (v: unknown): number => Number(v ?? 0);
 
@@ -300,7 +301,7 @@ export async function updateClientAccounts(
   accountId: string,
 ): Promise<{ ok: boolean; error?: string }> {
   const me = await currentUser();
-  if (me?.role !== "admin") return { ok: false, error: "Admins only." };
+  if (!me || !isAdmin(me.role)) return { ok: false, error: "Admins only." };
   const id = normalizeAccountId(accountId);
   if (!id) return { ok: false, error: "Invalid account id" };
   const row = await getClientRow(clientId);

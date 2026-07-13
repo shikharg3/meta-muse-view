@@ -2,6 +2,7 @@ import { createFileRoute, redirect } from "@tanstack/react-router";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { getSyncStatus } from "@/lib/api/status";
 import { getCurrentUser } from "@/lib/api/auth";
+import { isAdmin } from "@/lib/auth/roles";
 import { fmtRelTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { Database, RefreshCw, AlertTriangle, CheckCircle2, ShieldAlert } from "lucide-react";
@@ -11,7 +12,7 @@ export const Route = createFileRoute("/sync")({
   head: () => ({ meta: [{ title: "Sync status — MetaConsole" }] }),
   loader: async () => {
     const me = await getCurrentUser();
-    if (me?.role !== "admin") throw redirect({ to: "/" });
+    if (!isAdmin(me?.role)) throw redirect({ to: "/" });
     return await getSyncStatus();
   },
   component: SyncStatus,

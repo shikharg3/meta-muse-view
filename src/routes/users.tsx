@@ -10,6 +10,7 @@ import {
 } from "@/lib/api/auth";
 import { cn } from "@/lib/utils";
 import type { UserStatus, UserRole } from "@/lib/auth/users";
+import { isSuperadmin } from "@/lib/auth/roles";
 
 export const Route = createFileRoute("/users")({
   head: () => ({ meta: [{ title: "Users — MetaConsole" }] }),
@@ -120,7 +121,7 @@ function UsersAdmin() {
                         Revoke
                       </button>
                     )}
-                    {!self && (
+                    {!self && !isSuperadmin(u.role) && (
                       <button
                         onClick={() => void setRole(u.id, u.role === "admin" ? "member" : "admin")}
                         className="h-7 px-2.5 rounded-md border border-border text-xs font-medium hover:bg-accent"

@@ -14,6 +14,8 @@ import {
   UserCog,
   RefreshCw,
   LogOut,
+  DollarSign,
+  MessagesSquare,
 } from "lucide-react";
 import {
   Sidebar,
@@ -28,6 +30,7 @@ import {
   SidebarFooter,
 } from "@/components/ui/sidebar";
 import type { PublicUser } from "@/lib/auth/users";
+import { isAdmin, isSuperadmin } from "@/lib/auth/roles";
 import { MetaStatus } from "./MetaStatus";
 
 const main = [
@@ -46,15 +49,22 @@ const main = [
 export function AppSidebar({ user }: { user: PublicUser }) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const isActive = (url: string) => (url === "/" ? pathname === "/" : pathname.startsWith(url));
-  // Settings + Users are admin-only.
-  const systemItems =
-    user.role === "admin"
+  // System nav: Users/Sync/Settings for admins (+ superadmins); Finance/Chat History superadmin-only.
+  const systemItems = [
+    ...(isAdmin(user.role)
       ? [
           { title: "Users", url: "/users", icon: UserCog },
           { title: "Sync", url: "/sync", icon: RefreshCw },
           { title: "Settings", url: "/settings", icon: Settings },
         ]
-      : [];
+      : []),
+    ...(isSuperadmin(user.role)
+      ? [
+          { title: "Finance", url: "/finance", icon: DollarSign },
+          { title: "Chat History", url: "/chat-history", icon: MessagesSquare },
+        ]
+      : []),
+  ];
 
   return (
     <Sidebar collapsible="icon">
