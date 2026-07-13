@@ -51,6 +51,7 @@ async function seed() {
     name: "Wild #5",
     objective: "OUTCOME_LEADS",
     status: "ACTIVE",
+    dailyBudget: 5000, // cents → $50/day target
   });
   const today = new Date().toISOString().slice(0, 10);
   await db.insert(schema.insightsDaily).values([
@@ -360,11 +361,19 @@ test("list_active_campaigns returns spending campaigns mapped to their current c
     name: string;
     client: string | null;
     spend: number;
+    dailyAvgSpend: number;
+    dailyBudget: number | null;
+    accountStatus: string;
+    events: { label: string; count: number }[];
   }[];
   const wild = camps.find((c) => c.name === "Wild #5");
   expect(wild).toBeDefined();
   expect(wild!.spend).toBeGreaterThan(0);
   expect(wild!.client).toBe("wildcasino.ag"); // current client, not an archived board entity
+  expect(wild!.dailyAvgSpend).toBeCloseTo(200 / 7); // window spend / 7 days
+  expect(wild!.dailyBudget).toBeCloseTo(50); // 5000 cents → $50/day target
+  expect(wild!.accountStatus).toBe("ACTIVE");
+  expect(wild!.events.find((e) => e.label === "Leads")?.count).toBe(20);
 }, 20000);
 
 test("get_ad_sets returns per-ad-set conversions and sums by name (state) across campaigns", async () => {

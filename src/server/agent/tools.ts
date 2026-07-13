@@ -108,7 +108,7 @@ export const TOOLS: AnthropicTool[] = [
   {
     name: "list_active_campaigns",
     description:
-      "List EVERY campaign that spent more than $0 over the window (default last 30 days; for a specific day such as yesterday pass since=until=that date), with its owning ad account, owning client, Meta status, spend, impressions, CTR, CPC, and objective-aware results — sorted by spend. Use this for any 'which campaigns are active / running / spending' question. Unlike get_overview (which returns only the top few campaigns), this returns them ALL.",
+      "Full breakdown of EVERY campaign that spent more than $0 over the window (default last 30 days; for a specific day such as yesterday pass since=until=that date), sorted by spend. Each row carries: owning ad account and its Meta account status (ACTIVE / PAUSED / DISABLED = suspended, with reason), owning client, campaign status, spend, dailyAvgSpend (spend ÷ days), dailyBudget (the daily TARGET budget in $ — campaign CBO budget or summed active ad-set budgets), impressions, clicks, CTR, CPC, objective results, and `events` (the FULL de-duplicated conversion breakdown: purchases, registrations, leads, …). Use this for ANY request to break down / summarize the active (spending) campaigns — it returns everything in ONE call. NEVER loop get_client_stats per client to assemble this; unlike get_overview (top few only), this returns them ALL.",
     input_schema: {
       type: "object",
       properties: {

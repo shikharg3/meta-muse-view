@@ -419,47 +419,131 @@ export async function fetchClientCampaigns(
     .orderBy(schema.campaigns.name);
 }
 
+export interface ActiveCampaign {
+  name: string;
+  account: string;
+  /** Meta account status — DISABLED = suspended/disabled by Meta (with reason). */
+  accountStatus: AccountStatus;
+  accountDisableReason: string | null;
+  client: string | null;
+  /** Campaign status (ACTIVE / PAUSED / …). */
+  status: string | null;
+  spend: number;
+  /** Window spend / number of days in the window. */
+  dailyAvgSpend: number;
+  /** Daily target budget ($): the campaign CBO daily budget, else summed active ad-set budgets (ABO); null if neither is set. */
+  dailyBudget: number | null;
+  impressions: number;
+  clicks: number;
+  ctr: number;
+  cpc: number;
+  results: number;
+  resultLabel: string;
+  /** De-duplicated conversions (purchases, registrations, leads, …) for the campaign over the window. */
+  events: ClientEvent[];
+}
+
 /**
- * Every campaign that spent > $0 over the window, mapped to its owning ad account and CURRENT
- * client — powers the chat "which campaigns were active" question. Returns ALL active campaigns
- * (not a top-N), and resolves the client through non-archived rows only so stale board entities
- * (e.g. a client that churned but whose campaigns now belong to another) don't surface.
+ * Every campaign that spent > $0 over the window, enriched for the recurring "give me a full
+ * breakdown of the active campaigns" ask: owning account (+ its Meta status), current client, daily
+ * average + daily target (budget) spend, core KPIs, and the full conversion breakdown — all in ONE
+ * call so the assistant never loops get_client_stats per client. Client resolves through
+ * non-archived rows only so stale board entities don't surface.
  */
-export async function fetchActiveCampaigns(w: DateWindow): Promise<
-  {
-    name: string;
-    account: string;
-    client: string | null;
-    status: string | null;
-    spend: number;
-    impressions: number;
-    ctr: number;
-    cpc: number;
-    results: number;
-    resultLabel: string;
-  }[]
-> {
-  const campaigns = await fetchCampaigns(w);
-  const clients = (await db.select().from(schema.clients)).filter((c) => c.removedAt == null);
-  const clientByAccount = new Map<string, string>();
-  for (const cl of clients)
-    for (const a of effectiveAccountIds(cl))
-      if (!clientByAccount.has(a)) clientByAccount.set(a, cl.name);
-  return campaigns
+export async function fetchActiveCampaigns(w: DateWindow): Promise<ActiveCampaign[]> {
+  const active = (await fetchCampaigns(w))
     .filter((c) => c.spend > 0)
-    .sort((a, b) => b.spend - a.spend)
-    .map((c) => ({
+    .sort((a, b) => b.spend - a.spend);
+  if (active.length === 0) return [];
+  const ids = active.map((c) => c.id);
+  const acctIds = [...new Set(active.map((c) => c.accountId))];
+  const [clientRows, acctRows, insightRows, campBudgets, adsetBudgets] = await Promise.all([
+    db.select().from(schema.clients),
+    db
+      .select({
+        id: schema.accounts.id,
+        status: schema.accounts.status,
+        disableReason: schema.accounts.disableReason,
+      })
+      .from(schema.accounts)
+      .where(inArray(schema.accounts.id, acctIds)),
+    db
+      .select({
+        entityId: schema.insightsDaily.entityId,
+        clicks: schema.insightsDaily.clicks,
+        actions: schema.insightsDaily.actions,
+        actionValues: schema.insightsDaily.actionValues,
+      })
+      .from(schema.insightsDaily)
+      .where(
+        and(
+          eq(schema.insightsDaily.level, "campaign"),
+          inArray(schema.insightsDaily.entityId, ids),
+          gte(schema.insightsDaily.date, w.since),
+          lte(schema.insightsDaily.date, w.until),
+        ),
+      ),
+    db
+      .select({ id: schema.campaigns.id, dailyBudget: schema.campaigns.dailyBudget })
+      .from(schema.campaigns)
+      .where(inArray(schema.campaigns.id, ids)),
+    db
+      .select({
+        campaignId: schema.adSets.campaignId,
+        dailyBudget: schema.adSets.dailyBudget,
+        effectiveStatus: schema.adSets.effectiveStatus,
+      })
+      .from(schema.adSets)
+      .where(inArray(schema.adSets.campaignId, ids)),
+  ]);
+  const clientByAccount = new Map<string, string>();
+  for (const cl of clientRows)
+    if (cl.removedAt == null)
+      for (const a of effectiveAccountIds(cl))
+        if (!clientByAccount.has(a)) clientByAccount.set(a, cl.name);
+  const acctById = new Map(acctRows.map((a) => [a.id, a]));
+  const clicksById = new Map<string, number>();
+  const rowsById = new Map<string, { actions: unknown; actionValues: unknown }[]>();
+  for (const r of insightRows) {
+    clicksById.set(r.entityId, (clicksById.get(r.entityId) ?? 0) + num(r.clicks));
+    const arr = rowsById.get(r.entityId) ?? [];
+    arr.push({ actions: r.actions, actionValues: r.actionValues });
+    rowsById.set(r.entityId, arr);
+  }
+  const campBudgetById = new Map(campBudgets.map((c) => [c.id, c.dailyBudget]));
+  const adsetSumById = new Map<string, number>();
+  for (const s of adsetBudgets) {
+    if (s.dailyBudget == null) continue;
+    if (s.effectiveStatus && s.effectiveStatus !== "ACTIVE") continue; // only budgets eligible to spend
+    adsetSumById.set(s.campaignId, (adsetSumById.get(s.campaignId) ?? 0) + Number(s.dailyBudget));
+  }
+  const days = Math.max(1, Math.round((Date.parse(w.until) - Date.parse(w.since)) / 864e5) + 1);
+  const round2 = (n: number) => Math.round(n * 100) / 100;
+  return active.map((c) => {
+    const acct = acctById.get(c.accountId);
+    const status = accountStatus(acct?.status);
+    const cents =
+      campBudgetById.get(c.id) ?? (adsetSumById.has(c.id) ? adsetSumById.get(c.id) : null);
+    return {
       name: c.name,
       account: c.accountName,
+      accountStatus: status,
+      accountDisableReason:
+        status === "DISABLED" ? disableReasonLabel(acct?.disableReason ?? null) : null,
       client: clientByAccount.get(c.accountId) ?? null,
       status: c.status,
-      spend: c.spend,
+      spend: round2(c.spend),
+      dailyAvgSpend: round2(c.spend / days),
+      dailyBudget: cents != null ? round2(Number(cents) / 100) : null,
       impressions: c.impressions,
-      ctr: c.ctr,
-      cpc: c.cpc,
+      clicks: clicksById.get(c.id) ?? 0,
+      ctr: round2(c.ctr),
+      cpc: round2(c.cpc),
       results: c.results,
       resultLabel: c.resultLabel,
-    }));
+      events: canonicalEvents(rowsById.get(c.id) ?? []),
+    };
+  });
 }
 
 export interface AccountDirectoryRow {
