@@ -9,7 +9,7 @@ export interface DatasetProgress {
   remainingChunks: number; // 90-day chunk-advances left to reach the retention floor
   deepest: string | null; // oldest date any account has reached
   shallowest: string | null; // oldest date the least-deep account has reached
-  pctComplete: number; // 0-100, average coverage of the target window
+  pctComplete: number; // 0-100, average coverage of each account's ACHIEVABLE window (creation→today)
 }
 
 export interface SyncEventView {
@@ -48,13 +48,31 @@ export async function backfillProgress(
   prefix: string,
   targetDays: number,
 ): Promise<DatasetProgress> {
+  // A backfill is complete once it reaches an account's floor, which backfillStep clamps to the
+  // MORE RECENT of the retention floor (today − targetDays) and the account's creation date. The
+  // meter must use the SAME floor, or accounts younger than the retention window look perpetually
+  // incomplete for history that never existed. `pct` measures coverage of each account's achievable
+  // span (creation→today), so 100% means "nothing left to fetch", not "37 months captured".
   const rows = (await db.execute(sql`
+    WITH cp AS (
+      SELECT c.backfilled_through AS bt,
+             greatest(
+               current_date - ${targetDays}::int,
+               coalesce(a.created_time::date, current_date - ${targetDays}::int)
+             ) AS floor
+      FROM sync_checkpoints c
+      LEFT JOIN accounts a ON a.id = c.account_id
+      WHERE c.dataset LIKE ${prefix}
+    )
     SELECT
-      coalesce(sum(greatest(0, ceil((backfilled_through - (current_date - ${targetDays}::int))::numeric / 90))), 0)::int AS remaining,
-      min(backfilled_through)::text AS deepest,
-      max(backfilled_through)::text AS shallowest,
-      coalesce(avg(least(1, greatest(0, (current_date - backfilled_through))::numeric / ${targetDays}::int)), 0)::float AS pct
-    FROM sync_checkpoints WHERE dataset LIKE ${prefix}
+      coalesce(sum(greatest(0, ceil((bt - floor)::numeric / 90))), 0)::int AS remaining,
+      min(bt)::text AS deepest,
+      max(bt)::text AS shallowest,
+      coalesce(avg(
+        CASE WHEN (current_date - floor) <= 0 THEN 1
+             ELSE least(1, greatest(0, (current_date - bt))::numeric / (current_date - floor)) END
+      ), 0)::float AS pct
+    FROM cp
   `)) as unknown as ProgressRow[];
   const r = rows[0];
   return {
