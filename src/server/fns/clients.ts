@@ -564,6 +564,9 @@ export interface AccountDirectory {
   // When the Notion client→account mapping was last synced; board edits after this aren't reflected.
   mappingSyncedAt: string | null;
   accounts: AccountDirectoryRow[];
+  // Designated Active Account IDs (from live clients) our Meta token can't see — not returned by
+  // /me/adaccounts, so we have NO status for them (they need assigning to the system user).
+  unsyncedActiveAccounts: { client: string; clientStatus: string | null; accountId: string }[];
 }
 
 /**
@@ -602,8 +605,25 @@ export async function fetchAccountDirectory(): Promise<AccountDirectory> {
   const disabledSince = await disabledSinceMap(
     accts.filter((a) => accountStatus(a.status) === "DISABLED").map((a) => a.id),
   );
+  const acctIds = new Set(accts.map((a) => a.id));
+  const unsyncedActiveAccounts: {
+    client: string;
+    clientStatus: string | null;
+    accountId: string;
+  }[] = [];
+  for (const c of live) {
+    for (const aid of (c.notionActiveAccountIds as string[] | null) ?? []) {
+      if (!acctIds.has(aid))
+        unsyncedActiveAccounts.push({
+          client: c.name,
+          clientStatus: c.status ?? null,
+          accountId: aid,
+        });
+    }
+  }
   return {
     mappingSyncedAt: mappingSyncedAt?.toISOString() ?? null,
+    unsyncedActiveAccounts,
     accounts: accts.map((a) => {
       const status = accountStatus(a.status);
       const o = owner.get(a.id);

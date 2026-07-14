@@ -111,19 +111,25 @@ const STATUS_PRIORITY: Record<string, number> = {
 /**
  * Group campaigns into clients. A campaign groups by its linked Clients-board entity (the
  * "Client Account" relation, name resolved via `clientNames`); an unlinked campaign falls back to
- * grouping by its own title. Each client gets the union of every ad account across its campaigns,
- * the strongest status, and the current engagement's budget/dates (the latest-end-date campaign).
+ * grouping by its own title. Each client gets the union of every ad account across its campaigns
+ * (`accountIds`), the strongest status, and the current engagement's budget/dates (latest end date).
+ * `activeAccountIds` is the "Active Account ID" from ONLY the rows matching the client's winning
+ * status, so a finished row's stale active account never overrides the currently-live one.
  */
 export function clubClients(
   rows: ParsedCampaignRow[],
   clientNames: Map<string, string>,
 ): ClubbedClient[] {
-  const byKey = new Map<string, ClubbedClient>();
-  for (const row of rows) {
-    // Prefer the linked client entity; fall back to the campaign title when unlinked.
+  const clubKey = (row: ParsedCampaignRow): string => {
     const relId = row.clientRelationIds[0];
     const linkedName = relId ? clientNames.get(relId) : undefined;
-    const key = linkedName && relId ? relId : clientKey(row.title);
+    return linkedName && relId ? relId : clientKey(row.title);
+  };
+  const byKey = new Map<string, ClubbedClient>();
+  for (const row of rows) {
+    const key = clubKey(row);
+    const relId = row.clientRelationIds[0];
+    const linkedName = relId ? clientNames.get(relId) : undefined;
     const name = (linkedName ?? row.title.split("(")[0]).replace(/\s+/g, " ").trim();
     let c = byKey.get(key);
     if (!c) {
@@ -141,7 +147,6 @@ export function clubClients(
       byKey.set(key, c);
     }
     c.accountIds = [...new Set([...c.accountIds, ...row.activeIds, ...row.otherIds])];
-    c.activeAccountIds = [...new Set([...c.activeAccountIds, ...row.activeIds])];
     c.pages.push({ pageId: row.pageId, title: row.title });
     if ((STATUS_PRIORITY[row.status ?? ""] ?? 0) > (STATUS_PRIORITY[c.status ?? ""] ?? 0)) {
       c.status = row.status;
@@ -156,6 +161,13 @@ export function clubClients(
       c.budget = row.budget;
       c.startDate = row.startDate;
     }
+  }
+  // Second pass: the active account(s) come ONLY from rows whose status matches the client's final
+  // winning status — an old "Full Budget Finished" row must not contribute a stale Active Account ID.
+  for (const row of rows) {
+    const c = byKey.get(clubKey(row));
+    if (c && row.status === c.status)
+      c.activeAccountIds = [...new Set([...c.activeAccountIds, ...row.activeIds])];
   }
   return [...byKey.values()];
 }

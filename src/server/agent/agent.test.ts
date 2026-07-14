@@ -27,6 +27,7 @@ async function seed() {
       name: "playW3 / be the boss",
       status: "Live",
       notionAccountIds: ["act_999"],
+      notionActiveAccountIds: ["act_999"], // act_999 is not assigned to the Meta token (not in accounts)
     },
     {
       id: "old-farside",
@@ -239,8 +240,9 @@ test("list_accounts joins Meta status to the owning client's Notion status (susp
     .update(schema.clients)
     .set({ notionAccountIds: ["act_333", "act_111"] })
     .where(eq(schema.clients.id, "old-farside"));
-  const { accounts: rows } = (await runTool("list_accounts", {})) as {
+  const { accounts: rows, unsyncedActiveAccounts } = (await runTool("list_accounts", {})) as {
     mappingSyncedAt: string | null;
+    unsyncedActiveAccounts: { client: string; clientStatus: string | null; accountId: string }[];
     accounts: {
       id: string;
       status: string;
@@ -250,6 +252,14 @@ test("list_accounts joins Meta status to the owning client's Notion status (susp
       isActiveAccount: boolean;
     }[];
   };
+  // A designated Active Account ID not assigned to the Meta token surfaces as unsynced (no status),
+  // never as a fabricated active/disabled account.
+  expect(unsyncedActiveAccounts).toContainEqual({
+    client: "playW3 / be the boss",
+    clientStatus: "Live",
+    accountId: "act_999",
+  });
+  expect(rows.some((r) => r.id === "act_999")).toBe(false);
   expect(rows.find((r) => r.id === "act_111")).toMatchObject({
     status: "DISABLED",
     disableReason: "Ads integrity policy",

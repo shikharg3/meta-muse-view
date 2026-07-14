@@ -116,6 +116,42 @@ test("clubClients groups differently-titled campaigns under their linked client 
   expect(sweat.activeAccountIds).toEqual(["act_1540281067638398"]);
 });
 
+test("clubClients takes the active account from the winning-status row, not finished rows", () => {
+  // Same client, two rows: a current Live row and an old Full Budget Finished row with a stale active.
+  const clubbed = clubClients(
+    [
+      {
+        pageId: "p1",
+        title: "bspin.io (June/July)",
+        clientRelationIds: [],
+        activeIds: ["act_current"],
+        otherIds: ["act_other"],
+        status: "Live",
+        budget: null,
+        startDate: null,
+        endDate: "2026-07-31",
+      },
+      {
+        pageId: "p2",
+        title: "bspin.io (April)",
+        clientRelationIds: [],
+        activeIds: ["act_stale"],
+        otherIds: [],
+        status: "Full Budget Finished",
+        budget: null,
+        startDate: null,
+        endDate: "2026-04-30",
+      },
+    ],
+    new Map(),
+  );
+  expect(clubbed).toHaveLength(1);
+  const c = clubbed[0];
+  expect(c.status).toBe("Live");
+  expect(c.activeAccountIds).toEqual(["act_current"]); // the finished row's stale active is excluded
+  expect(c.accountIds.sort()).toEqual(["act_current", "act_other", "act_stale"].sort()); // all tracked
+});
+
 test("parseCampaignRow extracts columns incl. client relation and skips titleless rows", () => {
   const page = {
     id: "p1",
