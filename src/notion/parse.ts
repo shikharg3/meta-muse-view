@@ -60,6 +60,7 @@ export interface ClubbedClient {
   name: string;
   status: string | null;
   accountIds: string[];
+  activeAccountIds: string[]; // subset from the "Active Account ID" column ("Other ad accounts" excluded)
   pages: { pageId: string; title: string }[];
   budget: number | null;
   startDate: string | null;
@@ -131,6 +132,7 @@ export function clubClients(
         name,
         status: row.status,
         accountIds: [],
+        activeAccountIds: [],
         pages: [],
         budget: null,
         startDate: null,
@@ -139,6 +141,7 @@ export function clubClients(
       byKey.set(key, c);
     }
     c.accountIds = [...new Set([...c.accountIds, ...row.activeIds, ...row.otherIds])];
+    c.activeAccountIds = [...new Set([...c.activeAccountIds, ...row.activeIds])];
     c.pages.push({ pageId: row.pageId, title: row.title });
     if ((STATUS_PRIORITY[row.status ?? ""] ?? 0) > (STATUS_PRIORITY[c.status ?? ""] ?? 0)) {
       c.status = row.status;

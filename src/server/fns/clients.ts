@@ -555,6 +555,9 @@ export interface AccountDirectoryRow {
   disabledSince: string | null; // date it flipped to DISABLED (YYYY-MM-DD), or null if not synced
   client: string | null; // client that owns this account, if mapped
   clientStatus: string | null; // that client's Notion board status (Live/Paused/…)
+  // True when this account sits in the owning client's Notion "Active Account ID" column (the
+  // designated account), vs an "Other ad accounts" entry or a manually-added account.
+  isActiveAccount: boolean;
 }
 
 export interface AccountDirectory {
@@ -584,10 +587,12 @@ export async function fetchAccountDirectory(): Promise<AccountDirectory> {
   ]);
   // Only CURRENT clients own accounts; a removed ghost row must not mask the live owner's status.
   const live = clients.filter((c) => c.removedAt == null);
-  const owner = new Map<string, { name: string; status: string | null }>();
+  const owner = new Map<string, { name: string; status: string | null; isActive: boolean }>();
   for (const c of live) {
+    const activeSet = new Set((c.notionActiveAccountIds as string[] | null) ?? []);
     for (const aid of effectiveAccountIds(c)) {
-      if (!owner.has(aid)) owner.set(aid, { name: c.name, status: c.status ?? null });
+      if (!owner.has(aid))
+        owner.set(aid, { name: c.name, status: c.status ?? null, isActive: activeSet.has(aid) });
     }
   }
   const mappingSyncedAt = live.reduce<Date | null>(
@@ -610,6 +615,7 @@ export async function fetchAccountDirectory(): Promise<AccountDirectory> {
         disabledSince: status === "DISABLED" ? (disabledSince.get(a.id) ?? null) : null,
         client: o?.name ?? null,
         clientStatus: o?.status ?? null,
+        isActiveAccount: o?.isActive ?? false,
       };
     }),
   };

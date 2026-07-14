@@ -102,6 +102,8 @@ test("clubClients groups differently-titled campaigns under their linked client 
   const omni = clubbed.find((c) => c.id === "omni-agency")!;
   expect(omni.name).toBe("omni agency");
   expect(omni.accountIds.sort()).toEqual(["act_1210811414237867", "act_1372577337735758"].sort());
+  // Active Account ID column is tracked separately; the "Other ad accounts" id is excluded.
+  expect(omni.activeAccountIds).toEqual(["act_1372577337735758"]);
   expect(omni.status).toBe("Live"); // Live beats Full Budget Finished
   expect(omni.pages).toHaveLength(2);
   expect(omni.budget).toBe(7000); // current engagement = latest end date (p2)
@@ -111,6 +113,7 @@ test("clubClients groups differently-titled campaigns under their linked client 
   const sweat = clubbed.find((c) => c.id === "sweatbet")!;
   expect(sweat.name).toBe("Sweatbet");
   expect(sweat.accountIds).toEqual(["act_1540281067638398"]);
+  expect(sweat.activeAccountIds).toEqual(["act_1540281067638398"]);
 });
 
 test("parseCampaignRow extracts columns incl. client relation and skips titleless rows", () => {

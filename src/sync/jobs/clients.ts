@@ -59,6 +59,7 @@ export async function reconcileClients(clubbed: ClubbedClient[]): Promise<number
       name: c.name,
       status: c.status,
       notionAccountIds: c.accountIds,
+      notionActiveAccountIds: c.activeAccountIds,
       raw: c.pages,
       budget: c.budget,
       startDate: c.startDate,

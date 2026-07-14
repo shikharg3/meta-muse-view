@@ -20,6 +20,7 @@ async function seed() {
       name: "wildcasino.ag",
       status: "Live",
       notionAccountIds: ["act_111", "act_222"],
+      notionActiveAccountIds: ["act_111"], // act_222 is an "Other ad accounts" entry
     },
     {
       id: "playw3-be-the-boss",
@@ -246,6 +247,7 @@ test("list_accounts joins Meta status to the owning client's Notion status (susp
       disableReason: string | null;
       client: string | null;
       clientStatus: string | null;
+      isActiveAccount: boolean;
     }[];
   };
   expect(rows.find((r) => r.id === "act_111")).toMatchObject({
@@ -253,11 +255,13 @@ test("list_accounts joins Meta status to the owning client's Notion status (susp
     disableReason: "Ads integrity policy",
     client: "wildcasino.ag",
     clientStatus: "Live",
+    isActiveAccount: true,
   });
   expect(rows.find((r) => r.id === "act_222")).toMatchObject({
     status: "ACTIVE",
     client: "wildcasino.ag",
     clientStatus: "Live",
+    isActiveAccount: false,
   });
   // The cross-reference the chatbot wrongly claimed it couldn't do: Live/Paused-on-Notion clients
   // that currently have a suspended (DISABLED) ad account.
@@ -271,6 +275,12 @@ test("list_accounts joins Meta status to the owning client's Notion status (susp
   );
   expect(flagged.has("wildcasino.ag")).toBe(true);
   expect(flagged.size).toBe(1);
+  // Restrict to the Notion "Active Account ID" only: act_111 is wildcasino's active account (disabled);
+  // act_222 is an "Other ad accounts" entry — so the active-account cross-ref flags only wildcasino.ag.
+  const liveDisabledActive = rows
+    .filter((r) => r.clientStatus === "Live" && r.isActiveAccount && r.status === "DISABLED")
+    .map((r) => r.client);
+  expect(liveDisabledActive).toEqual(["wildcasino.ag"]);
 }, 20000);
 
 test("runTool returns error data for unknown tools rather than throwing", async () => {

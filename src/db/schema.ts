@@ -251,6 +251,7 @@ export const clients = pgTable("clients", {
   name: text("name").notNull(),
   status: text("status"),
   notionAccountIds: jsonb("notion_account_ids"), // string[] act_ ids from Notion
+  notionActiveAccountIds: jsonb("notion_active_account_ids"), // string[] from Notion's "Active Account ID" column only (a subset of notion_account_ids; "Other ad accounts" excluded)
   manualAddIds: jsonb("manual_add_ids"), // string[] act_ ids added in the UI
   manualRemoveIds: jsonb("manual_remove_ids"), // string[] act_ ids removed in the UI
   raw: jsonb("raw"), // contributing Notion rows (page ids, titles)
