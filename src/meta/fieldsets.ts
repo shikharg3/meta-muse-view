@@ -360,6 +360,25 @@ export const NODE_FIELDS: Record<"account" | "campaign" | "adset" | "ad" | "crea
   ],
 };
 
+/**
+ * Lean field set for account enumeration (/me/adaccounts). We only persist these in syncAccounts;
+ * requesting the full NODE_FIELDS.account (~80 fields) over 100+ accounts makes Meta return a 500
+ * (server-side compute timeout on the expansion), so enumeration fetches just what we store.
+ */
+export const ACCOUNT_ENUM_FIELDS = [
+  "account_id",
+  "account_status",
+  "name",
+  "currency",
+  "amount_spent",
+  "balance",
+  "spend_cap",
+  "timezone_name",
+  "disable_reason",
+  "business",
+  "created_time",
+];
+
 /** Every insights metric/field (203). Requested in size-safe groups, merged by (date,entity). */
 export const INSIGHT_METRICS: string[] = [
   "account_currency",

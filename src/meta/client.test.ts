@@ -67,6 +67,10 @@ test("getAccounts enumerates strictly via /me/adaccounts (token's assigned set),
   expect(ids).toEqual(["act_1", "act_2"]);
   expect(calls).toHaveLength(1);
   expect(calls[0]).toContain("me/adaccounts");
+  // Lean enumeration: request only fields we persist, not the full ~80-field account expansion
+  // (that expansion 500s past ~120 accounts). account_status is included; heavy fields are not.
+  expect(calls[0]).toContain("account_status");
+  expect(calls[0]).not.toContain("attribution_spec");
   expect(
     calls.some((u) => u.includes("owned_ad_accounts") || u.includes("client_ad_accounts")),
   ).toBe(false);

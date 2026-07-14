@@ -2,7 +2,7 @@ import { appsecretProof } from "./proof";
 import { buildQuery } from "./url";
 import { parseUsage, shouldBackoff, peakPressure } from "./rate-limit";
 import type { GraphNode, InsightRow, InsightsClient, MetaApiEvent } from "./types";
-import { NODE_FIELDS } from "./fieldsets";
+import { NODE_FIELDS, ACCOUNT_ENUM_FIELDS } from "./fieldsets";
 import { Limiter } from "./limiter";
 
 /** Thrown when Meta rejects the token itself (expired/invalid/session). Distinct from data errors
@@ -441,9 +441,10 @@ export class MetaClient implements InsightsClient {
   }
 
   async getAccounts(_businessId: string): Promise<GraphNode[]> {
-    // Full account field set; getChildren drops any field this token can't read. A system-user
-    // token reads exactly its assigned accounts, which is what /me/adaccounts returns.
-    return this.getChildren("me", "adaccounts", NODE_FIELDS.account, { limit: 200 });
+    // Lean field set (only what syncAccounts persists) + smaller pages: the full ~80-field account
+    // expansion over 100+ accounts makes Meta 500. A system-user token reads exactly its assigned
+    // accounts, which is what /me/adaccounts returns; getChildren drops any field it can't read.
+    return this.getChildren("me", "adaccounts", ACCOUNT_ENUM_FIELDS, { limit: 100 });
   }
 
   getChildren(
