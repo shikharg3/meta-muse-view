@@ -557,12 +557,20 @@ export interface AccountDirectoryRow {
   clientStatus: string | null; // that client's Notion board status (Live/Paused/…)
 }
 
+export interface AccountDirectory {
+  // When the Notion client→account mapping was last synced; board edits after this aren't reflected.
+  mappingSyncedAt: string | null;
+  accounts: AccountDirectoryRow[];
+}
+
 /**
  * Every ad account with its Meta status (DISABLED = suspended/disabled, with reason) joined to the
- * client that owns it and that client's Notion board status — a single call for cross-referencing
- * Notion campaign status against account suspension.
+ * CURRENT (non-removed) client that owns it and that client's Notion board status — one call for
+ * cross-referencing Notion status against account suspension. Removed "ghost" client rows never own
+ * accounts here (they would mask a live account with a stale status like "Full Budget Finished").
+ * `mappingSyncedAt` exposes how fresh the Notion mapping is so a just-made board edit can be flagged.
  */
-export async function fetchAccountDirectory(): Promise<AccountDirectoryRow[]> {
+export async function fetchAccountDirectory(): Promise<AccountDirectory> {
   const [accts, clients] = await Promise.all([
     db
       .select({
@@ -574,26 +582,35 @@ export async function fetchAccountDirectory(): Promise<AccountDirectoryRow[]> {
       .from(schema.accounts),
     db.select().from(schema.clients),
   ]);
+  // Only CURRENT clients own accounts; a removed ghost row must not mask the live owner's status.
+  const live = clients.filter((c) => c.removedAt == null);
   const owner = new Map<string, { name: string; status: string | null }>();
-  for (const c of clients) {
+  for (const c of live) {
     for (const aid of effectiveAccountIds(c)) {
       if (!owner.has(aid)) owner.set(aid, { name: c.name, status: c.status ?? null });
     }
   }
+  const mappingSyncedAt = live.reduce<Date | null>(
+    (max, c) => (c.syncedAt && (!max || c.syncedAt > max) ? c.syncedAt : max),
+    null,
+  );
   const disabledSince = await disabledSinceMap(
     accts.filter((a) => accountStatus(a.status) === "DISABLED").map((a) => a.id),
   );
-  return accts.map((a) => {
-    const status = accountStatus(a.status);
-    const o = owner.get(a.id);
-    return {
-      id: a.id,
-      name: a.name,
-      status,
-      disableReason: status === "DISABLED" ? disableReasonLabel(a.disableReason) : null,
-      disabledSince: status === "DISABLED" ? (disabledSince.get(a.id) ?? null) : null,
-      client: o?.name ?? null,
-      clientStatus: o?.status ?? null,
-    };
-  });
+  return {
+    mappingSyncedAt: mappingSyncedAt?.toISOString() ?? null,
+    accounts: accts.map((a) => {
+      const status = accountStatus(a.status);
+      const o = owner.get(a.id);
+      return {
+        id: a.id,
+        name: a.name,
+        status,
+        disableReason: status === "DISABLED" ? disableReasonLabel(a.disableReason) : null,
+        disabledSince: status === "DISABLED" ? (disabledSince.get(a.id) ?? null) : null,
+        client: o?.name ?? null,
+        clientStatus: o?.status ?? null,
+      };
+    }),
+  };
 }

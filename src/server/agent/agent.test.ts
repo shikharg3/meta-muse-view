@@ -233,13 +233,21 @@ test("list_accounts joins Meta status to the owning client's Notion status (susp
     .update(schema.accounts)
     .set({ status: "2", disableReason: 1 })
     .where(eq(schema.accounts.id, "act_111"));
-  const rows = (await runTool("list_accounts", {})) as {
-    id: string;
-    status: string;
-    disableReason: string | null;
-    client: string | null;
-    clientStatus: string | null;
-  }[];
+  // A removed "ghost" client also links act_111; it must NOT override the live owner's status.
+  await db
+    .update(schema.clients)
+    .set({ notionAccountIds: ["act_333", "act_111"] })
+    .where(eq(schema.clients.id, "old-farside"));
+  const { accounts: rows } = (await runTool("list_accounts", {})) as {
+    mappingSyncedAt: string | null;
+    accounts: {
+      id: string;
+      status: string;
+      disableReason: string | null;
+      client: string | null;
+      clientStatus: string | null;
+    }[];
+  };
   expect(rows.find((r) => r.id === "act_111")).toMatchObject({
     status: "DISABLED",
     disableReason: "Ads integrity policy",
