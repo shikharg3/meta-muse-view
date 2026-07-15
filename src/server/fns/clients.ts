@@ -155,10 +155,17 @@ export async function fetchClientsRanked(w: DateWindow): Promise<ClientRanked[]>
     .sort((a, b) => b.spend - a.spend);
 }
 
-export async function fetchClientDetail(id: string, w: DateWindow): Promise<ClientDetail | null> {
+export async function fetchClientDetail(
+  id: string,
+  w: DateWindow,
+  opts: { accountIds?: string[] } = {},
+): Promise<ClientDetail | null> {
   const row = await getClientRow(id);
   if (!row) return null;
-  const accountIds = effectiveAccountIds(row);
+  // Optional scope (e.g. one Notion campaign row's accounts) — always ∩ the client's effective set.
+  const effective = effectiveAccountIds(row);
+  const scope = opts.accountIds;
+  const accountIds = scope?.length ? effective.filter((a) => scope.includes(a)) : effective;
   const notionIds = (row.notionAccountIds as string[] | null) ?? [];
 
   if (accountIds.length === 0) {

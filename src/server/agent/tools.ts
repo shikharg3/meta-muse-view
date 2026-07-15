@@ -63,7 +63,7 @@ export const TOOLS: AnthropicTool[] = [
   {
     name: "get_client_stats",
     description:
-      "Performance for one client across every ad account they've ever used: overall KPIs (spend, impressions, clicks, CTR, CPC); a per-account breakdown where each account carries its Meta `status` (ACTIVE or DISABLED) and `disableReason` — i.e. whether Meta has suspended/disabled that account; and their campaigns (status, spend, CTR, CPC, results). The client-level `status` is the Notion board status. The `client` is fuzzy-matched by client name OR by a brand grouped under it — e.g. 'Lucky Rebel' resolves to its agency client 'OneAgency'; when matched by brand the result carries `matchedBrand` and a `brandNote` you MUST relay (figures are client-level, not per-brand).",
+      "Performance for one client (or ONE of its Notion campaigns/brands): overall KPIs (spend, impressions, clicks, CTR, CPC); a per-account breakdown where each account carries its Meta `status` (ACTIVE or DISABLED) and `disableReason`; and their Meta campaigns (status, spend, CTR, CPC, results). The client-level `status` is the Notion board status. `client` is fuzzy-matched by client name OR by a Notion campaign/brand name grouped under it (e.g. 'Lucky Rebel', 'Farside'). When matched by brand and that Notion row has its own ad accounts, figures are AUTOMATICALLY scoped to just that campaign's accounts (result carries `matchedBrand` + `brandNote` — relay the note); if the row has no accounts, figures cover the whole client and the brandNote says so.",
     input_schema: {
       type: "object",
       properties: {
@@ -219,6 +219,9 @@ export interface ResolvedClient {
   matchedBrand?: string;
   /** Other brands grouped under this (agency) client — lets the model add a per-brand caveat. */
   siblingBrands?: string[];
+  /** The matched brand row's OWN ad accounts (∩ the client's effective accounts) — lets stats be
+   * scoped to just that campaign/brand instead of the whole client. Empty/absent = row carries none. */
+  brandAccountIds?: string[];
 }
 export interface ResolveError {
   error: string;
@@ -266,11 +269,25 @@ export async function resolveClient(query: string): Promise<ResolvedClient | Res
     : findBrandHits((b) => b.toLowerCase().includes(q) || (nq !== "" && bnorm(b).includes(nq)));
   if (brandHits.length === 1) {
     const h = brandHits[0];
+    // Scope to the matched row's own accounts: pages in clients.raw carry per-row accountIds.
+    const row = await getClientRow(h.id);
+    const effective = new Set(row ? effectiveAccountIds(row) : []);
+    const bn = bnorm(h.brand);
+    const pages = (row?.raw as { title?: string; accountIds?: string[] }[] | null) ?? [];
+    const brandAccountIds = [
+      ...new Set(
+        pages
+          .filter((p) => typeof p.title === "string" && bnorm(p.title) === bn)
+          .flatMap((p) => p.accountIds ?? [])
+          .filter((a) => effective.has(a)),
+      ),
+    ];
     return {
       id: h.id,
       name: h.name,
       matchedBrand: h.brand,
       siblingBrands: h.brands.filter((b) => b !== h.brand),
+      ...(brandAccountIds.length ? { brandAccountIds } : {}),
     };
   }
   if (brandHits.length > 1)
@@ -303,14 +320,19 @@ export async function runTool(name: string, input: Record<string, unknown>): Pro
     case "get_client_stats": {
       const resolved = await resolveClient(String(input.client ?? ""));
       if ("error" in resolved) return resolved;
-      const detail = await fetchClientDetail(resolved.id, toolWindow(input));
+      const scoped = resolved.brandAccountIds ?? [];
+      const detail = await fetchClientDetail(resolved.id, toolWindow(input), {
+        accountIds: scoped,
+      });
       if (!detail) return { error: `Client "${resolved.name}" has no data.` };
       return {
         client: detail.name,
         ...(resolved.matchedBrand
           ? {
               matchedBrand: resolved.matchedBrand,
-              brandNote: `"${resolved.matchedBrand}" is a brand grouped under agency client "${detail.name}"${resolved.siblingBrands?.length ? ` (alongside ${resolved.siblingBrands.join(", ")})` : ""}; figures below are for the whole client and are not split per brand.`,
+              brandNote: scoped.length
+                ? `Figures are scoped to "${resolved.matchedBrand}"'s own ad account(s) (${scoped.join(", ")}) under client "${detail.name}" — NOT the whole client${resolved.siblingBrands?.length ? ` (other campaigns: ${resolved.siblingBrands.join(", ")})` : ""}.`
+                : `"${resolved.matchedBrand}" is grouped under agency client "${detail.name}"${resolved.siblingBrands?.length ? ` (alongside ${resolved.siblingBrands.join(", ")})` : ""} and its Notion row carries no ad accounts of its own, so figures below are for the whole client.`,
             }
           : {}),
         status: detail.status,
@@ -408,6 +430,12 @@ async function resolveAdScope(
   if (!s) return { error: "Which client, campaign, or ad account?" };
   const client = await resolveClient(s);
   if (!("error" in client)) {
+    // A brand match scopes to that row's own accounts (when it has any), not the whole client.
+    if (client.brandAccountIds?.length)
+      return {
+        scope: { accountIds: client.brandAccountIds },
+        label: `${client.matchedBrand} (its own accounts, under client ${client.name})`,
+      };
     const row = await getClientRow(client.id);
     return {
       scope: { accountIds: row ? effectiveAccountIds(row) : [] },

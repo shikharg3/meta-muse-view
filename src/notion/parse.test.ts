@@ -106,6 +106,12 @@ test("clubClients groups differently-titled campaigns under their linked client 
   expect(omni.activeAccountIds).toEqual(["act_1372577337735758"]);
   expect(omni.status).toBe("Live"); // Live beats Full Budget Finished
   expect(omni.pages).toHaveLength(2);
+  // Each contributing row keeps its own account mapping (per-campaign reporting).
+  expect(omni.pages[0]).toMatchObject({
+    title: "zaddycoin.io",
+    status: "Full Budget Finished",
+    accountIds: ["act_1372577337735758", "act_1210811414237867"],
+  });
   expect(omni.budget).toBe(7000); // current engagement = latest end date (p2)
   expect(omni.endDate).toBe("2026-07-31");
   expect(omni.startDate).toBe("2026-06-01");

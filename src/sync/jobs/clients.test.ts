@@ -10,7 +10,7 @@ const club = (id: string, name = id): ClubbedClient => ({
   status: "Live",
   accountIds: [`act_${id}`],
   activeAccountIds: [`act_${id}`],
-  pages: [{ pageId: `p_${id}`, title: name }],
+  pages: [{ pageId: `p_${id}`, title: name, status: "Live", accountIds: [`act_${id}`] }],
   budget: null,
   startDate: null,
   endDate: null,

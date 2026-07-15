@@ -13,6 +13,7 @@ async function seed() {
     { id: "act_111", name: "Wild Main", currency: "USD" },
     { id: "act_222", name: "Wild Old", currency: "USD" },
     { id: "act_555", name: "GatherOne", currency: "USD" },
+    { id: "act_556", name: "SlotsAcct", currency: "USD" },
   ]);
   await db.insert(schema.clients).values([
     {
@@ -40,10 +41,11 @@ async function seed() {
       id: "oneagency",
       name: "OneAgency",
       status: "Live",
-      notionAccountIds: ["act_555"],
+      notionAccountIds: ["act_555", "act_556"],
       raw: [
-        { pageId: "p1", title: "Lucky Rebel" },
-        { pageId: "p2", title: "Slots.lv" },
+        // Per-row account mapping: each Notion campaign row carries its own accounts.
+        { pageId: "p1", title: "Lucky Rebel", status: "Live", accountIds: ["act_555"] },
+        { pageId: "p2", title: "Slots.lv", status: "Live", accountIds: ["act_556"] },
       ],
     },
   ]);
@@ -185,6 +187,8 @@ test("resolveClient falls back to a Notion brand title, mapping it to its agency
   const r = await resolveClient("Lucky Rebel");
   expect(r).toMatchObject({ id: "oneagency", name: "OneAgency", matchedBrand: "Lucky Rebel" });
   expect((r as { siblingBrands?: string[] }).siblingBrands).toContain("Slots.lv");
+  // The matched row's own accounts come back so stats can be scoped per campaign, not per client.
+  expect((r as { brandAccountIds?: string[] }).brandAccountIds).toEqual(["act_555"]);
   // Punctuation/spacing-insensitive: "LuckyRebel" (no space) resolves the same brand.
   expect(await resolveClient("LuckyRebel")).toMatchObject({
     id: "oneagency",
@@ -192,15 +196,17 @@ test("resolveClient falls back to a Notion brand title, mapping it to its agency
   });
   // A pure client-NAME match still wins over brand fallback.
   expect(await resolveClient("wild")).toMatchObject({ id: "wildcasino-ag" });
-  // get_client_stats resolves the brand, surfaces matchedBrand, and returns the agency client's account.
+  // get_client_stats scopes to the brand row's OWN account — the sibling row's act_556 is excluded.
   const stats = (await runTool("get_client_stats", { client: "Lucky Rebel", days: 7 })) as {
     client: string;
     matchedBrand?: string;
+    brandNote?: string;
     accounts: { id: string }[];
   };
   expect(stats.client).toBe("OneAgency");
   expect(stats.matchedBrand).toBe("Lucky Rebel");
-  expect(stats.accounts.map((a) => a.id)).toEqual(["act_555"]);
+  expect(stats.accounts.map((a) => a.id)).toEqual(["act_555"]); // NOT act_556 (Slots.lv's account)
+  expect(stats.brandNote).toContain("scoped");
 }, 20000);
 
 test("get_client_stats returns grounded KPIs across the client's accounts", async () => {

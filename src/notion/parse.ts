@@ -61,7 +61,9 @@ export interface ClubbedClient {
   status: string | null;
   accountIds: string[];
   activeAccountIds: string[]; // subset from the "Active Account ID" column ("Other ad accounts" excluded)
-  pages: { pageId: string; title: string }[];
+  /** Contributing Notion rows. Each keeps ITS OWN account mapping so a brand/engagement can be
+   * reported at row grain (not just merged client totals). */
+  pages: { pageId: string; title: string; status: string | null; accountIds: string[] }[];
   budget: number | null;
   startDate: string | null;
   endDate: string | null;
@@ -147,7 +149,12 @@ export function clubClients(
       byKey.set(key, c);
     }
     c.accountIds = [...new Set([...c.accountIds, ...row.activeIds, ...row.otherIds])];
-    c.pages.push({ pageId: row.pageId, title: row.title });
+    c.pages.push({
+      pageId: row.pageId,
+      title: row.title,
+      status: row.status,
+      accountIds: [...new Set([...row.activeIds, ...row.otherIds])],
+    });
     if ((STATUS_PRIORITY[row.status ?? ""] ?? 0) > (STATUS_PRIORITY[c.status ?? ""] ?? 0)) {
       c.status = row.status;
     }
