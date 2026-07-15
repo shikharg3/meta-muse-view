@@ -3,13 +3,13 @@ import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { SidebarTrigger } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
-import { CloudDownload, Download, RefreshCw } from "lucide-react";
+import { CloudDownload, Download, RefreshCw, Table2 } from "lucide-react";
 import { AccountSwitcher } from "./AccountSwitcher";
 import { GlobalClientFilter, type FilterClient } from "./GlobalClientFilter";
 import { GlobalSearch } from "./GlobalSearch";
 import { RangePicker } from "./RangePicker";
 import { getExportCsv } from "@/lib/api/dashboard";
-import { syncNow } from "@/lib/api/settings";
+import { syncNow, syncNotionNow } from "@/lib/api/settings";
 import { getMetaHealth } from "@/lib/api/health";
 import { toRange, isYmd } from "@/lib/range";
 import { fmtRelTime } from "@/lib/format";
@@ -106,6 +106,39 @@ function SyncNowButton({ running }: { running: boolean }) {
   );
 }
 
+/** Admin-only: refresh ONLY the Notion client-board mapping (clients, statuses, Active Account
+ *  IDs) — fast, no Meta data pull. For "I just edited the sheet" moments. */
+function SyncNotionButton() {
+  const router = useRouter();
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+  const onClick = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const r = await syncNotionNow();
+      setMsg(r.ok ? `Notion: ${r.clients} clients` : "Notion sync failed");
+      await router.invalidate();
+    } finally {
+      setBusy(false);
+      setTimeout(() => setMsg(null), 5000);
+    }
+  };
+  return (
+    <Button
+      variant="outline"
+      size="sm"
+      className="hidden sm:inline-flex h-9 text-xs"
+      onClick={() => void onClick()}
+      disabled={busy}
+      title="Refresh only the Notion board mapping (clients, statuses, Active Account IDs). Fast — does not pull Meta data."
+    >
+      {busy ? <RefreshCw className="size-3.5 animate-spin" /> : <Table2 className="size-3.5" />}
+      {busy ? "Syncing…" : (msg ?? "Sync Notion")}
+    </Button>
+  );
+}
+
 export function TopBar({
   business,
   accounts,
@@ -159,6 +192,7 @@ export function TopBar({
       <RangePicker />
 
       {isAdmin && <SyncNowButton running={business.syncRunning} />}
+      {isAdmin && <SyncNotionButton />}
       <Button size="sm" className="h-9 text-xs" onClick={onExport} disabled={!kind}>
         <Download className="size-3.5" /> Export
       </Button>
