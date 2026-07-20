@@ -79,6 +79,80 @@ function metaCrawlerPage(url: URL): Response {
   });
 }
 
+/** Public legal pages. Meta App Review requires a Privacy Policy URL (and data-deletion
+ *  instructions) that a reviewer can open in a normal browser with NO session — the crawler-UA
+ *  stub above is not enough for that. Served before every auth mode. */
+function legalPage(path: string): Response {
+  const isPrivacy = path === "/privacy";
+  const title = isPrivacy ? "Privacy Policy" : "Terms of Service";
+  const body = isPrivacy
+    ? `
+<h2>Who we are</h2>
+<p>MetaConsole is an internal advertising-analytics dashboard operated by DOT (dotaudiences.com).
+It is used only by our own team to monitor advertising performance for ad accounts managed in our
+own Meta Business Manager. It is not offered to the public.</p>
+<h2>Data we process</h2>
+<ul>
+<li><b>Meta advertising data</b> — campaign/ad-set/ad metadata and aggregate performance metrics
+(spend, impressions, clicks, conversions) retrieved from the Meta Marketing API using system-user
+credentials for ad accounts we manage. This is business data; it contains no consumer personal data
+and no data about Facebook users.</li>
+<li><b>Internal account data</b> — name, email address, and a hashed password for members of our
+team who sign in to the dashboard, used solely for authentication and access control.</li>
+<li><b>Cookies</b> — a single signed session cookie required to keep you signed in. No advertising,
+tracking, or third-party cookies.</li>
+</ul>
+<h2>How we use it</h2>
+<p>Exclusively for internal reporting and monitoring of our own advertising operations. We do not
+sell, rent, or share any data with third parties. No data is used for advertising targeting or
+profiling of individuals.</p>
+<h2>Storage and security</h2>
+<p>Data is stored in an access-controlled database on infrastructure we operate. API credentials
+are stored encrypted. Access requires an approved account; transport is HTTPS only.</p>
+<h2>Retention and deletion</h2>
+<p>Advertising metrics are retained while we operate the affected ad accounts. Internal accounts
+are removed when a team member leaves.</p>
+<h2>Data deletion requests</h2>
+<p>To request deletion of any data held by this application (including all data retrieved via the
+Meta Marketing API for a given ad account, or an internal user account), email
+<a href="mailto:shikhar@dotaudiences.com">shikhar@dotaudiences.com</a>. Requests are honored within
+30 days.</p>
+<h2>Contact</h2>
+<p><a href="mailto:shikhar@dotaudiences.com">shikhar@dotaudiences.com</a></p>`
+    : `
+<h2>Use of this service</h2>
+<p>MetaConsole is a private, internal tool operated by DOT (dotaudiences.com). Access is restricted
+to authorized team members with approved accounts; any other use is prohibited.</p>
+<h2>Accounts</h2>
+<p>You are responsible for keeping your credentials confidential. We may suspend or remove accounts
+at any time.</p>
+<h2>Data</h2>
+<p>Advertising data shown here is retrieved from the Meta Marketing API for ad accounts we manage
+and is subject to our <a href="/privacy">Privacy Policy</a> and to Meta's Platform Terms.</p>
+<h2>Warranty</h2>
+<p>The service is provided "as is", without warranty of any kind, for internal business use.</p>
+<h2>Contact</h2>
+<p><a href="mailto:shikhar@dotaudiences.com">shikhar@dotaudiences.com</a></p>`;
+  const html = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>${title} — MetaConsole</title>
+<style>body{font:16px/1.6 system-ui,sans-serif;max-width:720px;margin:40px auto;padding:0 20px;color:#1a1a1a}h1{font-size:1.6rem}h2{font-size:1.15rem;margin-top:1.6em}a{color:#0b62d6}</style>
+</head>
+<body>
+<h1>${title}</h1>
+<p><i>Last updated: July 19, 2026</i></p>
+${body}
+</body>
+</html>`;
+  return new Response(html, {
+    status: 200,
+    headers: { "content-type": "text/html; charset=utf-8" },
+  });
+}
+
 const BASIC_REALM = 'Basic realm="MetaConsole (testing)", charset="UTF-8"';
 
 /** Test-mode credentials: when both env vars are set, HTTP Basic Auth replaces login. */
@@ -181,6 +255,8 @@ async function authEndpoint(request: Request, path: string): Promise<Response> {
 export async function handleAuth(request: Request): Promise<Response | null> {
   const url = new URL(request.url);
   const path = url.pathname;
+  // Legal pages are public in EVERY mode (incl. basic-auth test mode) — App Review opens them.
+  if (path === "/privacy" || path === "/terms") return legalPage(path);
   const basic = basicAuthCreds();
   if (basic) return handleBasicAuth(request, url, path, basic);
   if (path.startsWith("/auth/")) return authEndpoint(request, path);
