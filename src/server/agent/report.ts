@@ -226,6 +226,10 @@ export function dbRowSource(spec: BuildSpec): ReportRowSource {
       );
     }
     const type = META_BREAKDOWN[spec.breakdown];
+    // The table stores the SAME data at account level (rollup) AND campaign level — querying both
+    // double-counts every metric. Use campaign rows only when scoping to selected campaigns;
+    // otherwise the account rollup.
+    const scoped = Boolean(spec.campaignIds?.length);
     const rows = await db
       .select()
       .from(schema.insightsBreakdownDaily)
@@ -233,6 +237,10 @@ export function dbRowSource(spec: BuildSpec): ReportRowSource {
         and(
           eq(schema.insightsBreakdownDaily.breakdownType, type),
           eq(schema.insightsBreakdownDaily.accountId, accountId),
+          eq(schema.insightsBreakdownDaily.level, scoped ? "campaign" : "account"),
+          scoped
+            ? inArray(schema.insightsBreakdownDaily.entityId, spec.campaignIds ?? [])
+            : undefined,
           gte(schema.insightsBreakdownDaily.date, spec.since),
           lte(schema.insightsBreakdownDaily.date, spec.until),
         ),

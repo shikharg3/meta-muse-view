@@ -491,3 +491,62 @@ test("runReport says breakdown-not-synced (not 'no data') when totals exist for 
   if (!("error" in empty)) throw new Error("expected no-data error");
   expect(empty.error).toContain("No data");
 }, 20000);
+
+test("breakdown reports honor selected campaigns and never double-count levels", async () => {
+  const today = new Date().toISOString().slice(0, 10);
+  await db.execute(sql`truncate table insights_breakdown_daily`);
+  // Same data stored twice: account-level rollup + per-campaign rows (as the sync writes it).
+  await db.insert(schema.insightsBreakdownDaily).values([
+    // account rollup: 100 = c1 60 + c2 40
+    {
+      level: "account",
+      entityId: "act_111",
+      date: today,
+      accountId: "act_111",
+      breakdownType: "publisher_platform",
+      breakdownValue: "facebook",
+      spend: 100,
+      impressions: 1000,
+      clicks: 50,
+    },
+    {
+      level: "campaign",
+      entityId: "c1",
+      date: today,
+      accountId: "act_111",
+      breakdownType: "publisher_platform",
+      breakdownValue: "facebook",
+      spend: 60,
+      impressions: 600,
+      clicks: 30,
+    },
+    {
+      level: "campaign",
+      entityId: "c2",
+      date: today,
+      accountId: "act_111",
+      breakdownType: "publisher_platform",
+      breakdownValue: "facebook",
+      spend: 40,
+      impressions: 400,
+      clicks: 20,
+    },
+  ]);
+  const base = {
+    name: "wildcasino.ag",
+    accountIds: ["act_111"],
+    since: today,
+    until: today,
+    columns: ["spend"],
+    markup: undefined,
+    breakdown: "platform" as const,
+  };
+  // Unscoped: the account rollup only — $100, NOT $200 (account + campaign double-count).
+  const all = await runReport(base);
+  if ("error" in all) throw new Error(all.error);
+  expect(all.rows).toEqual([["facebook", 100]]);
+  // Scoped to c1: only c1's rows — $60, other campaigns excluded.
+  const scoped = await runReport({ ...base, campaignIds: ["c1"] });
+  if ("error" in scoped) throw new Error(scoped.error);
+  expect(scoped.rows).toEqual([["facebook", 60]]);
+}, 20000);
