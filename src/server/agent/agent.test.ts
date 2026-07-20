@@ -550,3 +550,30 @@ test("breakdown reports honor selected campaigns and never double-count levels",
   if ("error" in scoped) throw new Error(scoped.error);
   expect(scoped.rows).toEqual([["facebook", 60]]);
 }, 20000);
+
+test("adset_day report: one row per ad set per day, honoring campaign scoping", async () => {
+  const today = new Date().toISOString().slice(0, 10);
+  const base = {
+    name: "Statewise",
+    accountIds: ["act_777"],
+    since: today,
+    until: today,
+    columns: ["spend"],
+    markup: undefined,
+  };
+  // Unscoped by-ad-set: California merges across both campaigns (100 + 50), Texas stays 80.
+  const byAdset = await runReport({ ...base, breakdown: "adset" });
+  if ("error" in byAdset) throw new Error(byAdset.error);
+  expect(byAdset.rows).toEqual([
+    ["California", 150],
+    ["Texas", 80],
+  ]);
+  // Day × ad set, scoped to SW Broad only: its California (100) + Texas (80); the LAL California
+  // (50) is excluded by the campaign filter.
+  const scoped = await runReport({ ...base, breakdown: "adset_day", campaignIds: ["c_broad"] });
+  if ("error" in scoped) throw new Error(scoped.error);
+  expect(scoped.rows).toEqual([
+    [`${today} · California`, 100],
+    [`${today} · Texas`, 80],
+  ]);
+}, 20000);

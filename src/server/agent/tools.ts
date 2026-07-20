@@ -202,9 +202,20 @@ export const TOOLS: AnthropicTool[] = [
         },
         breakdown: {
           type: "string",
-          enum: ["none", "day", "platform", "placement", "age", "gender", "country", "region"],
+          enum: [
+            "none",
+            "day",
+            "adset",
+            "adset_day",
+            "platform",
+            "placement",
+            "age",
+            "gender",
+            "country",
+            "region",
+          ],
           description:
-            "Row breakdown dimension. 'day' = one row per day. Default none (single total row).",
+            "Row breakdown dimension. 'day' = one row per day; 'adset' = one row per ad set (ad sets sharing a name merge); 'adset_day' = one row per ad set per day (use when the user wants daily numbers per ad set, e.g. per-state dailies). Default none (single total row).",
         },
       },
       required: ["subject"],

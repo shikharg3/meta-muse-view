@@ -15,6 +15,8 @@ import {
 export type Breakdown =
   | "none"
   | "day"
+  | "adset"
+  | "adset_day"
   | "platform"
   | "placement"
   | "age"
@@ -61,7 +63,7 @@ interface Agg {
 // conversion baseline used elsewhere.
 const CONVERSION_TYPE = "omni_purchase";
 
-const META_BREAKDOWN: Record<Exclude<Breakdown, "none" | "day">, string> = {
+const META_BREAKDOWN: Record<Exclude<Breakdown, "none" | "day" | "adset" | "adset_day">, string> = {
   platform: "publisher_platform",
   placement: "platform_position",
   age: "age",
@@ -72,6 +74,8 @@ const META_BREAKDOWN: Record<Exclude<Breakdown, "none" | "day">, string> = {
 const DIM_LABEL: Record<Breakdown, string> = {
   none: "",
   day: "Date",
+  adset: "Ad set",
+  adset_day: "Date · Ad set",
   platform: "Platform",
   placement: "Placement",
   age: "Age",
@@ -158,7 +162,13 @@ export function normalizeColumns(input: string[]): string[] {
 
 export function normalizeBreakdown(input: unknown): Breakdown {
   const v = String(input ?? "").toLowerCase();
-  if (v.includes("day") || v.includes("daily") || v.includes("date")) return "day";
+  // Combined day × ad-set must win over the individual matches ("daily by ad set" contains both).
+  const adset =
+    v.includes("adset") || v.includes("ad set") || v.includes("ad-set") || v.includes("ad_set");
+  const day = v.includes("day") || v.includes("daily") || v.includes("date");
+  if (adset && day) return "adset_day";
+  if (adset) return "adset";
+  if (day) return "day";
   if (v.includes("platform") || v.includes("publisher")) return "platform";
   if (v.includes("placement") || v.includes("position")) return "placement";
   if (v.includes("age")) return "age";
@@ -224,6 +234,51 @@ export function dbRowSource(spec: BuildSpec): ReportRowSource {
           action_values: (r.actionValues ?? undefined) as InsightRow["action_values"],
         }),
       );
+    }
+    if (spec.breakdown === "adset" || spec.breakdown === "adset_day") {
+      // Ad-set grain comes from insights_daily level='adset' (synced hourly — never lags like the
+      // breakdown tables). Names + campaign parentage come from ad_sets; campaign scoping applies.
+      const sets = await db
+        .select({
+          id: schema.adSets.id,
+          name: schema.adSets.name,
+          campaignId: schema.adSets.campaignId,
+        })
+        .from(schema.adSets)
+        .where(eq(schema.adSets.accountId, accountId));
+      const setById = new Map(sets.map((s) => [s.id, s]));
+      const scopedTo = spec.campaignIds?.length ? new Set(spec.campaignIds) : null;
+      const rows = await db
+        .select()
+        .from(schema.insightsDaily)
+        .where(
+          and(
+            eq(schema.insightsDaily.level, "adset"),
+            eq(schema.insightsDaily.accountId, accountId),
+            gte(schema.insightsDaily.date, spec.since),
+            lte(schema.insightsDaily.date, spec.until),
+          ),
+        );
+      return rows.flatMap((r): InsightRow[] => {
+        const s = setById.get(r.entityId);
+        if (scopedTo && (!s || !scopedTo.has(s.campaignId))) return [];
+        return [
+          {
+            date_start: r.date,
+            date_stop: r.date,
+            adset_id: r.entityId,
+            adset_name: s?.name ?? r.entityId,
+            campaign_id: s?.campaignId,
+            spend: String(r.spend),
+            impressions: String(r.impressions),
+            reach: String(r.reach),
+            clicks: String(r.clicks),
+            inline_link_clicks: String(r.inlineLinkClicks),
+            actions: (r.actions ?? undefined) as InsightRow["actions"],
+            action_values: (r.actionValues ?? undefined) as InsightRow["action_values"],
+          },
+        ];
+      });
     }
     const type = META_BREAKDOWN[spec.breakdown];
     // The table stores the SAME data at account level (rollup) AND campaign level — querying both
@@ -327,12 +382,17 @@ export async function buildReport(
     if (rows.length === 0) continue;
     contributors++;
     for (const r of rows) {
+      const adsetName = (): string => String(r.adset_name ?? r.adset_id ?? "—");
       const key =
         dim === "none"
           ? "Total"
           : dim === "day"
             ? r.date_start
-            : String(r[META_BREAKDOWN[dim]] ?? "—");
+            : dim === "adset"
+              ? adsetName()
+              : dim === "adset_day"
+                ? `${r.date_start} · ${adsetName()}`
+                : String(r[META_BREAKDOWN[dim]] ?? "—");
       let a = aggByKey.get(key);
       if (!a) {
         a = emptyAgg();
@@ -350,8 +410,8 @@ export async function buildReport(
     for (const a of aggByKey.values()) a.spend *= factor;
   }
 
-  // Order rows: chronological for day, biggest-spend-first for dimensions.
-  if (dim === "day") order.sort();
+  // Order rows: chronological for day grains (adset_day keys start with the date), spend-first else.
+  if (dim === "day" || dim === "adset_day") order.sort();
   else if (dim !== "none") order.sort((x, y) => aggByKey.get(y)!.spend - aggByKey.get(x)!.spend);
   const limited = order.slice(0, MAX_ROWS);
 
@@ -387,7 +447,8 @@ export async function buildReport(
   }
   const totals = dim === "none" ? null : (["Total", ...metricCells(total)] as (string | number)[]);
 
-  const dimNote = dim === "none" ? "" : ` · by ${dim}`;
+  const dimName = dim === "adset" ? "ad set" : dim === "adset_day" ? "day × ad set" : dim;
+  const dimNote = dim === "none" ? "" : ` · by ${dimName}`;
   const accNote =
     contributors < spec.accountIds.length
       ? `${contributors} of ${spec.accountIds.length} accounts have data in this range.`
@@ -468,7 +529,8 @@ export async function runReport(args: ReportArgs): Promise<ReportPayload | { err
   if (payload.rowCount === 0) {
     // Breakdown tables refresh only on the daily FULL sync, so a fresh window can have campaign
     // rows but no breakdown rows yet. Say that, instead of a misleading "no data".
-    if (spec.breakdown !== "none" && spec.breakdown !== "day") {
+    // (adset/adset_day read insights_daily like day does — they never lag, so no special message.)
+    if (spec.breakdown in META_BREAKDOWN) {
       const [has] = await db
         .select({ id: schema.insightsDaily.entityId })
         .from(schema.insightsDaily)

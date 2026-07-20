@@ -38,6 +38,8 @@ export const DEFAULT_REPORT_COLUMN_KEYS = ["spend", "impressions", "ctr", "cpc",
 export const REPORT_BREAKDOWNS: { key: string; label: string }[] = [
   { key: "none", label: "Total (no breakdown)" },
   { key: "day", label: "By day" },
+  { key: "adset", label: "By ad set" },
+  { key: "adset_day", label: "By day × ad set" },
   { key: "platform", label: "By platform" },
   { key: "placement", label: "By placement" },
   { key: "age", label: "By age" },

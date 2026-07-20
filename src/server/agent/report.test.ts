@@ -198,3 +198,67 @@ test("buildReport exposes de-duplicated funnel event columns and cost-per-event"
   // purchases de-duped to 6 (not 12); leads 10; registrations 4; LPV 50; cost/purchase = 300/6 = 50
   expect(p.rows).toEqual([[6, 10, 4, 50, 50]]);
 });
+
+test("normalizeBreakdown recognizes ad-set and combined day × ad-set phrasings", () => {
+  expect(normalizeBreakdown("ad set")).toBe("adset");
+  expect(normalizeBreakdown("adset")).toBe("adset");
+  expect(normalizeBreakdown("daily by ad set")).toBe("adset_day");
+  expect(normalizeBreakdown("day and adset")).toBe("adset_day");
+  expect(normalizeBreakdown("ad set by date")).toBe("adset_day");
+  expect(normalizeBreakdown("by day")).toBe("day"); // unchanged
+});
+
+test("buildReport adset_day yields one row per ad set per day, chronological", async () => {
+  const src = rowSource({
+    act_1: [
+      row("2026-07-02", "c1", { adset_id: "s1", adset_name: "California", spend: "30" }),
+      row("2026-07-01", "c1", { adset_id: "s1", adset_name: "California", spend: "10" }),
+      row("2026-07-01", "c1", { adset_id: "s2", adset_name: "Texas", spend: "20" }),
+    ],
+  });
+  const p = await buildReport(
+    src,
+    {
+      accountIds: ["act_1"],
+      since: "2026-07-01",
+      until: "2026-07-02",
+      columns: ["spend"],
+      breakdown: "adset_day",
+      objectiveByCampaign: {},
+    },
+    "X",
+  );
+  expect(p.columns[0].label).toBe("Date · Ad set");
+  expect(p.rows).toEqual([
+    ["2026-07-01 · California", 10],
+    ["2026-07-01 · Texas", 20],
+    ["2026-07-02 · California", 30],
+  ]);
+  expect(p.totals).toEqual(["Total", 60]);
+});
+
+test("buildReport adset merges same-named ad sets and sorts by spend", async () => {
+  const src = rowSource({
+    act_1: [
+      row("2026-07-01", "c1", { adset_id: "s1", adset_name: "California", spend: "10" }),
+      row("2026-07-01", "c2", { adset_id: "s9", adset_name: "California", spend: "15" }),
+      row("2026-07-01", "c1", { adset_id: "s2", adset_name: "Texas", spend: "20" }),
+    ],
+  });
+  const p = await buildReport(
+    src,
+    {
+      accountIds: ["act_1"],
+      since: "2026-07-01",
+      until: "2026-07-01",
+      columns: ["spend"],
+      breakdown: "adset",
+      objectiveByCampaign: {},
+    },
+    "X",
+  );
+  expect(p.rows).toEqual([
+    ["California", 25],
+    ["Texas", 20],
+  ]);
+});
