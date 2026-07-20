@@ -464,6 +464,8 @@ test("get_ad_sets resolves a campaign subject to just its ad sets", async () => 
 
 test("runReport says breakdown-not-synced (not 'no data') when totals exist for the window", async () => {
   const today = new Date().toISOString().slice(0, 10);
+  // This table survives the global seed (and prior test-file runs) — the lag case needs it empty.
+  await db.execute(sql`truncate table insights_breakdown_daily`);
   const args = {
     name: "wildcasino.ag",
     accountIds: ["act_111"],
