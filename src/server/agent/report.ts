@@ -458,6 +458,29 @@ export async function runReport(args: ReportArgs): Promise<ReportPayload | { err
   };
   const payload = await buildReport(dbRowSource(spec), spec, args.name);
   if (payload.rowCount === 0) {
+    // Breakdown tables refresh only on the daily FULL sync, so a fresh window can have campaign
+    // rows but no breakdown rows yet. Say that, instead of a misleading "no data".
+    if (spec.breakdown !== "none" && spec.breakdown !== "day") {
+      const [has] = await db
+        .select({ id: schema.insightsDaily.entityId })
+        .from(schema.insightsDaily)
+        .where(
+          and(
+            eq(schema.insightsDaily.level, "campaign"),
+            inArray(schema.insightsDaily.accountId, args.accountIds),
+            gte(schema.insightsDaily.date, args.since),
+            lte(schema.insightsDaily.date, args.until),
+          ),
+        )
+        .limit(1);
+      if (has)
+        return {
+          error:
+            `"${args.name}" HAS data for ${args.since} → ${args.until}, but the "${spec.breakdown}" ` +
+            `breakdown hasn't been synced for that window yet (breakdowns refresh on the daily full ` +
+            `sync). Re-run with breakdown "none" or "day" for totals now, or retry after the next full sync.`,
+        };
+    }
     return { error: `No data for "${args.name}" in ${args.since} → ${args.until}.` };
   }
   return payload;

@@ -2,6 +2,7 @@ import { test, expect, beforeEach } from "bun:test";
 import { eq, sql } from "drizzle-orm";
 import { db, schema } from "@/db/client";
 import { resolveClient, runTool } from "./tools";
+import { runReport } from "./report";
 import { runAgentLoop, type ChatResult } from "./chat";
 import type { CreateMessageParams, AnthropicResponse, LlmClient } from "./anthropic";
 
@@ -459,4 +460,34 @@ test("get_ad_sets resolves a campaign subject to just its ad sets", async () => 
   };
   // SW Broad holds California + Texas (not the LAL campaign's California).
   expect(r.adSets.map((a) => a.name).sort()).toEqual(["California", "Texas"]);
+}, 20000);
+
+test("runReport says breakdown-not-synced (not 'no data') when totals exist for the window", async () => {
+  const today = new Date().toISOString().slice(0, 10);
+  const args = {
+    name: "wildcasino.ag",
+    accountIds: ["act_111"],
+    since: today,
+    until: today,
+    columns: ["spend"],
+    markup: undefined,
+  };
+  // Campaign-level rows exist for today, but no breakdown rows are seeded → actionable error.
+  const bd = await runReport({ ...args, breakdown: "platform" });
+  if (!("error" in bd)) throw new Error("expected an error for the unsynced breakdown");
+  expect(bd.error).toContain("hasn't been synced");
+  expect(bd.error).toContain("platform");
+  // Same window without a breakdown works fine.
+  const totals = await runReport({ ...args, breakdown: "none" });
+  if ("error" in totals) throw new Error(`unexpected error: ${totals.error}`);
+  expect(totals.rowCount).toBeGreaterThan(0);
+  // A window with truly nothing still reports plain no-data.
+  const empty = await runReport({
+    ...args,
+    since: "2020-01-01",
+    until: "2020-01-02",
+    breakdown: "platform",
+  });
+  if (!("error" in empty)) throw new Error("expected no-data error");
+  expect(empty.error).toContain("No data");
 }, 20000);
