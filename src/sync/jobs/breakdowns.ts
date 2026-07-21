@@ -13,6 +13,47 @@ const ID_FIELD: Record<Level, string | null> = {
   ad: "ad_id",
 };
 
+// Asset breakdown values arrive as OBJECTS ({text,id} / {video_id,url,…}); naive String() collapses
+// every asset into "[object Object]" — one PK per ad/day, upserts overwriting each other. Key rows
+// by a STABLE identifier and store a READABLE label in dims.
+const ASSET_ID_KEYS = ["id", "hash", "video_id"];
+const ASSET_LABEL_KEYS = [
+  "text",
+  "name",
+  "video_name",
+  "image_name",
+  "website_url",
+  "display_url",
+  "url",
+];
+function pickString(v: Record<string, unknown>, keys: string[]): string | null {
+  for (const k of keys) {
+    const x = v[k];
+    if (typeof x === "string" && x) return x;
+    if (typeof x === "number") return String(x);
+  }
+  return null;
+}
+function dimKey(v: unknown): string {
+  if (v == null) return "unknown";
+  if (typeof v !== "object") return String(v);
+  const o = v as Record<string, unknown>;
+  return (
+    pickString(o, ASSET_ID_KEYS) ??
+    pickString(o, ASSET_LABEL_KEYS) ??
+    JSON.stringify(o).slice(0, 120)
+  );
+}
+function dimLabel(v: unknown): string {
+  if (v == null) return "unknown";
+  if (typeof v !== "object") return String(v);
+  const o = v as Record<string, unknown>;
+  return (
+    pickString(o, ASSET_LABEL_KEYS) ??
+    pickString(o, ASSET_ID_KEYS) ??
+    JSON.stringify(o).slice(0, 120)
+  );
+}
 /**
  * Pull breakdown insights for each dimension group at the given level. Every metric lands in `raw`;
  * spend/impressions/reach/clicks/conversions are promoted, and the per-dimension values are stored
@@ -64,14 +105,14 @@ export async function syncBreakdowns(
           const rec = r as Record<string, unknown>;
           const entityId = idField ? String(rec[idField] ?? accountId) : accountId;
           const dims: Record<string, string> = {};
-          for (const dim of group) dims[dim] = String(rec[dim] ?? "unknown");
+          for (const dim of group) dims[dim] = dimLabel(rec[dim]);
           const v = {
             level,
             entityId,
             accountId,
             date: r.date_start,
             breakdownType,
-            breakdownValue: group.map((d) => dims[d]).join("|"),
+            breakdownValue: group.map((d) => dimKey(rec[d])).join("|"),
             dims,
             spend: n(r.spend),
             impressions: n(r.impressions),

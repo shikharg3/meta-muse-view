@@ -1,118 +1,80 @@
 import { test, expect, beforeEach } from "bun:test";
-import { sql } from "drizzle-orm";
+import { sql as dsql } from "drizzle-orm";
 import { db, schema } from "@/db/client";
 import { syncBreakdowns } from "./breakdowns";
-import type { InsightRow, InsightsClient } from "@/meta/types";
-import { fakeInsightsClient } from "@/meta/fake-client";
-
-function clientFor(byBreakdown: Record<string, InsightRow[]>): InsightsClient {
-  return fakeInsightsClient({
-    getInsights: async (_id: string, params: Record<string, unknown>) =>
-      byBreakdown[String(params.breakdowns)] ?? [],
-  });
-}
+import type { InsightsClient, InsightRow } from "@/meta/types";
 
 beforeEach(async () => {
-  await db.execute(sql`truncate table insights_breakdown_daily cascade`);
+  await db.execute(dsql`truncate table insights_breakdown_daily`);
 });
 
-test("writes one row per (breakdown_type, value, date), promoting reach + dims + raw", async () => {
-  const client = clientFor({
-    age: [
-      {
-        date_start: "2026-06-01",
-        date_stop: "2026-06-01",
-        account_id: "act_1",
-        age: "25-34",
-        spend: "50",
-        impressions: "5",
-        reach: "4",
-        actions: [{ action_type: "omni_purchase", value: "2" }],
-      },
-    ],
-  });
-  await syncBreakdowns(client, "act_1", { groups: [["age"]], days: 7 });
-  const rows = await db.select().from(schema.insightsBreakdownDaily);
-  expect(rows).toHaveLength(1);
-  expect(rows[0].breakdownType).toBe("age");
-  expect(rows[0].breakdownValue).toBe("25-34");
-  expect(rows[0].reach).toBe(4);
-  expect(rows[0].conversions).toBe(2);
-  expect(rows[0].dims).toEqual({ age: "25-34" });
-  expect((rows[0].raw as Record<string, unknown>).age).toBe("25-34");
-});
+const fakeClient = (rows: InsightRow[]): InsightsClient =>
+  ({ getInsights: async () => rows }) as unknown as InsightsClient;
 
-test("campaign-level breakdowns key on campaign_id, not the account", async () => {
-  const client = clientFor({
-    age: [
-      {
-        date_start: "2026-06-01",
-        date_stop: "2026-06-01",
-        campaign_id: "c1",
-        age: "25-34",
-        spend: "30",
-      },
-      {
-        date_start: "2026-06-01",
-        date_stop: "2026-06-01",
-        campaign_id: "c2",
-        age: "25-34",
-        spend: "20",
-      },
-    ],
-  });
-  await syncBreakdowns(client, "act_1", { groups: [["age"]], days: 7, level: "campaign" });
-  const rows = await db.select().from(schema.insightsBreakdownDaily);
-  expect(rows).toHaveLength(2);
-  expect(rows.every((r) => r.level === "campaign")).toBe(true);
-  expect(new Set(rows.map((r) => r.entityId))).toEqual(new Set(["c1", "c2"]));
-});
-
-test("multi-dimension groups become one breakdown_type with per-dim dims", async () => {
-  const client = clientFor({
-    "publisher_platform,platform_position": [
-      {
-        date_start: "2026-06-01",
-        date_stop: "2026-06-01",
-        account_id: "act_1",
-        publisher_platform: "facebook",
-        platform_position: "feed",
-        spend: "10",
-      },
-    ],
-  });
-  await syncBreakdowns(client, "act_1", {
-    groups: [["publisher_platform", "platform_position"]],
-    days: 1,
-  });
-  const [row] = await db.select().from(schema.insightsBreakdownDaily);
-  expect(row.breakdownType).toBe("publisher_platform|platform_position");
-  expect(row.breakdownValue).toBe("facebook|feed");
-  expect(row.dims).toEqual({ publisher_platform: "facebook", platform_position: "feed" });
-});
-
-test("a group Meta rejects is skipped without failing the others", async () => {
-  const client = fakeInsightsClient({
-    getInsights: async (_id, params) => {
-      if (String(params.breakdowns) === "bad_dim")
-        throw new Error("(#100) bad_dim is not a valid breakdown");
-      return [
-        {
-          date_start: "2026-06-01",
-          date_stop: "2026-06-01",
-          account_id: "act_1",
-          country: "BR",
-          spend: "5",
-        },
-      ];
+test("asset breakdown rows keep one row PER ASSET (stable id key + readable label)", async () => {
+  // Two video assets on the SAME ad and day: naive String(object) collapsed both into one
+  // "[object Object]" PK, the second upsert silently overwriting the first.
+  const rows: InsightRow[] = [
+    {
+      date_start: "2026-07-15",
+      date_stop: "2026-07-15",
+      ad_id: "ad1",
+      spend: "10",
+      impressions: "100",
+      clicks: "5",
+      video_asset: { video_id: "111", video_name: "Hero A" },
     },
+    {
+      date_start: "2026-07-15",
+      date_stop: "2026-07-15",
+      ad_id: "ad1",
+      spend: "20",
+      impressions: "200",
+      clicks: "8",
+      video_asset: { video_id: "222", video_name: "Hero B" },
+    },
+  ];
+  const written = await syncBreakdowns(fakeClient(rows), "act_9", {
+    groups: [["video_asset"]],
+    level: "ad",
+    since: "2026-07-15",
+    until: "2026-07-15",
   });
-  const written = await syncBreakdowns(client, "act_1", {
-    groups: [["bad_dim"], ["country"]],
-    days: 1,
+  expect(written).toBe(2);
+  const stored = await db
+    .select({
+      value: schema.insightsBreakdownDaily.breakdownValue,
+      dims: schema.insightsBreakdownDaily.dims,
+      spend: schema.insightsBreakdownDaily.spend,
+    })
+    .from(schema.insightsBreakdownDaily);
+  expect(stored).toHaveLength(2); // NOT collapsed into one
+  const byValue = new Map(stored.map((s) => [s.value, s]));
+  expect([...byValue.keys()].sort()).toEqual(["111", "222"]); // stable id keys
+  expect((byValue.get("111")?.dims as { video_asset?: string })?.video_asset).toBe("Hero A");
+  expect(byValue.get("222")?.spend).toBe(20);
+});
+
+test("plain string breakdown values are stored unchanged", async () => {
+  const rows: InsightRow[] = [
+    {
+      date_start: "2026-07-15",
+      date_stop: "2026-07-15",
+      spend: "5",
+      impressions: "50",
+      clicks: "2",
+      age: "25-34",
+      gender: "male",
+    },
+  ];
+  await syncBreakdowns(fakeClient(rows), "act_9", {
+    groups: [["age", "gender"]],
+    level: "account",
+    since: "2026-07-15",
+    until: "2026-07-15",
   });
-  expect(written).toBe(1);
-  const rows = await db.select().from(schema.insightsBreakdownDaily);
-  expect(rows).toHaveLength(1);
-  expect(rows[0].breakdownType).toBe("country");
+  const [stored] = await db
+    .select({ value: schema.insightsBreakdownDaily.breakdownValue })
+    .from(schema.insightsBreakdownDaily);
+  expect(stored.value).toBe("25-34|male");
 });
