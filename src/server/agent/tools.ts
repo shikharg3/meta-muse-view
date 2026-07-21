@@ -18,8 +18,10 @@ import { runReport, resolveRange, normalizeColumns, normalizeBreakdown } from ".
 import type { AnthropicTool } from "./anthropic";
 import { windowFromDays, windowFromDates, isYmd, type DateWindow } from "@/lib/range";
 
-// Insights are only backfilled ~90 days; clamp so the model can't ask beyond data.
-const MAX_DAYS = 90;
+// Cap trailing windows at the insights retention target (≈37 months) — accounts are backfilled to
+// their creation date, so anything within this window that exists is synced. (Explicit since/until
+// ranges are not clamped.)
+const MAX_DAYS = 1125;
 function clampDays(v: unknown): number {
   const n = Math.round(Number(v));
   if (!Number.isFinite(n) || n <= 0) return 30;
@@ -49,7 +51,7 @@ export const TOOLS: AnthropicTool[] = [
         days: {
           type: "integer",
           description:
-            "Trailing window ending TODAY (default 30, max 90). days=1 = today only — for a specific past day use since+until instead.",
+            "Trailing window ending TODAY (default 30; full synced history available — accounts are backfilled to their creation, ≈37 months max). days=1 = today only — for a specific past day use since+until instead.",
         },
         since: {
           type: "string",
@@ -74,7 +76,7 @@ export const TOOLS: AnthropicTool[] = [
         days: {
           type: "integer",
           description:
-            "Trailing window ending TODAY (default 30, max 90). days=1 = today only — for a specific past day use since+until.",
+            "Trailing window ending TODAY (default 30; full synced history available — accounts are backfilled to their creation, ≈37 months max). days=1 = today only — for a specific past day use since+until.",
         },
         since: {
           type: "string",
@@ -95,7 +97,7 @@ export const TOOLS: AnthropicTool[] = [
         days: {
           type: "integer",
           description:
-            "Trailing window ending TODAY (default 30, max 90). days=1 = today only — for a specific past day use since+until.",
+            "Trailing window ending TODAY (default 30; full synced history available — accounts are backfilled to their creation, ≈37 months max). days=1 = today only — for a specific past day use since+until.",
         },
         since: {
           type: "string",
@@ -115,7 +117,7 @@ export const TOOLS: AnthropicTool[] = [
         days: {
           type: "integer",
           description:
-            "Trailing window ending TODAY (default 30, max 90). days=1 = today only — for a specific past day use since+until.",
+            "Trailing window ending TODAY (default 30; full synced history available — accounts are backfilled to their creation, ≈37 months max). days=1 = today only — for a specific past day use since+until.",
         },
         since: {
           type: "string",
@@ -160,7 +162,7 @@ export const TOOLS: AnthropicTool[] = [
         days: {
           type: "integer",
           description:
-            "Trailing window ending TODAY (default 30, max 90). For a specific day/range use since+until.",
+            "Trailing window ending TODAY (default 30; full synced history available). For a specific day/range use since+until.",
         },
         since: {
           type: "string",

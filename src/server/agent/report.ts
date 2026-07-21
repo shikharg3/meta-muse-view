@@ -572,7 +572,8 @@ export function resolveRange(input: {
     return { since: input.since, until: input.until };
   }
   const days = Math.round(Number(input.days));
-  if (Number.isFinite(days) && days > 0) return trailingRange(Math.min(days, 365));
+  // Clamp to the insights retention target (≈37 months) — history is synced to account creation.
+  if (Number.isFinite(days) && days > 0) return trailingRange(Math.min(days, 1125));
   return null;
 }
 
