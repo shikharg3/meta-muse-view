@@ -291,13 +291,38 @@ export interface BuildSpec {
 /** Supplies a report's rows for one account. Injected so buildReport stays pure and unit-testable. */
 export type ReportRowSource = (accountId: string) => Promise<InsightRow[]>;
 
+/** Readable label for an asset-dim value: Meta returns these as OBJECTS ({text}/{video_id,url}/…),
+ *  so the stored breakdown_value stringifies to "[object Object]" — read the dims jsonb instead. */
+function assetLabel(v: unknown): string {
+  if (v == null) return "—";
+  if (typeof v !== "object") return String(v);
+  const o = v as Record<string, unknown>;
+  const keys = [
+    "text",
+    "name",
+    "video_name",
+    "image_name",
+    "website_url",
+    "display_url",
+    "url",
+    "video_id",
+    "hash",
+    "id",
+  ];
+  for (const k of keys) {
+    const x = o[k];
+    if (typeof x === "string" && x) return x;
+    if (typeof x === "number") return String(x);
+  }
+  return JSON.stringify(o).slice(0, 80);
+}
+
 /**
  * Report rows sourced from the synced DB, not a live Meta call — reports must cover accounts that
  * are disabled or outside the current Business Manager (their history is retained locally but the
  * token can no longer query them live, which otherwise yields an empty "No data" report).
- * none/day read campaign-level insights_daily (full objective-aware results); dimension breakdowns
- * read account-level insights_breakdown_daily (no per-campaign objective, so "results" use the
- * default action type).
+ * none read campaign-level insights_daily (full objective-aware results); entity dims read
+ * insights_daily at their level; meta dims read insights_breakdown_daily at exactly one level.
  */
 export function dbRowSource(spec: BuildSpec): ReportRowSource {
   const scopedTo = spec.campaignIds?.length ? new Set(spec.campaignIds) : null;
@@ -442,7 +467,9 @@ export function dbRowSource(spec: BuildSpec): ReportRowSource {
           date_stop: r.date,
           campaign_id:
             level === "campaign" ? r.entityId : (adCampaign?.get(r.entityId) ?? undefined),
-          [DIM_VALUE_KEY]: r.breakdownValue.split("|").join(" · "),
+          [DIM_VALUE_KEY]: def.adLevel
+            ? assetLabel((r.dims as Record<string, unknown> | null)?.[def.metaType])
+            : r.breakdownValue.split("|").join(" · "),
           spend: String(r.spend),
           impressions: String(r.impressions),
           reach: String(r.reach),

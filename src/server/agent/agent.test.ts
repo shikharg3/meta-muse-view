@@ -632,3 +632,32 @@ test("placement reports read the synced triple and render joined values", async 
     ["instagram · story · android_smartphone", 30],
   ]);
 }, 20000);
+
+test("asset-dim reports label rows from the dims object, not '[object Object]'", async () => {
+  const today = new Date().toISOString().slice(0, 10);
+  await db.execute(sql`truncate table insights_breakdown_daily`);
+  await db.insert(schema.insightsBreakdownDaily).values({
+    level: "ad",
+    entityId: "ad_ca1", // seeded ad on act_777
+    date: today,
+    accountId: "act_777",
+    breakdownType: "video_asset",
+    breakdownValue: "[object Object]", // exactly what the sync stores for object values
+    dims: { video_asset: { video_id: "987", video_name: "LR Hero 15s" } },
+    spend: 40,
+    impressions: 400,
+    clicks: 20,
+  });
+  const p = await runReport({
+    name: "Statewise",
+    accountIds: ["act_777"],
+    since: today,
+    until: today,
+    columns: ["spend"],
+    breakdown: "video_asset",
+    byDay: false,
+    markup: undefined,
+  });
+  if ("error" in p) throw new Error(p.error);
+  expect(p.rows).toEqual([["LR Hero 15s", 40]]);
+}, 20000);
