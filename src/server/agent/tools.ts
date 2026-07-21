@@ -14,7 +14,7 @@ import {
   type AdScope,
 } from "@/server/fns/dashboard";
 import { getClientRow, effectiveAccountIds } from "@/sync/jobs/clients";
-import { runReport, resolveRange, normalizeColumns, normalizeBreakdown } from "./report";
+import { runReport, resolveRange, normalizeColumns, parseBreakdown } from "./report";
 import type { AnthropicTool } from "./anthropic";
 import { windowFromDays, windowFromDates, isYmd, type DateWindow } from "@/lib/range";
 
@@ -207,17 +207,37 @@ export const TOOLS: AnthropicTool[] = [
           enum: [
             "none",
             "day",
+            "campaign",
             "adset",
-            "adset_day",
+            "ad",
             "platform",
             "placement",
+            "device",
             "age",
             "gender",
+            "age_gender",
             "country",
             "region",
+            "market",
+            "hour",
+            "hour_audience",
+            "frequency",
+            "product",
+            "image_asset",
+            "video_asset",
+            "title_asset",
+            "body_asset",
+            "cta_asset",
+            "description_asset",
+            "link_asset",
           ],
           description:
-            "Row breakdown dimension. 'day' = one row per day; 'adset' = one row per ad set (ad sets sharing a name merge); 'adset_day' = one row per ad set per day (use when the user wants daily numbers per ad set, e.g. per-state dailies). Default none (single total row).",
+            "Row dimension. Entity grains: campaign / adset / ad (one row per entity; same-named entities merge). Meta dimensions: platform, placement (platform·position·device), device, age, gender, age_gender, country, region, market (DMA), hour / hour_audience (hour-of-day), frequency, product, and dynamic-creative asset dims (image/video/title/body/cta/description/link_asset). 'day' = daily totals. Default none (single total row).",
+        },
+        split_by_day: {
+          type: "boolean",
+          description:
+            "Additionally split EVERY dimension row by day (e.g. breakdown=adset + split_by_day → one row per ad set per day). Works with all dimensions.",
         },
       },
       required: ["subject"],
@@ -500,12 +520,14 @@ async function generateReportTool(input: Record<string, unknown>): Promise<unkno
   const range = resolveRange(input);
   if (!range)
     return { error: "What date range? e.g. 'last 7 days' or specific since/until dates." };
+  const bd = parseBreakdown(input.breakdown, input.split_by_day);
   return await runReport({
     name: subject.name,
     accountIds: subject.accountIds,
     since: range.since,
     until: range.until,
     columns: normalizeColumns(Array.isArray(input.columns) ? input.columns.map(String) : []),
-    breakdown: normalizeBreakdown(input.breakdown),
+    breakdown: bd.dim,
+    byDay: bd.byDay,
   });
 }

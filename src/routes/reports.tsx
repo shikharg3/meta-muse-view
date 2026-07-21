@@ -39,6 +39,7 @@ function Reports() {
           until: req.until,
           columns: req.columns,
           breakdown: req.breakdown,
+          splitByDay: req.splitByDay,
           markup: req.markup,
           campaignIds: req.campaignIds,
         },

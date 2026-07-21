@@ -473,6 +473,7 @@ test("runReport says breakdown-not-synced (not 'no data') when totals exist for 
     until: today,
     columns: ["spend"],
     markup: undefined,
+    byDay: false,
   };
   // Campaign-level rows exist for today, but no breakdown rows are seeded → actionable error.
   const bd = await runReport({ ...args, breakdown: "platform" });
@@ -541,6 +542,7 @@ test("breakdown reports honor selected campaigns and never double-count levels",
     until: today,
     columns: ["spend"],
     markup: undefined,
+    byDay: false,
     breakdown: "platform" as const,
   };
   // Unscoped: the account rollup only — $100, NOT $200 (account + campaign double-count).
@@ -562,6 +564,7 @@ test("adset_day report: one row per ad set per day, honoring campaign scoping", 
     until: today,
     columns: ["spend"],
     markup: undefined,
+    byDay: false,
   };
   // Unscoped by-ad-set: California merges across both campaigns (100 + 50), Texas stays 80.
   const byAdset = await runReport({ ...base, breakdown: "adset" });
@@ -572,10 +575,60 @@ test("adset_day report: one row per ad set per day, honoring campaign scoping", 
   ]);
   // Day × ad set, scoped to SW Broad only: its California (100) + Texas (80); the LAL California
   // (50) is excluded by the campaign filter.
-  const scoped = await runReport({ ...base, breakdown: "adset_day", campaignIds: ["c_broad"] });
+  const scoped = await runReport({
+    ...base,
+    breakdown: "adset",
+    byDay: true,
+    campaignIds: ["c_broad"],
+  });
   if ("error" in scoped) throw new Error(scoped.error);
   expect(scoped.rows).toEqual([
     [`${today} · California`, 100],
     [`${today} · Texas`, 80],
+  ]);
+}, 20000);
+
+test("placement reports read the synced triple and render joined values", async () => {
+  const today = new Date().toISOString().slice(0, 10);
+  await db.execute(sql`truncate table insights_breakdown_daily`);
+  await db.insert(schema.insightsBreakdownDaily).values([
+    {
+      level: "account",
+      entityId: "act_111",
+      date: today,
+      accountId: "act_111",
+      breakdownType: "publisher_platform|platform_position|impression_device",
+      breakdownValue: "facebook|feed|iphone",
+      spend: 70,
+      impressions: 700,
+      clicks: 35,
+    },
+    {
+      level: "account",
+      entityId: "act_111",
+      date: today,
+      accountId: "act_111",
+      breakdownType: "publisher_platform|platform_position|impression_device",
+      breakdownValue: "instagram|story|android_smartphone",
+      spend: 30,
+      impressions: 300,
+      clicks: 15,
+    },
+  ]);
+  const p = await runReport({
+    name: "wildcasino.ag",
+    accountIds: ["act_111"],
+    since: today,
+    until: today,
+    columns: ["spend"],
+    breakdown: "placement",
+    byDay: false,
+    markup: undefined,
+  });
+  if ("error" in p) throw new Error(p.error);
+  expect(p.columns[0].label).toBe("Placement");
+  expect(p.rows).toEqual([
+    ["facebook · feed · iphone", 70],
+    ["instagram · story · android_smartphone", 30],
   ]);
 }, 20000);

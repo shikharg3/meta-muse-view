@@ -26,6 +26,7 @@ export interface ReportRequest {
   until?: string;
   columns: string[];
   breakdown: string;
+  splitByDay?: boolean;
   markup?: number;
   campaignIds?: string[];
   summary: string;
@@ -48,7 +49,8 @@ export function ReportBuilder({ clients, busy, onSubmit, onClose, lockedClient }
   const [since, setSince] = useState("");
   const [until, setUntil] = useState("");
   const [columns, setColumns] = useState<string[]>(DEFAULT_REPORT_COLUMN_KEYS);
-  const [breakdown, setBreakdown] = useState("day");
+  const [breakdown, setBreakdown] = useState("none");
+  const [splitByDay, setSplitByDay] = useState(true); // default = daily totals (old "By day")
   const [markupPct, setMarkupPct] = useState(0);
   const [campaigns, setCampaigns] = useState<{ id: string; name: string }[]>([]);
   const [selectedCampaigns, setSelectedCampaigns] = useState<Set<string>>(new Set());
@@ -103,9 +105,10 @@ export function ReportBuilder({ clients, busy, onSubmit, onClose, lockedClient }
       ...(custom ? { since, until } : { days }),
       columns: ordered,
       breakdown,
+      splitByDay,
       markup: markupPct ? markupPct / 100 : undefined,
       campaignIds,
-      summary: `${clientName} · ${range} · ${bd.toLowerCase()} · ${colLabels.join(", ")}${markupPct ? ` · +${markupPct}% markup` : ""}${campaignIds ? ` · ${campaignIds.length} campaigns` : ""}`,
+      summary: `${clientName} · ${range} · ${bd.toLowerCase()}${splitByDay ? " × day" : ""} · ${colLabels.join(", ")}${markupPct ? ` · +${markupPct}% markup` : ""}${campaignIds ? ` · ${campaignIds.length} campaigns` : ""}`,
     });
   };
 
@@ -258,17 +261,28 @@ export function ReportBuilder({ clients, busy, onSubmit, onClose, lockedClient }
 
       {/* Breakdown */}
       <Field label="Breakdown">
-        <select
-          value={breakdown}
-          onChange={(e) => setBreakdown(e.target.value)}
-          className="w-full h-9 rounded-md border border-border bg-background px-2.5 text-xs"
-        >
-          {REPORT_BREAKDOWNS.map((b) => (
-            <option key={b.key} value={b.key}>
-              {b.label}
-            </option>
-          ))}
-        </select>
+        <div className="flex items-center gap-2">
+          <select
+            value={breakdown}
+            onChange={(e) => setBreakdown(e.target.value)}
+            className="flex-1 h-9 rounded-md border border-border bg-background px-2.5 text-xs"
+          >
+            {REPORT_BREAKDOWNS.map((b) => (
+              <option key={b.key} value={b.key}>
+                {b.label}
+              </option>
+            ))}
+          </select>
+          <label className="flex items-center gap-1.5 text-xs text-muted-foreground whitespace-nowrap cursor-pointer">
+            <input
+              type="checkbox"
+              checked={splitByDay}
+              onChange={(e) => setSplitByDay(e.target.checked)}
+              className="size-3.5 accent-primary"
+            />
+            Split by day
+          </label>
+        </div>
       </Field>
 
       {/* Client markup */}

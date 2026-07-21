@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { buildReport, normalizeColumns, normalizeBreakdown, resolveRange } from "./report";
+import { buildReport, normalizeColumns, parseBreakdown, resolveRange } from "./report";
 import type { ReportRowSource } from "./report";
 import type { InsightRow } from "@/meta/types";
 
@@ -32,12 +32,14 @@ test("normalizeColumns maps aliases, dedupes, drops unknowns", () => {
   ).toEqual(["registrations", "purchases", "landing_page_views", "cost_per_lead"]);
 });
 
-test("normalizeBreakdown recognizes synonyms and defaults to none", () => {
-  expect(normalizeBreakdown("by day")).toBe("day");
-  expect(normalizeBreakdown("Daily")).toBe("day");
-  expect(normalizeBreakdown("platform")).toBe("platform");
-  expect(normalizeBreakdown(undefined)).toBe("none");
-  expect(normalizeBreakdown("nonsense")).toBe("none");
+test("parseBreakdown recognizes synonyms, legacy composites, and defaults to none", () => {
+  expect(parseBreakdown("by day")).toEqual({ dim: "none", byDay: true });
+  expect(parseBreakdown("Daily")).toEqual({ dim: "none", byDay: true });
+  expect(parseBreakdown("platform")).toEqual({ dim: "platform", byDay: false });
+  expect(parseBreakdown(undefined)).toEqual({ dim: "none", byDay: false });
+  expect(parseBreakdown("nonsense")).toEqual({ dim: "none", byDay: false });
+  // split flag composes with any dimension
+  expect(parseBreakdown("region", true)).toEqual({ dim: "region", byDay: true });
 });
 
 test("resolveRange handles days, explicit dates, and rejects empty", () => {
@@ -89,7 +91,8 @@ test("buildReport aggregates by day with objective-aware results", async () => {
       since: "2026-06-01",
       until: "2026-06-02",
       columns: ["spend", "results", "cpc", "ctr", "cpm"],
-      breakdown: "day",
+      breakdown: "none",
+      byDay: true,
       objectiveByCampaign: { c1: "OUTCOME_LEADS", c2: "OUTCOME_TRAFFIC" },
     },
     "PlayW3",
@@ -115,6 +118,7 @@ test("buildReport with breakdown none yields a single total row and no dimension
       until: "2026-06-01",
       columns: ["spend", "ctr"],
       breakdown: "none",
+      byDay: false,
       objectiveByCampaign: {},
     },
     "Acme",
@@ -136,7 +140,8 @@ test("buildReport skips accounts that error and notes it", async () => {
       since: "2026-06-01",
       until: "2026-06-01",
       columns: ["spend"],
-      breakdown: "day",
+      breakdown: "none",
+      byDay: true,
       objectiveByCampaign: {},
     },
     "Mixed",
@@ -157,6 +162,7 @@ test("buildReport applies a client markup to spend and derived cost metrics", as
       until: "2026-06-01",
       columns: ["spend", "cpc"],
       breakdown: "none",
+      byDay: false,
       objectiveByCampaign: {},
       markup: 0.1,
     },
@@ -191,6 +197,7 @@ test("buildReport exposes de-duplicated funnel event columns and cost-per-event"
       until: "2026-06-01",
       columns: ["purchases", "leads", "registrations", "landing_page_views", "cost_per_purchase"],
       breakdown: "none",
+      byDay: false,
       objectiveByCampaign: {},
     },
     "Acme",
@@ -199,21 +206,27 @@ test("buildReport exposes de-duplicated funnel event columns and cost-per-event"
   expect(p.rows).toEqual([[6, 10, 4, 50, 50]]);
 });
 
-test("normalizeBreakdown recognizes ad-set and combined day × ad-set phrasings", () => {
-  expect(normalizeBreakdown("ad set")).toBe("adset");
-  expect(normalizeBreakdown("adset")).toBe("adset");
-  expect(normalizeBreakdown("daily by ad set")).toBe("adset_day");
-  expect(normalizeBreakdown("day and adset")).toBe("adset_day");
-  expect(normalizeBreakdown("ad set by date")).toBe("adset_day");
-  expect(normalizeBreakdown("by day")).toBe("day"); // unchanged
+test("parseBreakdown recognizes ad-set and combined day × ad-set phrasings", () => {
+  expect(parseBreakdown("ad set")).toEqual({ dim: "adset", byDay: false });
+  expect(parseBreakdown("adset")).toEqual({ dim: "adset", byDay: false });
+  expect(parseBreakdown("daily by ad set")).toEqual({ dim: "adset", byDay: true });
+  expect(parseBreakdown("day and adset")).toEqual({ dim: "adset", byDay: true });
+  expect(parseBreakdown("adset_day")).toEqual({ dim: "adset", byDay: true }); // legacy composite
+  expect(parseBreakdown("device platform")).toEqual({ dim: "device", byDay: false });
+  expect(parseBreakdown("age and gender")).toEqual({ dim: "age_gender", byDay: false });
+  expect(parseBreakdown("dma")).toEqual({ dim: "market", byDay: false });
+  expect(parseBreakdown("hourly")).toEqual({ dim: "hour", byDay: false });
+  expect(parseBreakdown("headline")).toEqual({ dim: "title_asset", byDay: false });
+  expect(parseBreakdown("by campaign")).toEqual({ dim: "campaign", byDay: false });
+  expect(parseBreakdown("by ad")).toEqual({ dim: "ad", byDay: false });
 });
 
 test("buildReport adset_day yields one row per ad set per day, chronological", async () => {
   const src = rowSource({
     act_1: [
-      row("2026-07-02", "c1", { adset_id: "s1", adset_name: "California", spend: "30" }),
-      row("2026-07-01", "c1", { adset_id: "s1", adset_name: "California", spend: "10" }),
-      row("2026-07-01", "c1", { adset_id: "s2", adset_name: "Texas", spend: "20" }),
+      row("2026-07-02", "c1", { __dim: "California", spend: "30" }),
+      row("2026-07-01", "c1", { __dim: "California", spend: "10" }),
+      row("2026-07-01", "c1", { __dim: "Texas", spend: "20" }),
     ],
   });
   const p = await buildReport(
@@ -223,7 +236,8 @@ test("buildReport adset_day yields one row per ad set per day, chronological", a
       since: "2026-07-01",
       until: "2026-07-02",
       columns: ["spend"],
-      breakdown: "adset_day",
+      breakdown: "adset",
+      byDay: true,
       objectiveByCampaign: {},
     },
     "X",
@@ -240,9 +254,9 @@ test("buildReport adset_day yields one row per ad set per day, chronological", a
 test("buildReport adset merges same-named ad sets and sorts by spend", async () => {
   const src = rowSource({
     act_1: [
-      row("2026-07-01", "c1", { adset_id: "s1", adset_name: "California", spend: "10" }),
-      row("2026-07-01", "c2", { adset_id: "s9", adset_name: "California", spend: "15" }),
-      row("2026-07-01", "c1", { adset_id: "s2", adset_name: "Texas", spend: "20" }),
+      row("2026-07-01", "c1", { __dim: "California", spend: "10" }),
+      row("2026-07-01", "c2", { __dim: "California", spend: "15" }),
+      row("2026-07-01", "c1", { __dim: "Texas", spend: "20" }),
     ],
   });
   const p = await buildReport(
@@ -253,6 +267,7 @@ test("buildReport adset merges same-named ad sets and sorts by spend", async () 
       until: "2026-07-01",
       columns: ["spend"],
       breakdown: "adset",
+      byDay: false,
       objectiveByCampaign: {},
     },
     "X",

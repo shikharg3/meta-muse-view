@@ -12,17 +12,33 @@ import {
   type ReportColumnKind,
 } from "@/lib/report-options";
 
+// Every dimension a report can break down by. Entity dims read insights_daily at that level;
+// meta dims read the synced insights_breakdown_daily types. All compose with `byDay`.
 export type Breakdown =
   | "none"
-  | "day"
+  | "campaign"
   | "adset"
-  | "adset_day"
+  | "ad"
   | "platform"
   | "placement"
+  | "device"
   | "age"
   | "gender"
+  | "age_gender"
   | "country"
-  | "region";
+  | "region"
+  | "market"
+  | "hour"
+  | "hour_audience"
+  | "frequency"
+  | "product"
+  | "image_asset"
+  | "video_asset"
+  | "title_asset"
+  | "body_asset"
+  | "cta_asset"
+  | "description_asset"
+  | "link_asset";
 
 type Kind = ReportColumnKind;
 
@@ -63,26 +79,69 @@ interface Agg {
 // conversion baseline used elsewhere.
 const CONVERSION_TYPE = "omni_purchase";
 
-const META_BREAKDOWN: Record<Exclude<Breakdown, "none" | "day" | "adset" | "adset_day">, string> = {
-  platform: "publisher_platform",
-  placement: "platform_position",
-  age: "age",
-  gender: "gender",
-  country: "country",
-  region: "region",
+export type ReportDimDef =
+  | { label: string; source: "entity"; level: "campaign" | "adset" | "ad" }
+  | { label: string; source: "meta"; metaType: string; adLevel?: boolean };
+
+/** Registry of report dimensions → where their rows come from. `metaType` is the stored
+ *  breakdown_type key (pipe-joined Meta breakdown group, exactly as syncBreakdowns writes it);
+ *  `adLevel` marks dynamic-creative asset breakdowns Meta only serves at ad level. */
+export const REPORT_DIMS: Record<Exclude<Breakdown, "none">, ReportDimDef> = {
+  campaign: { label: "Campaign", source: "entity", level: "campaign" },
+  adset: { label: "Ad set", source: "entity", level: "adset" },
+  ad: { label: "Ad", source: "entity", level: "ad" },
+  platform: { label: "Platform", source: "meta", metaType: "publisher_platform" },
+  placement: {
+    label: "Placement",
+    source: "meta",
+    // The synced placement group is the full triple — a solo platform_position is never stored.
+    metaType: "publisher_platform|platform_position|impression_device",
+  },
+  device: { label: "Device", source: "meta", metaType: "device_platform" },
+  age: { label: "Age", source: "meta", metaType: "age" },
+  gender: { label: "Gender", source: "meta", metaType: "gender" },
+  age_gender: { label: "Age · Gender", source: "meta", metaType: "age|gender" },
+  country: { label: "Country", source: "meta", metaType: "country" },
+  region: { label: "Region", source: "meta", metaType: "region" },
+  market: { label: "Market (DMA)", source: "meta", metaType: "comscore_market" },
+  hour: {
+    label: "Hour (account time)",
+    source: "meta",
+    metaType: "hourly_stats_aggregated_by_advertiser_time_zone",
+  },
+  hour_audience: {
+    label: "Hour (audience time)",
+    source: "meta",
+    metaType: "hourly_stats_aggregated_by_audience_time_zone",
+  },
+  frequency: { label: "Frequency", source: "meta", metaType: "frequency_value" },
+  product: { label: "Product", source: "meta", metaType: "product_id" },
+  image_asset: { label: "Image asset", source: "meta", metaType: "image_asset", adLevel: true },
+  video_asset: { label: "Video asset", source: "meta", metaType: "video_asset", adLevel: true },
+  title_asset: { label: "Headline asset", source: "meta", metaType: "title_asset", adLevel: true },
+  body_asset: { label: "Body text asset", source: "meta", metaType: "body_asset", adLevel: true },
+  cta_asset: {
+    label: "CTA asset",
+    source: "meta",
+    metaType: "call_to_action_asset",
+    adLevel: true,
+  },
+  description_asset: {
+    label: "Description asset",
+    source: "meta",
+    metaType: "description_asset",
+    adLevel: true,
+  },
+  link_asset: {
+    label: "Link URL asset",
+    source: "meta",
+    metaType: "link_url_asset",
+    adLevel: true,
+  },
 };
-const DIM_LABEL: Record<Breakdown, string> = {
-  none: "",
-  day: "Date",
-  adset: "Ad set",
-  adset_day: "Date · Ad set",
-  platform: "Platform",
-  placement: "Placement",
-  age: "Age",
-  gender: "Gender",
-  country: "Country",
-  region: "Region",
-};
+
+/** The synced row's dimension value, attached by dbRowSource under this key. */
+export const DIM_VALUE_KEY = "__dim";
 
 // Aggregate → metric value. Labels/kinds live in the client-safe report-options
 // module (single source of truth shared with the column-picker UI).
@@ -160,22 +219,57 @@ export function normalizeColumns(input: string[]): string[] {
   return out;
 }
 
-export function normalizeBreakdown(input: unknown): Breakdown {
-  const v = String(input ?? "").toLowerCase();
-  // Combined day × ad-set must win over the individual matches ("daily by ad set" contains both).
-  const adset =
-    v.includes("adset") || v.includes("ad set") || v.includes("ad-set") || v.includes("ad_set");
-  const day = v.includes("day") || v.includes("daily") || v.includes("date");
-  if (adset && day) return "adset_day";
-  if (adset) return "adset";
-  if (day) return "day";
-  if (v.includes("platform") || v.includes("publisher")) return "platform";
-  if (v.includes("placement") || v.includes("position")) return "placement";
-  if (v.includes("age")) return "age";
-  if (v.includes("gender")) return "gender";
-  if (v.includes("country")) return "country";
-  if (v.includes("region")) return "region";
-  return "none";
+export interface ResolvedBreakdown {
+  dim: Breakdown;
+  byDay: boolean;
+}
+
+/**
+ * Free-text / legacy breakdown input (+ optional split-by-day flag) → dimension + byDay.
+ * Accepts exact registry keys, legacy composites ("day", "<dim>_day"), and natural phrasings
+ * ("daily by ad set", "device platform", "age and gender", "headline").
+ */
+export function parseBreakdown(input: unknown, splitByDay?: unknown): ResolvedBreakdown {
+  let v = String(input ?? "")
+    .toLowerCase()
+    .trim();
+  let byDay = Boolean(splitByDay);
+  if (["day", "daily", "by day", "date"].includes(v)) return { dim: "none", byDay: true };
+  if (v.endsWith("_day")) {
+    byDay = true;
+    v = v.slice(0, -4);
+  } else if (v.includes("day") || v.includes("daily") || (v !== "date" && v.includes("date"))) {
+    byDay = true;
+  }
+  if (v in REPORT_DIMS) return { dim: v as Breakdown, byDay };
+  const has = (...subs: string[]): boolean => subs.some((s) => v.includes(s));
+  const dim = ((): Breakdown => {
+    if (has("image")) return "image_asset";
+    if (has("video")) return "video_asset";
+    if (has("title", "headline")) return "title_asset";
+    if (has("body", "primary text")) return "body_asset";
+    if (has("cta", "call to action", "call_to_action")) return "cta_asset";
+    if (has("description")) return "description_asset";
+    if (has("link url", "link_url")) return "link_asset";
+    if (has("age") && has("gender")) return "age_gender";
+    if (has("age")) return "age";
+    if (has("gender")) return "gender";
+    if (has("adset", "ad set", "ad-set", "ad_set")) return "adset";
+    if (has("campaign")) return "campaign";
+    if (has("placement", "position")) return "placement";
+    if (has("device", "impression_device")) return "device";
+    if (has("platform", "publisher")) return "platform";
+    if (has("country")) return "country";
+    if (has("region", "state")) return "region";
+    if (has("dma", "market", "comscore")) return "market";
+    if (has("hour") && has("audience")) return "hour_audience";
+    if (has("hour")) return "hour";
+    if (has("frequency")) return "frequency";
+    if (has("product")) return "product";
+    if (/\bads?\b/.test(v)) return "ad";
+    return "none";
+  })();
+  return { dim, byDay };
 }
 
 export interface BuildSpec {
@@ -184,11 +278,13 @@ export interface BuildSpec {
   until: string;
   columns: string[];
   breakdown: Breakdown;
+  /** Additionally split every dimension row by day (key = "date · value"). */
+  byDay: boolean;
   /** campaign_id → objective, for objective-aware "results". */
   objectiveByCampaign: Record<string, string>;
   /** Cost markup fraction (e.g. 0.1 = +10%) applied to spend for client-facing reports. */
   markup?: number;
-  /** Restrict none/day reports to these campaign ids (empty/undefined = all campaigns). */
+  /** Restrict rows to these campaign ids (empty/undefined = all campaigns). */
   campaignIds?: string[];
 }
 
@@ -204,8 +300,53 @@ export type ReportRowSource = (accountId: string) => Promise<InsightRow[]>;
  * default action type).
  */
 export function dbRowSource(spec: BuildSpec): ReportRowSource {
+  const scopedTo = spec.campaignIds?.length ? new Set(spec.campaignIds) : null;
+  const core = (r: typeof schema.insightsDaily.$inferSelect): InsightRow => ({
+    date_start: r.date,
+    date_stop: r.date,
+    spend: String(r.spend),
+    impressions: String(r.impressions),
+    reach: String(r.reach),
+    clicks: String(r.clicks),
+    inline_link_clicks: String(r.inlineLinkClicks),
+    actions: (r.actions ?? undefined) as InsightRow["actions"],
+    action_values: (r.actionValues ?? undefined) as InsightRow["action_values"],
+  });
+  const dailyRows = (accountId: string, level: string) =>
+    db
+      .select()
+      .from(schema.insightsDaily)
+      .where(
+        and(
+          eq(schema.insightsDaily.level, level),
+          eq(schema.insightsDaily.accountId, accountId),
+          gte(schema.insightsDaily.date, spec.since),
+          lte(schema.insightsDaily.date, spec.until),
+        ),
+      );
+  // ad id → campaign id (and ad names), for ad-grain rows and ad-level asset breakdowns.
+  const adMaps = async (accountId: string) => {
+    const [ads, sets] = await Promise.all([
+      db
+        .select({ id: schema.ads.id, name: schema.ads.name, adSetId: schema.ads.adSetId })
+        .from(schema.ads)
+        .where(eq(schema.ads.accountId, accountId)),
+      db
+        .select({ id: schema.adSets.id, campaignId: schema.adSets.campaignId })
+        .from(schema.adSets)
+        .where(eq(schema.adSets.accountId, accountId)),
+    ]);
+    const campBySet = new Map(sets.map((s) => [s.id, s.campaignId]));
+    return {
+      nameById: new Map(ads.map((a) => [a.id, a.name])),
+      campaignByAd: new Map(ads.map((a) => [a.id, campBySet.get(a.adSetId)])),
+    };
+  };
+
   return async (accountId) => {
-    if (spec.breakdown === "none" || spec.breakdown === "day") {
+    const dim = spec.breakdown;
+    // Totals / by-day: campaign-level daily rows (objective-aware results, campaign scoping).
+    if (dim === "none") {
       const rows = await db
         .select()
         .from(schema.insightsDaily)
@@ -215,106 +356,103 @@ export function dbRowSource(spec: BuildSpec): ReportRowSource {
             eq(schema.insightsDaily.accountId, accountId),
             gte(schema.insightsDaily.date, spec.since),
             lte(schema.insightsDaily.date, spec.until),
-            spec.campaignIds?.length
-              ? inArray(schema.insightsDaily.entityId, spec.campaignIds)
-              : undefined,
+            scopedTo ? inArray(schema.insightsDaily.entityId, [...scopedTo]) : undefined,
           ),
         );
-      return rows.map(
-        (r): InsightRow => ({
-          date_start: r.date,
-          date_stop: r.date,
-          campaign_id: r.entityId,
-          spend: String(r.spend),
-          impressions: String(r.impressions),
-          reach: String(r.reach),
-          clicks: String(r.clicks),
-          inline_link_clicks: String(r.inlineLinkClicks),
-          actions: (r.actions ?? undefined) as InsightRow["actions"],
-          action_values: (r.actionValues ?? undefined) as InsightRow["action_values"],
-        }),
-      );
+      return rows.map((r): InsightRow => ({ ...core(r), campaign_id: r.entityId }));
     }
-    if (spec.breakdown === "adset" || spec.breakdown === "adset_day") {
-      // Ad-set grain comes from insights_daily level='adset' (synced hourly — never lags like the
-      // breakdown tables). Names + campaign parentage come from ad_sets; campaign scoping applies.
-      const sets = await db
-        .select({
-          id: schema.adSets.id,
-          name: schema.adSets.name,
-          campaignId: schema.adSets.campaignId,
-        })
-        .from(schema.adSets)
-        .where(eq(schema.adSets.accountId, accountId));
-      const setById = new Map(sets.map((s) => [s.id, s]));
-      const scopedTo = spec.campaignIds?.length ? new Set(spec.campaignIds) : null;
-      const rows = await db
-        .select()
-        .from(schema.insightsDaily)
-        .where(
-          and(
-            eq(schema.insightsDaily.level, "adset"),
-            eq(schema.insightsDaily.accountId, accountId),
-            gte(schema.insightsDaily.date, spec.since),
-            lte(schema.insightsDaily.date, spec.until),
-          ),
-        );
+    const def = REPORT_DIMS[dim];
+    if (def.source === "entity") {
+      // One row per campaign / ad set / ad (its name is the dimension value).
+      let nameById: Map<string, string>;
+      let campaignByEntity: (id: string) => string | undefined;
+      if (def.level === "campaign") {
+        const cs = await db
+          .select({ id: schema.campaigns.id, name: schema.campaigns.name })
+          .from(schema.campaigns)
+          .where(eq(schema.campaigns.accountId, accountId));
+        nameById = new Map(cs.map((c) => [c.id, c.name]));
+        campaignByEntity = (id) => id;
+      } else if (def.level === "adset") {
+        const sets = await db
+          .select({
+            id: schema.adSets.id,
+            name: schema.adSets.name,
+            campaignId: schema.adSets.campaignId,
+          })
+          .from(schema.adSets)
+          .where(eq(schema.adSets.accountId, accountId));
+        nameById = new Map(sets.map((s) => [s.id, s.name]));
+        const camp = new Map(sets.map((s) => [s.id, s.campaignId]));
+        campaignByEntity = (id) => camp.get(id);
+      } else {
+        const m = await adMaps(accountId);
+        nameById = m.nameById;
+        campaignByEntity = (id) => m.campaignByAd.get(id);
+      }
+      const rows = await dailyRows(accountId, def.level);
       return rows.flatMap((r): InsightRow[] => {
-        const s = setById.get(r.entityId);
-        if (scopedTo && (!s || !scopedTo.has(s.campaignId))) return [];
+        const camp = campaignByEntity(r.entityId);
+        if (scopedTo && (!camp || !scopedTo.has(camp))) return [];
         return [
           {
-            date_start: r.date,
-            date_stop: r.date,
-            adset_id: r.entityId,
-            adset_name: s?.name ?? r.entityId,
-            campaign_id: s?.campaignId,
-            spend: String(r.spend),
-            impressions: String(r.impressions),
-            reach: String(r.reach),
-            clicks: String(r.clicks),
-            inline_link_clicks: String(r.inlineLinkClicks),
-            actions: (r.actions ?? undefined) as InsightRow["actions"],
-            action_values: (r.actionValues ?? undefined) as InsightRow["action_values"],
+            ...core(r),
+            campaign_id: camp,
+            [DIM_VALUE_KEY]: nameById.get(r.entityId) ?? r.entityId,
           },
         ];
       });
     }
-    const type = META_BREAKDOWN[spec.breakdown];
-    // The table stores the SAME data at account level (rollup) AND campaign level — querying both
-    // double-counts every metric. Use campaign rows only when scoping to selected campaigns;
-    // otherwise the account rollup.
-    const scoped = Boolean(spec.campaignIds?.length);
+    // Meta dimension: synced insights_breakdown_daily. The same data exists as an account-level
+    // rollup AND per-campaign rows (and asset types at ad level only) — pick exactly ONE level or
+    // metrics double-count. Campaign scoping uses campaign rows (or the ads of those campaigns).
+    const level = def.adLevel ? "ad" : scopedTo ? "campaign" : "account";
+    let allowedAds: Set<string> | null = null;
+    let adCampaign: Map<string, string | undefined> | null = null;
+    if (def.adLevel) {
+      const m = await adMaps(accountId);
+      adCampaign = m.campaignByAd;
+      if (scopedTo) {
+        allowedAds = new Set(
+          [...m.campaignByAd.entries()].filter(([, c]) => c && scopedTo.has(c)).map(([id]) => id),
+        );
+      }
+    }
     const rows = await db
       .select()
       .from(schema.insightsBreakdownDaily)
       .where(
         and(
-          eq(schema.insightsBreakdownDaily.breakdownType, type),
+          eq(schema.insightsBreakdownDaily.breakdownType, def.metaType),
           eq(schema.insightsBreakdownDaily.accountId, accountId),
-          eq(schema.insightsBreakdownDaily.level, scoped ? "campaign" : "account"),
-          scoped
-            ? inArray(schema.insightsBreakdownDaily.entityId, spec.campaignIds ?? [])
+          eq(schema.insightsBreakdownDaily.level, level),
+          !def.adLevel && scopedTo
+            ? inArray(schema.insightsBreakdownDaily.entityId, [...scopedTo])
             : undefined,
           gte(schema.insightsBreakdownDaily.date, spec.since),
           lte(schema.insightsBreakdownDaily.date, spec.until),
         ),
       );
-    return rows.map((r): InsightRow => {
+    return rows.flatMap((r): InsightRow[] => {
+      if (allowedAds && !allowedAds.has(r.entityId)) return [];
       const raw = (r.raw ?? {}) as Record<string, unknown>;
-      return {
-        date_start: r.date,
-        date_stop: r.date,
-        [type]: r.breakdownValue,
-        spend: String(r.spend),
-        impressions: String(r.impressions),
-        reach: String(r.reach),
-        clicks: String(r.clicks),
-        inline_link_clicks:
-          raw.inline_link_clicks != null ? String(raw.inline_link_clicks) : undefined,
-        actions: (raw.actions ?? undefined) as InsightRow["actions"],
-        action_values: (raw.action_values ?? undefined) as InsightRow["action_values"],
-      };
+      return [
+        {
+          date_start: r.date,
+          date_stop: r.date,
+          campaign_id:
+            level === "campaign" ? r.entityId : (adCampaign?.get(r.entityId) ?? undefined),
+          [DIM_VALUE_KEY]: r.breakdownValue.split("|").join(" · "),
+          spend: String(r.spend),
+          impressions: String(r.impressions),
+          reach: String(r.reach),
+          clicks: String(r.clicks),
+          inline_link_clicks:
+            raw.inline_link_clicks != null ? String(raw.inline_link_clicks) : undefined,
+          actions: (raw.actions ?? undefined) as InsightRow["actions"],
+          action_values: (raw.action_values ?? undefined) as InsightRow["action_values"],
+        },
+      ];
     });
   };
 }
@@ -382,17 +520,15 @@ export async function buildReport(
     if (rows.length === 0) continue;
     contributors++;
     for (const r of rows) {
-      const adsetName = (): string => String(r.adset_name ?? r.adset_id ?? "—");
+      const dimVal = (): string => String(r[DIM_VALUE_KEY] ?? "—");
       const key =
         dim === "none"
-          ? "Total"
-          : dim === "day"
+          ? spec.byDay
             ? r.date_start
-            : dim === "adset"
-              ? adsetName()
-              : dim === "adset_day"
-                ? `${r.date_start} · ${adsetName()}`
-                : String(r[META_BREAKDOWN[dim]] ?? "—");
+            : "Total"
+          : spec.byDay
+            ? `${r.date_start} · ${dimVal()}`
+            : dimVal();
       let a = aggByKey.get(key);
       if (!a) {
         a = emptyAgg();
@@ -410,27 +546,33 @@ export async function buildReport(
     for (const a of aggByKey.values()) a.spend *= factor;
   }
 
-  // Order rows: chronological for day grains (adset_day keys start with the date), spend-first else.
-  if (dim === "day" || dim === "adset_day") order.sort();
+  // Order rows: chronological when split by day (keys start with the date), spend-first else.
+  if (spec.byDay) order.sort();
   else if (dim !== "none") order.sort((x, y) => aggByKey.get(y)!.spend - aggByKey.get(x)!.spend);
   const limited = order.slice(0, MAX_ROWS);
 
-  const columns: ReportColumn[] =
+  const hasDimCol = dim !== "none" || spec.byDay;
+  const dimLabel =
     dim === "none"
-      ? cols.map((k) => ({ key: k, label: COL_META.get(k)!.label, kind: COL_META.get(k)!.kind }))
-      : [
-          { key: "_dim", label: DIM_LABEL[dim], kind: "text" as const },
-          ...cols.map((k) => ({
-            key: k,
-            label: COL_META.get(k)!.label,
-            kind: COL_META.get(k)!.kind,
-          })),
-        ];
+      ? "Date"
+      : spec.byDay
+        ? `Date · ${REPORT_DIMS[dim].label}`
+        : REPORT_DIMS[dim].label;
+  const columns: ReportColumn[] = !hasDimCol
+    ? cols.map((k) => ({ key: k, label: COL_META.get(k)!.label, kind: COL_META.get(k)!.kind }))
+    : [
+        { key: "_dim", label: dimLabel, kind: "text" as const },
+        ...cols.map((k) => ({
+          key: k,
+          label: COL_META.get(k)!.label,
+          kind: COL_META.get(k)!.kind,
+        })),
+      ];
 
   const metricCells = (a: Agg): number[] => cols.map((k) => VALUE_FNS[k](a));
   const rows: (string | number)[][] = limited.map((key) => {
     const a = aggByKey.get(key)!;
-    return dim === "none" ? metricCells(a) : [key, ...metricCells(a)];
+    return hasDimCol ? [key, ...metricCells(a)] : metricCells(a);
   });
 
   // Totals across every key (only meaningful when there are multiple rows).
@@ -445,10 +587,9 @@ export async function buildReport(
     total.conversions += a.conversions;
     total.conversionValue += a.conversionValue;
   }
-  const totals = dim === "none" ? null : (["Total", ...metricCells(total)] as (string | number)[]);
+  const totals = hasDimCol ? (["Total", ...metricCells(total)] as (string | number)[]) : null;
 
-  const dimName = dim === "adset" ? "ad set" : dim === "adset_day" ? "day × ad set" : dim;
-  const dimNote = dim === "none" ? "" : ` · by ${dimName}`;
+  const dimNote = hasDimCol ? ` · by ${dimLabel.toLowerCase()}` : "";
   const accNote =
     contributors < spec.accountIds.length
       ? `${contributors} of ${spec.accountIds.length} accounts have data in this range.`
@@ -462,7 +603,7 @@ export async function buildReport(
     rows,
     totals,
     rowCount: rows.length,
-    filename: `${slug(subjectName)}_${spec.since}_${spec.until}${dim === "none" ? "" : `_by_${dim}`}`,
+    filename: `${slug(subjectName)}_${spec.since}_${spec.until}${dim === "none" ? (spec.byDay ? "_by_day" : "") : `_by_${dim}${spec.byDay ? "_day" : ""}`}`,
   };
 }
 
@@ -495,6 +636,7 @@ export interface ReportArgs {
   until: string;
   columns: string[];
   breakdown: Breakdown;
+  byDay: boolean;
   markup?: number;
   campaignIds?: string[];
 }
@@ -521,16 +663,18 @@ export async function runReport(args: ReportArgs): Promise<ReportPayload | { err
     until: args.until,
     columns: args.columns,
     breakdown: args.breakdown,
+    byDay: args.byDay,
     objectiveByCampaign: await objectiveMap(args.accountIds),
     markup: args.markup,
     campaignIds: args.campaignIds,
   };
   const payload = await buildReport(dbRowSource(spec), spec, args.name);
   if (payload.rowCount === 0) {
-    // Breakdown tables refresh only on the daily FULL sync, so a fresh window can have campaign
-    // rows but no breakdown rows yet. Say that, instead of a misleading "no data".
-    // (adset/adset_day read insights_daily like day does — they never lag, so no special message.)
-    if (spec.breakdown in META_BREAKDOWN) {
+    // Meta-dimension tables refresh only on the daily FULL sync, so a fresh window can have
+    // campaign rows but no breakdown rows yet. Say that, instead of a misleading "no data".
+    // (Entity dims — campaign/adset/ad — read insights_daily like day does; they never lag.)
+    const def = spec.breakdown === "none" ? null : REPORT_DIMS[spec.breakdown];
+    if (def?.source === "meta") {
       const [has] = await db
         .select({ id: schema.insightsDaily.entityId })
         .from(schema.insightsDaily)
@@ -547,8 +691,9 @@ export async function runReport(args: ReportArgs): Promise<ReportPayload | { err
         return {
           error:
             `"${args.name}" HAS data for ${args.since} → ${args.until}, but the "${spec.breakdown}" ` +
-            `breakdown hasn't been synced for that window yet (breakdowns refresh on the daily full ` +
-            `sync). Re-run with breakdown "none" or "day" for totals now, or retry after the next full sync.`,
+            `breakdown hasn't been synced for that window yet (Meta-dimension breakdowns refresh on ` +
+            `the daily full sync). Re-run without a breakdown (or by day / campaign / ad set / ad, ` +
+            `which never lag), or retry after the next full sync.`,
         };
     }
     return { error: `No data for "${args.name}" in ${args.since} → ${args.until}.` };
@@ -584,6 +729,7 @@ export interface ClientReportInput {
   until?: string;
   columns: string[];
   breakdown: string;
+  splitByDay?: boolean;
   markup?: number;
   campaignIds?: string[];
 }
@@ -602,13 +748,15 @@ export async function reportForClient(
   if (!range) return { error: "Pick a valid date range." };
   const columns = normalizeColumns(input.columns);
   if (columns.length === 0) return { error: "Select at least one column." };
+  const bd = parseBreakdown(input.breakdown, input.splitByDay);
   return runReport({
     name: row.name,
     accountIds: effectiveAccountIds(row),
     since: range.since,
     until: range.until,
     columns,
-    breakdown: normalizeBreakdown(input.breakdown),
+    breakdown: bd.dim,
+    byDay: bd.byDay,
     markup: input.markup,
     campaignIds: input.campaignIds,
   });
