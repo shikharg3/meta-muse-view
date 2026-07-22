@@ -156,6 +156,19 @@ export async function setUserStatus(id: string, status: UserStatus): Promise<voi
 export async function setUserRole(id: string, role: UserRole): Promise<void> {
   await db.update(schema.users).set({ role }).where(eq(schema.users.id, id));
 }
+/** Overwrite a user's password (superadmin reset path — validation mirrors signup). Existing
+ *  sessions stay valid until they expire (sessions are stateless signed cookies). */
+export async function setUserPassword(
+  id: string,
+  password: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (password.length < 8) return { ok: false, error: "Password must be at least 8 characters." };
+  await db
+    .update(schema.users)
+    .set({ passwordHash: await hashPassword(password) })
+    .where(eq(schema.users.id, id));
+  return { ok: true };
+}
 export async function deleteUser(id: string): Promise<void> {
   await db.delete(schema.users).where(eq(schema.users.id, id));
 }

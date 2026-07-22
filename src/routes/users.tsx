@@ -6,6 +6,7 @@ import {
   setUserStatus,
   setUserRole,
   deleteUser,
+  resetPassword,
   getCurrentUser,
 } from "@/lib/api/auth";
 import { cn } from "@/lib/utils";
@@ -16,7 +17,7 @@ export const Route = createFileRoute("/users")({
   head: () => ({ meta: [{ title: "Users — MetaConsole" }] }),
   loader: async () => {
     const [users, audit, me] = await Promise.all([listUsers(), listAudit(), getCurrentUser()]);
-    return { users, audit, meId: me?.id ?? null };
+    return { users, audit, meId: me?.id ?? null, meRole: me?.role ?? null };
   },
   component: UsersAdmin,
 });
@@ -31,7 +32,7 @@ const fmtTime = (iso: string | null) =>
   iso ? new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) : "—";
 
 function UsersAdmin() {
-  const { users, audit, meId } = Route.useLoaderData();
+  const { users, audit, meId, meRole } = Route.useLoaderData();
   const router = useRouter();
 
   if ("error" in users) {
@@ -55,6 +56,15 @@ function UsersAdmin() {
   const remove = async (id: string, email: string) => {
     if (!window.confirm(`Delete ${email}? This removes their account and access.`)) return;
     await deleteUser({ data: { id } });
+    await router.invalidate();
+  };
+  const doResetPassword = async (id: string, email: string) => {
+    const pw = window.prompt(
+      `New password for ${email} (min 8 characters).\nShare it with them over a secure channel; they stay signed in on existing sessions until those expire.`,
+    );
+    if (pw == null) return;
+    const r = await resetPassword({ data: { id, newPassword: pw } });
+    window.alert(r.ok ? `Password for ${email} was reset.` : (r.error ?? "Reset failed."));
     await router.invalidate();
   };
 
@@ -143,6 +153,14 @@ function UsersAdmin() {
                         className="h-7 px-2.5 rounded-md text-xs font-medium text-destructive hover:bg-destructive/10"
                       >
                         Delete
+                      </button>
+                    )}
+                    {isSuperadmin(meRole) && !self && (
+                      <button
+                        onClick={() => void doResetPassword(u.id, u.email)}
+                        className="h-7 px-2.5 rounded-md border border-border text-xs font-medium hover:bg-accent"
+                      >
+                        Reset password
                       </button>
                     )}
                   </td>

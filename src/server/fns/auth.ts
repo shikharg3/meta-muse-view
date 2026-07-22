@@ -10,6 +10,7 @@ import {
   setUserStatus,
   setUserRole,
   deleteUser,
+  setUserPassword,
   isAdmin,
   isSuperadmin,
   type PublicUser,
@@ -103,6 +104,22 @@ export async function removeUser(id: string): Promise<{ ok: boolean; error?: str
     return { ok: false, error: "Only a superadmin can delete a superadmin." };
   await deleteUser(id);
   await audit("user.delete", `deleted ${target?.email ?? id}`);
+  return { ok: true };
+}
+
+/** Superadmin-only: overwrite another user's password (e.g. a locked-out teammate). */
+export async function resetUserPassword(
+  id: string,
+  newPassword: string,
+): Promise<{ ok: boolean; error?: string }> {
+  const me = await currentUser();
+  if (!me || !isSuperadmin(me.role))
+    return { ok: false, error: "Only a superadmin can reset passwords." };
+  const target = (await listAllUsers()).find((u) => u.id === id);
+  if (!target) return { ok: false, error: "Unknown user." };
+  const r = await setUserPassword(id, newPassword);
+  if (!r.ok) return r;
+  await audit("user.password_reset", `reset password for ${target.email}`);
   return { ok: true };
 }
 

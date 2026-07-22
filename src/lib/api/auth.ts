@@ -5,6 +5,7 @@ import {
   updateUserStatus,
   updateUserRole,
   removeUser,
+  resetUserPassword,
   listAuditLog,
 } from "@/server/fns/auth";
 import type { UserStatus, UserRole } from "@/lib/auth/users";
@@ -26,3 +27,7 @@ export const setUserRole = createServerFn({ method: "POST" })
 export const deleteUser = createServerFn({ method: "POST" })
   .inputValidator((d: { id: string }) => d)
   .handler(({ data }) => removeUser(data.id));
+
+export const resetPassword = createServerFn({ method: "POST" })
+  .inputValidator((d: { id: string; newPassword: string }) => d)
+  .handler(({ data }) => resetUserPassword(data.id, data.newPassword));
