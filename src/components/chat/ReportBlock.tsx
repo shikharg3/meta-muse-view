@@ -1,6 +1,7 @@
 import { FileText, Download } from "lucide-react";
 import { fmtCurrency, fmtNumber, fmtPct } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { downloadBlob, downloadCsvRows } from "@/lib/download";
 import type { ReportColumn, ReportPayload } from "@/server/agent/report";
 
 /** Format a raw cell value for display, per its column kind. */
@@ -27,17 +28,6 @@ function rawCell(value: string | number, kind: ReportColumn["kind"]): string {
   return value.toFixed(2);
 }
 
-function downloadBlob(content: BlobPart, type: string, filename: string) {
-  const url = URL.createObjectURL(new Blob([content], { type }));
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  URL.revokeObjectURL(url);
-}
-
 function reportMatrix(report: ReportPayload): string[][] {
   const body = report.rows.map((r) => r.map((v, i) => rawCell(v, report.columns[i].kind)));
   if (report.totals) body.push(report.totals.map((v, i) => rawCell(v, report.columns[i].kind)));
@@ -45,11 +35,8 @@ function reportMatrix(report: ReportPayload): string[][] {
 }
 
 function downloadCsv(report: ReportPayload) {
-  const esc = (s: string) => (/[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s);
-  const lines = [report.columns.map((c) => c.label), ...reportMatrix(report)];
-  downloadBlob(
-    lines.map((r) => r.map(esc).join(",")).join("\n"),
-    "text/csv;charset=utf-8",
+  downloadCsvRows(
+    [report.columns.map((c) => c.label), ...reportMatrix(report)],
     `${report.filename}.csv`,
   );
 }

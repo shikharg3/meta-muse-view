@@ -14,6 +14,7 @@ import { getMetaHealth } from "@/lib/api/health";
 import { toRange, isYmd } from "@/lib/range";
 import { fmtRelTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { downloadBlob } from "@/lib/download";
 import type { CsvKind } from "@/server/fns/dashboard";
 
 function csvKindForPath(path: string): CsvKind | null {
@@ -166,15 +167,11 @@ export function TopBar({
     const csv = await getExportCsv({
       data: { kind, days: range, from: search.from, to: search.to },
     });
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = custom ? `${kind}-${search.from}_${search.to}.csv` : `${kind}-${range}d.csv`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
+    downloadBlob(
+      csv,
+      "text/csv;charset=utf-8",
+      custom ? `${kind}-${search.from}_${search.to}.csv` : `${kind}-${range}d.csv`,
+    );
   }
 
   return (

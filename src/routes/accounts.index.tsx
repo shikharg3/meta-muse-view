@@ -9,6 +9,7 @@ import { ArrowUpDown, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { scopedSearch, accountScope, rangeSpec } from "@/lib/range";
 import { sortByKey } from "@/lib/sort";
+import { downloadCsvRows } from "@/lib/download";
 
 export const Route = createFileRoute("/accounts/")({
   head: () => ({
@@ -42,6 +43,7 @@ function Accounts() {
   const [sort, setSort] = useState<SortKey>("spend");
   const [dir, setDir] = useState<"asc" | "desc">("desc");
   const [status, setStatus] = useState<string>("ALL");
+  const [copied, setCopied] = useState(false);
   const scopeParam = Route.useSearch().accounts ?? "";
 
   const filtered = useMemo(() => {
@@ -61,6 +63,40 @@ function Accounts() {
       setSort(k);
       setDir("desc");
     }
+  };
+
+  // Export/copy act on the FILTERED rows, so the status filter doubles as the selector for BM work:
+  // DISABLED -> the prune list, ACTIVE -> the list to share into a business manager.
+  const bareIds = () => filtered.map((a) => a.id.replace(/^act_/, ""));
+  const exportCsv = () => {
+    downloadCsvRows(
+      [
+        [
+          "account_id",
+          "name",
+          "status",
+          "disabled_since",
+          "disable_reason",
+          "spend",
+          "conversions",
+        ],
+        ...filtered.map((a) => [
+          a.id.replace(/^act_/, ""),
+          a.name,
+          a.status,
+          a.disabledSince ?? "",
+          a.disableReason ?? "",
+          a.spend.toFixed(2),
+          String(a.conversions),
+        ]),
+      ],
+      `ad-accounts-${status.toLowerCase()}-${filtered.length}.csv`,
+    );
+  };
+  const copyIds = async () => {
+    await navigator.clipboard.writeText(bareIds().join(","));
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
   };
 
   return (
@@ -96,6 +132,22 @@ function Accounts() {
             </button>
           ))}
         </div>
+        <button
+          onClick={exportCsv}
+          disabled={filtered.length === 0}
+          className="h-9 px-3 rounded-md border border-border bg-card text-xs font-medium hover:bg-accent disabled:opacity-50"
+          title="Download the filtered accounts as CSV"
+        >
+          Export CSV
+        </button>
+        <button
+          onClick={() => void copyIds()}
+          disabled={filtered.length === 0}
+          className="h-9 px-3 rounded-md border border-border bg-card text-xs font-medium hover:bg-accent disabled:opacity-50"
+          title="Copy the filtered account IDs (comma-separated) for Business Manager bulk actions"
+        >
+          {copied ? `Copied ${filtered.length}` : "Copy IDs"}
+        </button>
       </div>
 
       <div className="rounded-xl border border-border bg-card overflow-hidden">
