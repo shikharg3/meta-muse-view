@@ -7,7 +7,7 @@ import {
   accountStatus,
   type ClientEvent,
 } from "@/server/agg";
-import { type DateWindow } from "@/lib/range";
+import { addDays, type DateWindow } from "@/lib/range";
 import { fetchCampaigns, objectiveResults, disabledSinceMap } from "./dashboard";
 import { effectiveAccountIds, getClientRow } from "@/sync/jobs/clients";
 import type { Campaign, Kpis, AccountStatus } from "@/lib/types";
@@ -17,8 +17,11 @@ import { currentUser, audit } from "@/server/fns/auth";
 import { isAdmin } from "@/lib/auth/users";
 import { clientCampaignScope } from "./campaign-attribution";
 import { attributeCampaign, brandVocab } from "@/lib/attribution";
+import { forecastBudgetEnd } from "@/lib/budget-forecast";
 
 const num = (v: unknown): number => Number(v ?? 0);
+/** Server-side calendar day (UTC), the reference point for budget pacing. */
+const todayYmd = (): string => new Date().toISOString().slice(0, 10);
 
 export interface ClientSummary {
   id: string;
@@ -56,13 +59,22 @@ export interface ClientDetail {
   campaigns: Campaign[];
   /** All de-duplicated conversion/engagement events for this client over the window. */
   events: ClientEvent[];
-  /** Engagement budget from Notion + spend against it (null total = not tracked). */
+  /** Engagement budget from Notion + spend against it (null total = not tracked), with a
+   *  pace-based forecast of when the budget runs out. */
   budget: {
     total: number | null;
     spent: number;
     remaining: number | null;
     startDate: string | null;
-    endDate: string | null;
+    /** Notion's estimated end date — what was *planned*, kept for context only. */
+    plannedEndDate: string | null;
+    /** Forecast burn-out date (YYYY-MM-DD) from the recent pace; null when not forecastable. */
+    projectedEndDate: string | null;
+    /** $/day the forecast used: spend over the last 14 complete days ÷ 14. */
+    dailyPace: number;
+    daysRemaining: number | null;
+    /** Short reason there is no projectedEndDate (shown instead of a blank dash). */
+    forecastReason: string | null;
   };
 }
 
@@ -191,13 +203,7 @@ export async function fetchClientDetail(
       accounts: [],
       campaigns: [],
       events: [],
-      budget: {
-        total: row.budget ?? null,
-        spent: 0,
-        remaining: row.budget ?? null,
-        startDate: row.startDate ? String(row.startDate) : null,
-        endDate: row.endDate ? String(row.endDate) : null,
-      },
+      budget: budgetOf(row, 0, 0, todayYmd()),
     };
   }
 
@@ -294,10 +300,13 @@ export async function fetchClientDetail(
   const campaigns = (await fetchCampaigns(w, allAccountIds))
     .filter((c) => !excluded.has(c.id))
     .sort((a, b) => b.spend - a.spend);
-  // Spend against the current engagement budget = spend since its start date.
-  let budgetSpent = 0;
-  if (row.startDate) {
-    const since = String(row.startDate);
+  // Spend against the current engagement budget = spend since its start date, plus the recent burn
+  // rate the end-date forecast is built from. Both use the same attribution-aware split: account-
+  // level rows for accounts we own outright, campaign-level rows for contested ones.
+  const spendBetween = async (since: string, until?: string): Promise<number> => {
+    const inRange = until
+      ? and(gte(schema.insightsDaily.date, since), lte(schema.insightsDaily.date, until))
+      : gte(schema.insightsDaily.date, since);
     const [acctSpend, campSpend] = await Promise.all([
       accountLevelIds.length
         ? db
@@ -307,7 +316,7 @@ export async function fetchClientDetail(
               and(
                 eq(schema.insightsDaily.level, "account"),
                 inArray(schema.insightsDaily.entityId, accountLevelIds),
-                gte(schema.insightsDaily.date, since),
+                inRange,
               ),
             )
         : Promise.resolve([{ s: 0 }]),
@@ -320,13 +329,20 @@ export async function fetchClientDetail(
                 eq(schema.insightsDaily.level, "campaign"),
                 inArray(schema.insightsDaily.accountId, attribution.splitAccountIds),
                 notInArray(schema.insightsDaily.entityId, attribution.excludedCampaignIds),
-                gte(schema.insightsDaily.date, since),
+                inRange,
               ),
             )
         : Promise.resolve([{ s: 0 }]),
     ]);
-    budgetSpent = num(acctSpend[0]?.s) + num(campSpend[0]?.s);
-  }
+    return num(acctSpend[0]?.s) + num(campSpend[0]?.s);
+  };
+
+  const today = todayYmd();
+  const [budgetSpent, paceSpend] = await Promise.all([
+    row.startDate ? spendBetween(String(row.startDate)) : Promise.resolve(0),
+    // Last PACE_DAYS *complete* days — today is partial, so it would drag the average down.
+    spendBetween(addDays(today, -PACE_DAYS), addDays(today, -1)),
+  ]);
 
   return {
     id: row.id,
@@ -336,13 +352,33 @@ export async function fetchClientDetail(
     accounts,
     campaigns,
     events: canonicalEvents(insightRows),
-    budget: {
-      total: row.budget ?? null,
-      spent: budgetSpent,
-      remaining: row.budget != null ? row.budget - budgetSpent : null,
-      startDate: row.startDate ? String(row.startDate) : null,
-      endDate: row.endDate ? String(row.endDate) : null,
-    },
+    // Divide by the whole window, not by the days that happened to have rows: a day with no
+    // insights row is a real zero-spend day and must pull the pace down.
+    budget: budgetOf(row, budgetSpent, paceSpend / PACE_DAYS, today),
+  };
+}
+
+/** Trailing window the burn rate is averaged over (complete days only). */
+const PACE_DAYS = 14;
+
+function budgetOf(
+  row: typeof schema.clients.$inferSelect,
+  spent: number,
+  dailyPace: number,
+  today: string,
+): ClientDetail["budget"] {
+  const total = row.budget ?? null;
+  const f = forecastBudgetEnd({ total, spent, dailyPace, today });
+  return {
+    total,
+    spent,
+    remaining: total != null ? total - spent : null,
+    startDate: row.startDate ? String(row.startDate) : null,
+    plannedEndDate: row.endDate ? String(row.endDate) : null,
+    projectedEndDate: f.projectedEndDate,
+    dailyPace: f.dailyPace,
+    daysRemaining: f.daysRemaining,
+    forecastReason: f.reason,
   };
 }
 

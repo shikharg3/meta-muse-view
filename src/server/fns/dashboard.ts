@@ -27,7 +27,7 @@ import { isCycleRunning } from "@/sync/cycle";
 const num = (v: unknown): number => Number(v ?? 0);
 
 /** Summed insight totals grouped by entity, for a level over the window. */
-function totalsByEntity(level: string, w: DateWindow) {
+function totalsByEntity(level: string, w: DateWindow, accountIds?: string[]) {
   return db
     .select({
       entityId: schema.insightsDaily.entityId,
@@ -44,18 +44,29 @@ function totalsByEntity(level: string, w: DateWindow) {
         eq(schema.insightsDaily.level, level),
         gte(schema.insightsDaily.date, w.since),
         lte(schema.insightsDaily.date, w.until),
+        accountIds ? inArray(schema.insightsDaily.accountId, accountIds) : undefined,
       ),
     )
     .groupBy(schema.insightsDaily.entityId);
 }
 
 /** Action sums keyed `${entityId}:${action_type}` at a level (actions live in jsonb). */
-async function actionTotals(level: string, w: DateWindow): Promise<Map<string, number>> {
+async function actionTotals(
+  level: string,
+  w: DateWindow,
+  accountIds?: string[],
+): Promise<Map<string, number>> {
+  // Scoping by account matters: unfiltered, the ad-level lateral unnest walks every account's rows
+  // (~1s) even when the caller only wants one client. The id list is bound as a single jsonb param —
+  // drizzle's sql template expands a JS array into separate placeholders, which `any()` rejects.
+  const acct = accountIds
+    ? sql`and account_id in (select jsonb_array_elements_text(${JSON.stringify(accountIds)}::jsonb))`
+    : sql``;
   const rows = await db.execute(sql`
     select entity_id, elem->>'action_type' as type, sum((elem->>'value')::double precision) as val
     from insights_daily
     cross join lateral jsonb_array_elements(actions) elem
-    where level = ${level} and date >= ${w.since} and date <= ${w.until}
+    where level = ${level} and date >= ${w.since} and date <= ${w.until} ${acct}
     group by 1, 2
   `);
   const out = new Map<string, number>();
@@ -387,13 +398,55 @@ export async function fetchCampaigns(w: DateWindow, accountIds?: string[]): Prom
   ] = await Promise.all([
     db.select().from(schema.campaigns).where(inAccts),
     db.select().from(schema.adSets).where(inAcctsSet),
-    db.select().from(schema.ads).where(inAcctsAd),
-    db.select().from(schema.accounts),
-    db.select().from(schema.adCreatives),
-    totalsByEntity("campaign", w),
-    totalsByEntity("adset", w),
-    totalsByEntity("ad", w),
-    actionTotals("ad", w),
+    // Narrow column list: the full row pulls jsonb payloads this view never reads.
+    db
+      .select({
+        id: schema.ads.id,
+        name: schema.ads.name,
+        status: schema.ads.status,
+        adSetId: schema.ads.adSetId,
+        accountId: schema.ads.accountId,
+        creativeId: schema.ads.creativeId,
+      })
+      .from(schema.ads)
+      .where(inAcctsAd),
+    db
+      .select({
+        id: schema.accounts.id,
+        name: schema.accounts.name,
+        status: schema.accounts.status,
+      })
+      .from(schema.accounts),
+    // Project ONLY the five creative fields the UI needs. Selecting `raw` here loaded ~134 MB and
+    // cost ~3s per call; this is the single biggest win in this function.
+    db
+      .select({
+        id: schema.adCreatives.id,
+        thumbnailUrl: schema.adCreatives.thumbnailUrl,
+        objectType: sql<string | null>`${schema.adCreatives.raw}->>'object_type'`,
+        imageUrl: sql<string | null>`${schema.adCreatives.raw}->>'image_url'`,
+        videoImageUrl: sql<
+          string | null
+        >`${schema.adCreatives.raw}->'object_story_spec'->'video_data'->>'image_url'`,
+        linkPicture: sql<
+          string | null
+        >`${schema.adCreatives.raw}->'object_story_spec'->'link_data'->>'picture'`,
+        childAttachments: sql<number>`coalesce(jsonb_array_length(${schema.adCreatives.raw}->'object_story_spec'->'link_data'->'child_attachments'), 0)`,
+      })
+      .from(schema.adCreatives)
+      // Only the creatives referenced by ads in scope — a client view needs a handful, not all 24k.
+      .where(
+        accountIds
+          ? inArray(
+              schema.adCreatives.id,
+              db.select({ id: schema.ads.creativeId }).from(schema.ads).where(inAcctsAd),
+            )
+          : undefined,
+      ),
+    totalsByEntity("campaign", w, accountIds),
+    totalsByEntity("adset", w, accountIds),
+    totalsByEntity("ad", w, accountIds),
+    actionTotals("ad", w, accountIds),
   ]);
   const accName = new Map(accountRows.map((a) => [a.id, a.name]));
   // A disabled ad account stops delivery for EVERYTHING under it, but Meta leaves each campaign's
@@ -457,9 +510,9 @@ export async function fetchCampaigns(w: DateWindow, accountIds?: string[]): Prom
           conversions: ak.conversions,
           results: rs.type === "reach" ? ak.reach : (adActions.get(`${ad.id}:${rs.type}`) ?? 0),
           resultLabel: rs.label,
-          format: creativeFormat(creative?.raw),
+          format: creativeFormat(creative),
           thumbHue: hueFromId(ad.id),
-          thumbnailUrl: creativeImageUrl(creative?.raw, creative?.thumbnailUrl ?? null),
+          thumbnailUrl: creativeImageUrl(creative),
         };
       });
       const st = setT.get(s.id);

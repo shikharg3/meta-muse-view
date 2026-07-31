@@ -1,18 +1,32 @@
 import { test, expect } from "bun:test";
-import { creativeFormat, creativeImageUrl, hueFromId, resultSpec } from "./creative";
+import {
+  creativeFormat,
+  creativeImageUrl,
+  hueFromId,
+  resultSpec,
+  type CreativeFacts,
+} from "./creative";
 
-test("creativeFormat maps creative raw payloads to display formats", () => {
-  expect(creativeFormat({ object_type: "VIDEO" })).toBe("Video");
-  expect(creativeFormat({ object_type: "SHARE" })).toBe("Image");
-  expect(creativeFormat(null)).toBe("Image");
+const facts = (over: Partial<CreativeFacts> = {}): CreativeFacts => ({
+  objectType: null,
+  imageUrl: null,
+  videoImageUrl: null,
+  linkPicture: null,
+  childAttachments: 0,
+  thumbnailUrl: null,
+  ...over,
+});
+
+test("creativeFormat maps projected creative fields to display formats", () => {
+  expect(creativeFormat(facts({ objectType: "VIDEO" }))).toBe("Video");
+  expect(creativeFormat(facts({ objectType: "SHARE" }))).toBe("Image");
+  expect(creativeFormat(facts())).toBe("Image");
   expect(creativeFormat(undefined)).toBe("Image");
-  expect(
-    creativeFormat({ object_story_spec: { link_data: { child_attachments: [{}, {}] } } }),
-  ).toBe("Carousel");
+  expect(creativeFormat(facts({ childAttachments: 2 }))).toBe("Carousel");
   // a single attachment is not a carousel
-  expect(creativeFormat({ object_story_spec: { link_data: { child_attachments: [{}] } } })).toBe(
-    "Image",
-  );
+  expect(creativeFormat(facts({ childAttachments: 1 }))).toBe("Image");
+  // carousel wins over object type
+  expect(creativeFormat(facts({ childAttachments: 3, objectType: "VIDEO" }))).toBe("Carousel");
 });
 
 test("hueFromId is stable and in range", () => {
@@ -28,29 +42,30 @@ test("hueFromId is stable and in range", () => {
 test("creativeImageUrl prefers original image, then video poster, then link picture, then thumbnail", () => {
   expect(
     creativeImageUrl(
-      {
-        image_url: "https://cdn/full.jpg",
-        object_story_spec: { video_data: { image_url: "https://cdn/poster.jpg" } },
-      },
-      "https://cdn/thumb.jpg",
+      facts({
+        imageUrl: "https://cdn/full.jpg",
+        videoImageUrl: "https://cdn/poster.jpg",
+        thumbnailUrl: "https://cdn/thumb.jpg",
+      }),
     ),
   ).toBe("https://cdn/full.jpg");
   expect(
     creativeImageUrl(
-      { object_story_spec: { video_data: { image_url: "https://cdn/poster.jpg" } } },
-      "https://cdn/thumb.jpg",
+      facts({ videoImageUrl: "https://cdn/poster.jpg", thumbnailUrl: "https://cdn/thumb.jpg" }),
     ),
   ).toBe("https://cdn/poster.jpg");
   expect(
     creativeImageUrl(
-      { object_story_spec: { link_data: { picture: "https://cdn/link.jpg" } } },
-      "https://cdn/thumb.jpg",
+      facts({ linkPicture: "https://cdn/link.jpg", thumbnailUrl: "https://cdn/thumb.jpg" }),
     ),
   ).toBe("https://cdn/link.jpg");
-  expect(creativeImageUrl({}, "https://cdn/thumb.jpg")).toBe("https://cdn/thumb.jpg");
-  expect(creativeImageUrl(null, null)).toBeNull();
+  expect(creativeImageUrl(facts({ thumbnailUrl: "https://cdn/thumb.jpg" }))).toBe(
+    "https://cdn/thumb.jpg",
+  );
+  expect(creativeImageUrl(facts())).toBeNull();
+  expect(creativeImageUrl(undefined)).toBeNull();
   // empty strings are skipped, not returned
-  expect(creativeImageUrl({ image_url: "" }, "https://cdn/thumb.jpg")).toBe(
+  expect(creativeImageUrl(facts({ imageUrl: "", thumbnailUrl: "https://cdn/thumb.jpg" }))).toBe(
     "https://cdn/thumb.jpg",
   );
 });

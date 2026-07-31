@@ -1,19 +1,23 @@
 import type { Ad } from "@/lib/types";
 
-interface CreativeRaw {
-  object_type?: string;
-  image_url?: string;
-  object_story_spec?: {
-    link_data?: { child_attachments?: unknown[]; picture?: string };
-    video_data?: { image_url?: string };
-  };
+/**
+ * The only creative fields the UI actually needs. Projected directly in SQL, because the stored
+ * `ad_creatives.raw` payloads total ~77 MB — loading them to read five fields cost ~3s per request.
+ */
+export interface CreativeFacts {
+  objectType: string | null;
+  imageUrl: string | null;
+  videoImageUrl: string | null;
+  linkPicture: string | null;
+  /** Number of carousel child attachments (>1 means Carousel). */
+  childAttachments: number;
+  thumbnailUrl: string | null;
 }
 
-/** Map a stored ad_creatives.raw payload to a display format. */
-export function creativeFormat(raw: unknown): Ad["format"] {
-  const r = (raw ?? {}) as CreativeRaw;
-  if ((r.object_story_spec?.link_data?.child_attachments?.length ?? 0) > 1) return "Carousel";
-  if (r.object_type === "VIDEO") return "Video";
+/** Display format for a creative. */
+export function creativeFormat(f: CreativeFacts | undefined): Ad["format"] {
+  if ((f?.childAttachments ?? 0) > 1) return "Carousel";
+  if (f?.objectType === "VIDEO") return "Video";
   return "Image";
 }
 
@@ -21,15 +25,8 @@ export function creativeFormat(raw: unknown): Ad["format"] {
  * Best display image for a creative: original image, then video poster, then
  * link picture, then the (1080px-requested) thumbnail.
  */
-export function creativeImageUrl(raw: unknown, thumbnailUrl: string | null): string | null {
-  const r = (raw ?? {}) as CreativeRaw;
-  return (
-    r.image_url ||
-    r.object_story_spec?.video_data?.image_url ||
-    r.object_story_spec?.link_data?.picture ||
-    thumbnailUrl ||
-    null
-  );
+export function creativeImageUrl(f: CreativeFacts | undefined): string | null {
+  return f?.imageUrl || f?.videoImageUrl || f?.linkPicture || f?.thumbnailUrl || null;
 }
 
 export interface ResultSpec {

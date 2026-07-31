@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { Plus, X } from "lucide-react";
 import { fmtCurrency, fmtPct, fmtCompact } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { addDays } from "@/lib/range";
 import { useSort, SortHeader } from "@/components/dashboard/SortableTable";
 import { CampaignTable } from "@/components/dashboard/CampaignTable";
 import { StatusPill } from "@/components/dashboard/StatusPill";
@@ -71,6 +72,24 @@ export function ClientDetailView({
     [detail, status],
   );
 
+  // "Expected end" is OUR forecast from recent pace; Notion's date is only what was planned, so a
+  // projection landing well past it is a warning (overrun), not the headline number.
+  const budget = detail.budget;
+  const overrunning =
+    budget.projectedEndDate != null &&
+    budget.plannedEndDate != null &&
+    budget.projectedEndDate > addDays(budget.plannedEndDate, OVERRUN_GRACE_DAYS);
+  const endNote = [
+    budget.dailyPace > 0
+      ? `Pace ${fmtCurrency(budget.dailyPace)}/day (last 14 complete days)`
+      : "No spend in the last 14 complete days",
+    budget.daysRemaining != null ? `${budget.daysRemaining} days of runway` : null,
+    // The reason is already the displayed value when there is no date — only add it alongside one.
+    budget.projectedEndDate != null ? budget.forecastReason : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
   const mutate = async (action: "add" | "remove", accountId: string) => {
     setError(null);
     const r = await onMutate(action, accountId);
@@ -98,7 +117,16 @@ export function ClientDetailView({
               label="Remaining"
               value={detail.budget.remaining != null ? fmtCurrency(detail.budget.remaining) : "—"}
             />
-            <Kpi label="Expected end" value={detail.budget.endDate ?? "—"} />
+            <Kpi
+              label="Expected end"
+              value={budget.projectedEndDate ?? sentence(budget.forecastReason) ?? "—"}
+              valueClass={cn(
+                budget.projectedEndDate == null && "text-sm text-muted-foreground",
+                overrunning && "text-warning",
+              )}
+              sub={budget.plannedEndDate ? `Planned ${budget.plannedEndDate}` : null}
+              title={endNote}
+            />
           </div>
           {detail.budget.total > 0 && (
             <div className="mt-3 h-1.5 rounded-full bg-muted overflow-hidden">
@@ -360,13 +388,33 @@ export function ClientDetailView({
   );
 }
 
-function Kpi({ label, value }: { label: string; value: string }) {
+/** Days a projected end may exceed the planned (Notion) date before it counts as an overrun. */
+const OVERRUN_GRACE_DAYS = 7;
+
+const sentence = (s: string | null): string | null =>
+  s ? s.charAt(0).toUpperCase() + s.slice(1) : null;
+
+function Kpi({
+  label,
+  value,
+  sub,
+  valueClass,
+  title,
+}: {
+  label: string;
+  value: string;
+  /** Secondary context line under the value (e.g. the planned end date). */
+  sub?: string | null;
+  valueClass?: string;
+  title?: string;
+}) {
   return (
-    <div className="rounded-xl border border-border bg-card p-4">
+    <div className="rounded-xl border border-border bg-card p-4" title={title}>
       <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold">
         {label}
       </div>
-      <div className="text-lg font-semibold font-mono mt-1">{value}</div>
+      <div className={cn("text-lg font-semibold font-mono mt-1", valueClass)}>{value}</div>
+      {sub && <div className="mt-0.5 text-[10px] font-mono text-muted-foreground">{sub}</div>}
     </div>
   );
 }
