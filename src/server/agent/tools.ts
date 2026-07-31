@@ -15,6 +15,7 @@ import {
 } from "@/server/fns/dashboard";
 import { getClientRow, effectiveAccountIds } from "@/sync/jobs/clients";
 import { runReport, resolveRange, normalizeColumns, parseBreakdown } from "./report";
+import { ownedCampaignIds } from "@/server/fns/campaign-attribution";
 import type { AnthropicTool } from "./anthropic";
 import { windowFromDays, windowFromDates, isYmd, type DateWindow } from "@/lib/range";
 
@@ -470,8 +471,11 @@ async function resolveAdScope(
         label: `${client.matchedBrand} (its own accounts, under client ${client.name})`,
       };
     const row = await getClientRow(client.id);
+    const accountIds = row ? effectiveAccountIds(row) : [];
+    // Exclude campaigns on shared accounts that belong to a different client.
+    const owned = await ownedCampaignIds(client.id, accountIds);
     return {
-      scope: { accountIds: row ? effectiveAccountIds(row) : [] },
+      scope: { accountIds, ...(owned ? { campaignIds: owned } : {}) },
       label: client.matchedBrand
         ? `${client.matchedBrand} (under client ${client.name})`
         : `client ${client.name}`,

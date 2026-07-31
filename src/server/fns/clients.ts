@@ -1,4 +1,4 @@
-import { and, eq, gte, inArray, lte, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, lte, notInArray, sql } from "drizzle-orm";
 import { db, schema } from "@/db/client";
 import {
   deriveKpis,
@@ -15,6 +15,8 @@ import { disableReasonLabel } from "@/lib/format";
 import { brandTitles } from "@/notion/parse";
 import { currentUser, audit } from "@/server/fns/auth";
 import { isAdmin } from "@/lib/auth/users";
+import { clientCampaignScope } from "./campaign-attribution";
+import { attributeCampaign, brandVocab } from "@/lib/attribution";
 
 const num = (v: unknown): number => Number(v ?? 0);
 
@@ -194,41 +196,69 @@ export async function fetchClientDetail(
     };
   }
 
-  const [accountRows, accountTotals] = await Promise.all([
+  // On accounts shared with another current client, account-level rows can't be split — so those
+  // accounts' totals come from campaign-level rows minus the campaigns that belong to the other
+  // client. Uncontested accounts keep the cheaper account-level path.
+  const attribution = await clientCampaignScope(id, accountIds);
+  const splitSet = new Set(attribution.splitAccountIds);
+  const accountLevelIds = accountIds.filter((a) => !splitSet.has(a));
+  const noRows = Promise.resolve([] as (typeof schema.insightsDaily.$inferSelect)[]);
+
+  const [accountRows, accountTotals, campaignTotals] = await Promise.all([
     db.select().from(schema.accounts).where(inArray(schema.accounts.id, accountIds)),
-    db
-      .select()
-      .from(schema.insightsDaily)
-      .where(
-        and(
-          eq(schema.insightsDaily.level, "account"),
-          inArray(schema.insightsDaily.entityId, accountIds),
-          gte(schema.insightsDaily.date, w.since),
-          lte(schema.insightsDaily.date, w.until),
-        ),
-      ),
+    accountLevelIds.length
+      ? db
+          .select()
+          .from(schema.insightsDaily)
+          .where(
+            and(
+              eq(schema.insightsDaily.level, "account"),
+              inArray(schema.insightsDaily.entityId, accountLevelIds),
+              gte(schema.insightsDaily.date, w.since),
+              lte(schema.insightsDaily.date, w.until),
+            ),
+          )
+      : noRows,
+    attribution.splitAccountIds.length
+      ? db
+          .select()
+          .from(schema.insightsDaily)
+          .where(
+            and(
+              eq(schema.insightsDaily.level, "campaign"),
+              inArray(schema.insightsDaily.accountId, attribution.splitAccountIds),
+              notInArray(schema.insightsDaily.entityId, attribution.excludedCampaignIds),
+              gte(schema.insightsDaily.date, w.since),
+              lte(schema.insightsDaily.date, w.until),
+            ),
+          )
+      : noRows,
   ]);
 
   const accName = new Map(accountRows.map((a) => [a.id, a.name]));
   const accStatus = new Map(accountRows.map((a) => [a.id, accountStatus(a.status)]));
   const accInfo = new Map(accountRows.map((a) => [a.id, a]));
 
-  // Per-account sums + overall KPI totals.
+  // Per-account sums + overall KPI totals. Account-level rows key on entityId (the account itself);
+  // campaign-level rows key on their parent accountId.
   const perAccount = new Map<string, { spend: number; impressions: number; clicks: number }>();
   const totals = { spend: 0, impressions: 0, clicks: 0, conversions: 0, revenue: 0, reach: 0 };
-  for (const r of accountTotals) {
-    const acc = perAccount.get(r.entityId) ?? { spend: 0, impressions: 0, clicks: 0 };
+  const addRow = (key: string, r: typeof schema.insightsDaily.$inferSelect) => {
+    const acc = perAccount.get(key) ?? { spend: 0, impressions: 0, clicks: 0 };
     acc.spend += num(r.spend);
     acc.impressions += num(r.impressions);
     acc.clicks += num(r.clicks);
-    perAccount.set(r.entityId, acc);
+    perAccount.set(key, acc);
     totals.spend += num(r.spend);
     totals.impressions += num(r.impressions);
     totals.clicks += num(r.clicks);
     totals.conversions += num(r.conversions);
     totals.revenue += num(r.conversionValues);
     totals.reach += num(r.reach);
-  }
+  };
+  for (const r of accountTotals) addRow(r.entityId, r);
+  for (const r of campaignTotals) addRow(r.accountId, r);
+  const insightRows = [...accountTotals, ...campaignTotals];
 
   const accounts: ClientAccountRow[] = accountIds.map((aid) => {
     const t = perAccount.get(aid);
@@ -256,22 +286,44 @@ export async function fetchClientDetail(
     };
   });
 
-  // Nested campaign→ad set→ad tree scoped to this client's accounts (drill-down).
-  const campaigns = (await fetchCampaigns(w, accountIds)).sort((a, b) => b.spend - a.spend);
+  // Nested campaign→ad set→ad tree scoped to this client's accounts (drill-down), minus campaigns
+  // on contested accounts that belong to the other client.
+  const excluded = new Set(attribution.excludedCampaignIds);
+  const campaigns = (await fetchCampaigns(w, accountIds))
+    .filter((c) => !excluded.has(c.id))
+    .sort((a, b) => b.spend - a.spend);
   // Spend against the current engagement budget = spend since its start date.
   let budgetSpent = 0;
   if (row.startDate) {
-    const [bs] = await db
-      .select({ s: sql<number>`coalesce(sum(${schema.insightsDaily.spend}),0)` })
-      .from(schema.insightsDaily)
-      .where(
-        and(
-          eq(schema.insightsDaily.level, "account"),
-          inArray(schema.insightsDaily.entityId, accountIds),
-          gte(schema.insightsDaily.date, String(row.startDate)),
-        ),
-      );
-    budgetSpent = num(bs?.s);
+    const since = String(row.startDate);
+    const [acctSpend, campSpend] = await Promise.all([
+      accountLevelIds.length
+        ? db
+            .select({ s: sql<number>`coalesce(sum(${schema.insightsDaily.spend}),0)` })
+            .from(schema.insightsDaily)
+            .where(
+              and(
+                eq(schema.insightsDaily.level, "account"),
+                inArray(schema.insightsDaily.entityId, accountLevelIds),
+                gte(schema.insightsDaily.date, since),
+              ),
+            )
+        : Promise.resolve([{ s: 0 }]),
+      attribution.splitAccountIds.length
+        ? db
+            .select({ s: sql<number>`coalesce(sum(${schema.insightsDaily.spend}),0)` })
+            .from(schema.insightsDaily)
+            .where(
+              and(
+                eq(schema.insightsDaily.level, "campaign"),
+                inArray(schema.insightsDaily.accountId, attribution.splitAccountIds),
+                notInArray(schema.insightsDaily.entityId, attribution.excludedCampaignIds),
+                gte(schema.insightsDaily.date, since),
+              ),
+            )
+        : Promise.resolve([{ s: 0 }]),
+    ]);
+    budgetSpent = num(acctSpend[0]?.s) + num(campSpend[0]?.s);
   }
 
   return {
@@ -281,7 +333,7 @@ export async function fetchClientDetail(
     kpis: deriveKpis(totals),
     accounts,
     campaigns,
-    events: canonicalEvents(accountTotals),
+    events: canonicalEvents(insightRows),
     budget: {
       total: row.budget ?? null,
       spent: budgetSpent,
@@ -504,11 +556,27 @@ export async function fetchActiveCampaigns(w: DateWindow): Promise<ActiveCampaig
       .from(schema.adSets)
       .where(inArray(schema.adSets.campaignId, ids)),
   ]);
-  const clientByAccount = new Map<string, string>();
-  for (const cl of clientRows)
-    if (cl.removedAt == null)
-      for (const a of effectiveAccountIds(cl))
-        if (!clientByAccount.has(a)) clientByAccount.set(a, cl.name);
+  // An account reused across clients over time is claimed by several current clients, so a campaign
+  // must be attributed by NAME there — "first claimant wins" would credit it to the wrong client.
+  const liveClients = clientRows.filter((cl) => cl.removedAt == null);
+  const claimsByAccount = new Map<string, typeof liveClients>();
+  for (const cl of liveClients)
+    for (const a of effectiveAccountIds(cl)) {
+      const list = claimsByAccount.get(a);
+      if (list) list.push(cl);
+      else claimsByAccount.set(a, [cl]);
+    }
+  const clientForCampaign = (accountId: string, campaignName: string): string | null => {
+    const claimants = claimsByAccount.get(accountId) ?? [];
+    if (claimants.length === 0) return null;
+    if (claimants.length === 1) return claimants[0].name;
+    const ownerId = attributeCampaign(
+      campaignName,
+      claimants.map((cl) => brandVocab(cl.id, cl.name, brandTitles(cl.raw))),
+    );
+    // Ambiguous name -> fall back to the first claimant (previous behaviour) rather than blanking it.
+    return (ownerId ? claimants.find((cl) => cl.id === ownerId)?.name : null) ?? claimants[0].name;
+  };
   const acctById = new Map(acctRows.map((a) => [a.id, a]));
   const clicksById = new Map<string, number>();
   const rowsById = new Map<string, { actions: unknown; actionValues: unknown }[]>();
@@ -538,7 +606,7 @@ export async function fetchActiveCampaigns(w: DateWindow): Promise<ActiveCampaig
       accountStatus: status,
       accountDisableReason:
         status === "DISABLED" ? disableReasonLabel(acct?.disableReason ?? null) : null,
-      client: clientByAccount.get(c.accountId) ?? null,
+      client: clientForCampaign(c.accountId, c.name),
       status: c.status,
       spend: round2(c.spend),
       dailyAvgSpend: round2(c.spend / days),

@@ -11,6 +11,7 @@ import {
   DEFAULT_REPORT_COLUMN_KEYS,
   type ReportColumnKind,
 } from "@/lib/report-options";
+import { ownedCampaignIds } from "@/server/fns/campaign-attribution";
 
 // Every dimension a report can break down by. Entity dims read insights_daily at that level;
 // meta dims read the synced insights_breakdown_daily types. All compose with `byDay`.
@@ -776,15 +777,25 @@ export async function reportForClient(
   const columns = normalizeColumns(input.columns);
   if (columns.length === 0) return { error: "Select at least one column." };
   const bd = parseBreakdown(input.breakdown, input.splitByDay);
+  const accountIds = effectiveAccountIds(row);
+  // On accounts shared with another client, restrict to the campaigns whose names attribute to THIS
+  // client, intersected with any explicit campaign selection.
+  const owned = await ownedCampaignIds(input.clientId, accountIds);
+  const selected = input.campaignIds?.length ? input.campaignIds : null;
+  const campaignIds = selected
+    ? owned
+      ? selected.filter((id) => owned.includes(id))
+      : selected
+    : (owned ?? undefined);
   return runReport({
     name: row.name,
-    accountIds: effectiveAccountIds(row),
+    accountIds,
     since: range.since,
     until: range.until,
     columns,
     breakdown: bd.dim,
     byDay: bd.byDay,
     markup: input.markup,
-    campaignIds: input.campaignIds,
+    campaignIds,
   });
 }

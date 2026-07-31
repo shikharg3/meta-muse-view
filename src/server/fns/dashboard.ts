@@ -517,11 +517,22 @@ export interface AdEntityRow {
   merged?: number;
 }
 
-/** A client's accounts (optionally narrowed to one campaign) to break down at ad-set/ad grain. */
+/** A client's accounts, optionally narrowed to one campaign or to an allowed campaign set (used when
+ *  an account is shared with another client and only some campaigns belong to this one). */
 export interface AdScope {
   accountIds: string[];
   campaignId?: string;
+  /** Whitelist of campaign ids; entities under any other campaign are excluded. */
+  campaignIds?: string[];
 }
+
+/** True when a campaign passes the scope's single-campaign narrowing AND its whitelist (if any). */
+const inCampaignScope = (scope: AdScope, campaignId: string | undefined): boolean => {
+  if (campaignId === undefined) return false;
+  if (scope.campaignId && campaignId !== scope.campaignId) return false;
+  if (scope.campaignIds && !scope.campaignIds.includes(campaignId)) return false;
+  return true;
+};
 
 /**
  * Ad-set-level (or ad-level) rows for a scope, each with media KPIs, the objective result, and the
@@ -616,7 +627,7 @@ export async function fetchAdEntities(
   const meta = new Map<string, Meta>();
   if (level === "adset") {
     for (const s of adsetRows) {
-      if (scope.campaignId && s.campaignId !== scope.campaignId) continue;
+      if (!inCampaignScope(scope, s.campaignId)) continue;
       const c = campById.get(s.campaignId);
       meta.set(s.id, {
         name: s.name,
@@ -629,7 +640,7 @@ export async function fetchAdEntities(
   } else {
     for (const a of adRows) {
       const s = adsetById.get(a.adSetId);
-      if (scope.campaignId && s?.campaignId !== scope.campaignId) continue;
+      if (!inCampaignScope(scope, s?.campaignId)) continue;
       const c = s ? campById.get(s.campaignId) : undefined;
       meta.set(a.id, {
         name: a.name,
