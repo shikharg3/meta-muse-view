@@ -1,6 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { PageHeader } from "@/components/dashboard/PageHeader";
+import { PagePendingSkeleton } from "@/components/dashboard/TableSkeleton";
 import { listClients } from "@/lib/api/clients";
 import { cn } from "@/lib/utils";
 import { Search, ChevronRight } from "lucide-react";
@@ -11,6 +12,7 @@ export const Route = createFileRoute("/clients/")({
   validateSearch: rangeSearch,
   loader: async () => ({ clients: await listClients() }),
   component: Clients,
+  pendingComponent: () => <PagePendingSkeleton rows={10} kpis={0} />,
 });
 
 const STATUS_DOT: Record<string, string> = {

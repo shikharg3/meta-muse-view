@@ -16,6 +16,8 @@ import {
   LogOut,
   DollarSign,
   MessagesSquare,
+  Loader2,
+  type LucideIcon,
 } from "lucide-react";
 import {
   Sidebar,
@@ -31,7 +33,14 @@ import {
 } from "@/components/ui/sidebar";
 import type { PublicUser } from "@/lib/auth/users";
 import { isAdmin, isSuperadmin } from "@/lib/auth/roles";
+import { cn } from "@/lib/utils";
 import { MetaStatus } from "./MetaStatus";
+
+interface NavItem {
+  title: string;
+  url: string;
+  icon: LucideIcon;
+}
 
 const main = [
   { title: "Ask", url: "/", icon: Sparkles },
@@ -45,6 +54,37 @@ const main = [
   { title: "Alerts", url: "/alerts", icon: Bell },
   { title: "Activity", url: "/activity", icon: Activity },
 ];
+
+/**
+ * Nav row with instant click feedback. TanStack `Link` sets
+ * `data-transitioning="transitioning"` inside a `flushSync` on click and clears
+ * it on the router's `onResolved` event, so the pressed style and the spinner
+ * paint on the very next frame even while the target route's loader is still
+ * running.
+ */
+function NavLink({ item, active }: { item: NavItem; active: boolean }) {
+  return (
+    <SidebarMenuItem>
+      <SidebarMenuButton asChild isActive={active} tooltip={item.title}>
+        <Link
+          to={item.url}
+          className={cn(
+            "group/nav",
+            "data-[transitioning=transitioning]:bg-sidebar-accent",
+            "data-[transitioning=transitioning]:text-sidebar-accent-foreground",
+            "data-[transitioning=transitioning]:font-medium",
+            "data-[transitioning=transitioning]:ring-1",
+            "data-[transitioning=transitioning]:ring-sidebar-ring/40",
+          )}
+        >
+          <item.icon className="group-data-[transitioning=transitioning]/nav:hidden" />
+          <Loader2 className="hidden animate-spin text-primary group-data-[transitioning=transitioning]/nav:block" />
+          <span>{item.title}</span>
+        </Link>
+      </SidebarMenuButton>
+    </SidebarMenuItem>
+  );
+}
 
 export function AppSidebar({ user }: { user: PublicUser }) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
@@ -87,14 +127,7 @@ export function AppSidebar({ user }: { user: PublicUser }) {
           <SidebarGroupContent>
             <SidebarMenu>
               {main.map((item) => (
-                <SidebarMenuItem key={item.url}>
-                  <SidebarMenuButton asChild isActive={isActive(item.url)} tooltip={item.title}>
-                    <Link to={item.url}>
-                      <item.icon />
-                      <span>{item.title}</span>
-                    </Link>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
+                <NavLink key={item.url} item={item} active={isActive(item.url)} />
               ))}
             </SidebarMenu>
           </SidebarGroupContent>
@@ -105,14 +138,7 @@ export function AppSidebar({ user }: { user: PublicUser }) {
             <SidebarGroupContent>
               <SidebarMenu>
                 {systemItems.map((item) => (
-                  <SidebarMenuItem key={item.url}>
-                    <SidebarMenuButton asChild isActive={isActive(item.url)} tooltip={item.title}>
-                      <Link to={item.url}>
-                        <item.icon />
-                        <span>{item.title}</span>
-                      </Link>
-                    </SidebarMenuButton>
-                  </SidebarMenuItem>
+                  <NavLink key={item.url} item={item} active={isActive(item.url)} />
                 ))}
               </SidebarMenu>
             </SidebarGroupContent>

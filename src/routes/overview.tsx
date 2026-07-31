@@ -1,5 +1,6 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { KpiCard } from "@/components/dashboard/KpiCard";
+import { PagePendingSkeleton } from "@/components/dashboard/TableSkeleton";
 import { TrendChart } from "@/components/dashboard/TrendChart";
 import { StatusPill } from "@/components/dashboard/StatusPill";
 import { Sparkline } from "@/components/dashboard/Sparkline";
@@ -28,6 +29,7 @@ export const Route = createFileRoute("/overview")({
     return { ...overview, placements: breakdowns.publisher_platform };
   },
   component: Overview,
+  pendingComponent: () => <PagePendingSkeleton rows={6} kpis={8} />,
 });
 
 function Overview() {

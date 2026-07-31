@@ -1,6 +1,7 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { PageHeader } from "@/components/dashboard/PageHeader";
+import { PagePendingSkeleton } from "@/components/dashboard/TableSkeleton";
 import { CampaignTable } from "@/components/dashboard/CampaignTable";
 import { listCampaigns } from "@/lib/api/dashboard";
 import { Search, X } from "lucide-react";
@@ -24,6 +25,7 @@ export const Route = createFileRoute("/campaigns")({
   loaderDeps: ({ search }) => rangeSpec(search),
   loader: async ({ deps }) => ({ campaigns: await listCampaigns({ data: deps }) }),
   component: CampaignsExplorer,
+  pendingComponent: () => <PagePendingSkeleton rows={12} kpis={0} />,
 });
 
 function CampaignsExplorer() {

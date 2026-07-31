@@ -17,6 +17,7 @@ import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/layout/AppSidebar";
 import { TopBar } from "@/components/layout/TopBar";
 import { StaleDataBanner } from "@/components/layout/StaleDataBanner";
+import { NavProgress } from "@/components/layout/NavProgress";
 import { getAccountOptions, getBusinessSummary } from "@/lib/api/dashboard";
 import { getClientFilterOptions } from "@/lib/api/clients";
 import { getCurrentUser } from "@/lib/api/auth";
@@ -191,6 +192,7 @@ function RootComponent() {
         <PendingScreen user={user} />
       ) : (
         <SidebarProvider>
+          <NavProgress />
           <AppSidebar user={user} />
           <SidebarInset>
             <TopBar

@@ -1,6 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { PageHeader } from "@/components/dashboard/PageHeader";
+import { PanelGridSkeleton } from "@/components/dashboard/TableSkeleton";
 import { StatusPill } from "@/components/dashboard/StatusPill";
 import { listCreatives } from "@/lib/api/dashboard";
 import { fmtCurrency, fmtPct, fmtCompact } from "@/lib/format";
@@ -19,6 +20,7 @@ export const Route = createFileRoute("/creatives")({
   loaderDeps: ({ search }) => rangeSpec(search),
   loader: async ({ deps }) => ({ creatives: await listCreatives({ data: deps }) }),
   component: Creatives,
+  pendingComponent: () => <PanelGridSkeleton panels={8} bars={3} media />,
 });
 
 function Creatives() {

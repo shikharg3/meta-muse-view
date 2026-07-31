@@ -1,6 +1,7 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMemo, useState } from "react";
 import { PageHeader } from "@/components/dashboard/PageHeader";
+import { PagePendingSkeleton } from "@/components/dashboard/TableSkeleton";
 import { StatusPill } from "@/components/dashboard/StatusPill";
 import { Sparkline } from "@/components/dashboard/Sparkline";
 import { listAccounts } from "@/lib/api/dashboard";
@@ -25,6 +26,7 @@ export const Route = createFileRoute("/accounts/")({
   loaderDeps: ({ search }) => rangeSpec(search),
   loader: async ({ deps }) => ({ accounts: await listAccounts({ data: deps }) }),
   component: Accounts,
+  pendingComponent: () => <PagePendingSkeleton rows={10} kpis={0} />,
 });
 
 type SortKey =

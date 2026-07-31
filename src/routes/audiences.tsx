@@ -1,5 +1,6 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { PageHeader } from "@/components/dashboard/PageHeader";
+import { PanelGridSkeleton } from "@/components/dashboard/TableSkeleton";
 import { BreakdownBar } from "@/components/dashboard/BreakdownBar";
 import { getBreakdowns, getCampaignOptions } from "@/lib/api/dashboard";
 import { listClients } from "@/lib/api/clients";
@@ -60,6 +61,7 @@ export const Route = createFileRoute("/audiences")({
     };
   },
   component: Audiences,
+  pendingComponent: () => <PanelGridSkeleton panels={6} bars={6} />,
 });
 
 function Panel({ title, children }: { title: string; children: React.ReactNode }) {
