@@ -8,6 +8,7 @@ import {
   fetchBusinessSummary,
   fetchAdSetAds,
   fetchCampaigns,
+  fetchCreatives,
   searchEntities,
   windowDeltas,
 } from "./dashboard";
@@ -201,6 +202,17 @@ test("fetchCampaigns derives objective-based results and hi-res creative urls", 
   expect(onDemand[0].id).toBe(ad.id);
   expect(onDemand[0].results).toBeCloseTo(7);
   expect(onDemand[0].thumbnailUrl).toBe("https://cdn/full.jpg");
+
+  // The creatives page has its own top-spend query — it must not depend on the campaign tree
+  // carrying ads (it used to walk `campaign.adSets[].ads`, which silently went empty).
+  const [card] = await fetchCreatives(windowFromDays(30));
+  expect(card.id).toBe("a1");
+  expect(card.campaign).toBe("Leads camp");
+  expect(card.account).toBe("Acc");
+  expect(card.results).toBeCloseTo(7);
+  expect(card.resultLabel).toBe("Leads");
+  expect(card.thumbnailUrl).toBe("https://cdn/full.jpg");
+  expect(card.spend).toBeCloseTo(50);
 }, 20000);
 
 test("searchEntities matches accounts by name/id and campaigns by name", async () => {

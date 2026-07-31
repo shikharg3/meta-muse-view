@@ -1,4 +1,17 @@
-import { and, eq, gte, ilike, inArray, isNull, lt, lte, or, sql, type SQL } from "drizzle-orm";
+import {
+  and,
+  desc,
+  eq,
+  gte,
+  ilike,
+  inArray,
+  isNull,
+  lt,
+  lte,
+  or,
+  sql,
+  type SQL,
+} from "drizzle-orm";
 import { disableReasonLabel } from "@/lib/format";
 import { summarizeTargeting } from "./targeting";
 import { db, schema } from "@/db/client";
@@ -1060,7 +1073,7 @@ export async function fetchAccount(
   const account = accounts.find((a) => a.id === id);
   if (!account) return null;
   const [allCampaigns, trend, deltas, metaRows] = await Promise.all([
-    fetchCampaigns(w),
+    fetchCampaigns(w, [id]),
     fetchTrend(w, id),
     windowDeltas(w, id),
     db
@@ -1080,7 +1093,7 @@ export async function fetchAccount(
   return {
     account,
     deltas,
-    campaigns: allCampaigns.filter((c) => c.accountId === id),
+    campaigns: allCampaigns,
     trend,
     meta: m
       ? {
@@ -1096,46 +1109,166 @@ export async function fetchAccount(
   };
 }
 
+/**
+ * Top creatives by spend. Queries the highest-spending ads directly — it used to build the entire
+ * campaign→ad-set→ad tree just to sort and keep 36 cards, which is both slow and (since ads became
+ * an opt-in payload) would return nothing at all.
+ */
 export async function fetchCreatives(w: DateWindow): Promise<CreativeCard[]> {
-  const campaigns = await fetchCampaigns(w);
-  const cards: CreativeCard[] = [];
-  for (const c of campaigns) {
-    for (const s of c.adSets) {
-      for (const ad of s.ads)
-        cards.push({ ...ad, campaign: c.name, account: c.accountName, accountId: c.accountId });
-    }
-  }
-  const top = cards.sort((a, b) => b.spend - a.spend).slice(0, 36);
-  // Attach creative copy (ad → creative_id → ad_creatives) for the top cards only.
-  const adIds = top.map((t) => t.id);
-  if (adIds.length === 0) return top;
+  const LIMIT = 36;
+  const spendExpr = sql<number>`coalesce(sum(${schema.insightsDaily.spend}),0)`;
+  const topAds = await db
+    .select({
+      entityId: schema.insightsDaily.entityId,
+      spend: spendExpr,
+      impressions: sql<number>`coalesce(sum(${schema.insightsDaily.impressions}),0)`,
+      clicks: sql<number>`coalesce(sum(${schema.insightsDaily.clicks}),0)`,
+      conversions: sql<number>`coalesce(sum(${schema.insightsDaily.conversions}),0)`,
+      revenue: sql<number>`coalesce(sum(${schema.insightsDaily.conversionValues}),0)`,
+      reach: sql<number>`coalesce(max(${schema.insightsDaily.reach}),0)`,
+    })
+    .from(schema.insightsDaily)
+    .where(
+      and(
+        eq(schema.insightsDaily.level, "ad"),
+        gte(schema.insightsDaily.date, w.since),
+        lte(schema.insightsDaily.date, w.until),
+      ),
+    )
+    .groupBy(schema.insightsDaily.entityId)
+    .orderBy(desc(spendExpr))
+    .limit(LIMIT);
+  if (topAds.length === 0) return [];
+  const adIds = topAds.map((t) => t.entityId);
+
   const adRows = await db
-    .select({ id: schema.ads.id, creativeId: schema.ads.creativeId })
+    .select({
+      id: schema.ads.id,
+      name: schema.ads.name,
+      status: schema.ads.status,
+      accountId: schema.ads.accountId,
+      adSetId: schema.ads.adSetId,
+      creativeId: schema.ads.creativeId,
+    })
     .from(schema.ads)
     .where(inArray(schema.ads.id, adIds));
-  const creativeIdByAd = new Map(adRows.map((a) => [a.id, a.creativeId]));
-  const creativeIds = [...new Set(adRows.map((a) => a.creativeId).filter(Boolean))] as string[];
-  const copies = creativeIds.length
+  if (adRows.length === 0) return [];
+  const setIds = [...new Set(adRows.map((a) => a.adSetId))];
+  const creativeIds = adRows.map((a) => a.creativeId).filter((id): id is string => id !== null);
+
+  const [setRows, accountRows, creatives, actions] = await Promise.all([
+    db
+      .select({ id: schema.adSets.id, campaignId: schema.adSets.campaignId })
+      .from(schema.adSets)
+      .where(inArray(schema.adSets.id, setIds)),
+    db
+      .select({
+        id: schema.accounts.id,
+        name: schema.accounts.name,
+        status: schema.accounts.status,
+      })
+      .from(schema.accounts)
+      .where(inArray(schema.accounts.id, [...new Set(adRows.map((a) => a.accountId))])),
+    creativeIds.length
+      ? db
+          .select({
+            id: schema.adCreatives.id,
+            thumbnailUrl: schema.adCreatives.thumbnailUrl,
+            title: schema.adCreatives.title,
+            body: schema.adCreatives.body,
+            callToActionType: schema.adCreatives.callToActionType,
+            objectType: sql<string | null>`${schema.adCreatives.raw}->>'object_type'`,
+            imageUrl: sql<string | null>`${schema.adCreatives.raw}->>'image_url'`,
+            videoImageUrl: sql<
+              string | null
+            >`${schema.adCreatives.raw}->'object_story_spec'->'video_data'->>'image_url'`,
+            linkPicture: sql<
+              string | null
+            >`${schema.adCreatives.raw}->'object_story_spec'->'link_data'->>'picture'`,
+            childAttachments: sql<number>`coalesce(jsonb_array_length(${schema.adCreatives.raw}->'object_story_spec'->'link_data'->'child_attachments'), 0)`,
+          })
+          .from(schema.adCreatives)
+          .where(inArray(schema.adCreatives.id, creativeIds))
+      : Promise.resolve(
+          [] as ({
+            id: string;
+            title: string | null;
+            body: string | null;
+            callToActionType: string | null;
+          } & CreativeFacts)[],
+        ),
+    db.execute(sql`
+      select entity_id, elem->>'action_type' as type, sum((elem->>'value')::double precision) as val
+      from insights_daily
+      cross join lateral jsonb_array_elements(actions) elem
+      where level = 'ad' and date >= ${w.since} and date <= ${w.until}
+        and entity_id in (select jsonb_array_elements_text(${JSON.stringify(adIds)}::jsonb))
+      group by 1, 2
+    `),
+  ]);
+  const campaignIds = [...new Set(setRows.map((s) => s.campaignId))];
+  const campaignRows = campaignIds.length
     ? await db
         .select({
-          id: schema.adCreatives.id,
-          title: schema.adCreatives.title,
-          body: schema.adCreatives.body,
-          callToActionType: schema.adCreatives.callToActionType,
+          id: schema.campaigns.id,
+          name: schema.campaigns.name,
+          objective: schema.campaigns.objective,
         })
-        .from(schema.adCreatives)
-        .where(inArray(schema.adCreatives.id, creativeIds))
+        .from(schema.campaigns)
+        .where(inArray(schema.campaigns.id, campaignIds))
     : [];
-  const copyByCreative = new Map(copies.map((c) => [c.id, c]));
-  return top.map((t) => {
-    const copy = copyByCreative.get(creativeIdByAd.get(t.id) ?? "");
+
+  const totalsById = new Map(topAds.map((t) => [t.entityId, t]));
+  const campaignBySet = new Map(setRows.map((s) => [s.id, s.campaignId]));
+  const campaignById = new Map(campaignRows.map((c) => [c.id, c]));
+  const accountById = new Map(accountRows.map((a) => [a.id, a]));
+  const creativeById = new Map(creatives.map((c) => [c.id, c]));
+  const actionByKey = new Map<string, number>();
+  for (const r of actions as unknown as { entity_id: string; type: string; val: number }[]) {
+    actionByKey.set(`${r.entity_id}:${r.type}`, Number(r.val) || 0);
+  }
+
+  const cards = adRows.map((ad) => {
+    const t = totalsById.get(ad.id);
+    const k = deriveKpis({
+      spend: num(t?.spend),
+      impressions: num(t?.impressions),
+      clicks: num(t?.clicks),
+      conversions: num(t?.conversions),
+      revenue: num(t?.revenue),
+      reach: num(t?.reach),
+    });
+    const campaign = campaignById.get(campaignBySet.get(ad.adSetId) ?? "");
+    const rs = resultSpec(campaign?.objective);
+    const account = accountById.get(ad.accountId);
+    const creative = ad.creativeId ? creativeById.get(ad.creativeId) : undefined;
     return {
-      ...t,
-      title: copy?.title ?? null,
-      body: copy?.body ?? null,
-      callToActionType: copy?.callToActionType ?? null,
+      id: ad.id,
+      name: ad.name,
+      // A disabled account stops delivery regardless of the ad's own status.
+      status: (accountStatus(account?.status) === "DISABLED"
+        ? "PAUSED"
+        : (ad.status ?? "ACTIVE")) as CreativeCard["status"],
+      spend: k.spend,
+      impressions: k.impressions,
+      ctr: k.ctr,
+      cpc: k.cpc,
+      roas: k.roas,
+      conversions: k.conversions,
+      results: rs.type === "reach" ? k.reach : (actionByKey.get(`${ad.id}:${rs.type}`) ?? 0),
+      resultLabel: rs.label,
+      format: creativeFormat(creative),
+      thumbHue: hueFromId(ad.id),
+      thumbnailUrl: creativeImageUrl(creative),
+      campaign: campaign?.name ?? "—",
+      account: account?.name ?? ad.accountId,
+      accountId: ad.accountId,
+      title: creative?.title ?? null,
+      body: creative?.body ?? null,
+      callToActionType: creative?.callToActionType ?? null,
     };
   });
+  return cards.sort((a, b) => b.spend - a.spend);
 }
 
 type BreakdownDims = Record<
