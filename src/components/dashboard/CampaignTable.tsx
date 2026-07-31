@@ -15,7 +15,16 @@ type Selected = { ad: Ad; campaign: string } | null;
  * full-row click to drill down, and a click-to-zoom creative preview at ad level.
  * Filtering is the caller's job (pass an already-filtered list).
  */
-export function CampaignTable({ campaigns }: { campaigns: Campaign[] }) {
+export function CampaignTable({
+  campaigns,
+  moveTargets,
+  onMove,
+}: {
+  campaigns: Campaign[];
+  /** Clients a campaign can be re-attributed to (admin only; omit to hide the control). */
+  moveTargets?: { id: string; name: string }[];
+  onMove?: (campaignId: string, clientId: string | null) => void;
+}) {
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const [selected, setSelected] = useState<Selected>(null);
   const {
@@ -149,6 +158,26 @@ export function CampaignTable({ campaigns }: { campaigns: Campaign[] }) {
                                 {c.frequency.toFixed(1)}× freq
                               </span>
                             </div>
+                            {onMove && (
+                              <select
+                                value=""
+                                onClick={(e) => e.stopPropagation()}
+                                onChange={(e) => {
+                                  const v = e.target.value;
+                                  if (v) onMove(c.id, v === "__auto" ? null : v);
+                                }}
+                                title="Attribute this campaign to a different client"
+                                className="mt-1 h-6 rounded border border-border bg-background px-1.5 text-[10px] text-muted-foreground"
+                              >
+                                <option value="">Move to client…</option>
+                                <option value="__auto">Automatic (by name)</option>
+                                {(moveTargets ?? []).map((t) => (
+                                  <option key={t.id} value={t.id}>
+                                    {t.name}
+                                  </option>
+                                ))}
+                              </select>
+                            )}
                           </div>
                         </div>
                       </td>

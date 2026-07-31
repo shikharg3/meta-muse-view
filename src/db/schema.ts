@@ -399,3 +399,16 @@ export const syncEvents = pgTable(
   },
   (t) => [index("sync_events_at_idx").on(t.at)],
 );
+
+/**
+ * Manual campaign -> client assignment, overriding both account mapping and name attribution.
+ * Deliberately NOT foreign-keyed: the Notion sync re-keys client ids (an account moving between
+ * engagements), and a cascade would silently erase the operator's correction. A row pointing at a
+ * client that no longer exists is simply ignored.
+ */
+export const campaignClientOverrides = pgTable("campaign_client_overrides", {
+  campaignId: text("campaign_id").primaryKey(),
+  clientId: text("client_id").notNull(),
+  setBy: text("set_by"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});

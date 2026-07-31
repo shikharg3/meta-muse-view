@@ -5,7 +5,13 @@ import { PageHeader } from "@/components/dashboard/PageHeader";
 import { ClientDetailView } from "@/components/dashboard/ClientDetailView";
 import { ReportBuilder, type ReportRequest } from "@/components/chat/ReportBuilder";
 import { ReportBlock } from "@/components/chat/ReportBlock";
-import { getClientDetail, getClientBudgets, mutateClientAccounts } from "@/lib/api/clients";
+import {
+  getClientDetail,
+  getClientBudgets,
+  mutateClientAccounts,
+  listClients,
+  moveCampaignToClient,
+} from "@/lib/api/clients";
 import { getCurrentUser } from "@/lib/api/auth";
 import { isAdmin } from "@/lib/auth/roles";
 import { generateClientReport } from "@/lib/api/report";
@@ -17,13 +23,22 @@ export const Route = createFileRoute("/clients/$id")({
   validateSearch: rangeSearch,
   loaderDeps: ({ search }) => rangeSpec(search),
   loader: async ({ params, deps }) => {
-    const [detail, budgets, me] = await Promise.all([
+    const [detail, budgets, me, clients] = await Promise.all([
       getClientDetail({ data: { id: params.id, ...deps } }),
       getClientBudgets({ data: params.id }),
       getCurrentUser(),
+      listClients(),
     ]);
     if (!detail) throw notFound();
-    return { detail, budgets, isAdmin: isAdmin(me?.role) };
+    return {
+      detail,
+      budgets,
+      isAdmin: isAdmin(me?.role),
+      // Re-attribution targets: every current client except this one.
+      moveTargets: clients
+        .filter((c) => c.id !== params.id)
+        .map((c) => ({ id: c.id, name: c.name })),
+    };
   },
   head: ({ loaderData }) => ({
     meta: [{ title: `${loaderData?.detail.name ?? "Client"} — MetaConsole` }],
@@ -46,7 +61,7 @@ const STATUS_TONE: Record<string, string> = {
 };
 
 function ClientPage() {
-  const { detail, budgets, isAdmin } = Route.useLoaderData();
+  const { detail, budgets, isAdmin, moveTargets } = Route.useLoaderData();
   const search = Route.useSearch();
   const router = useRouter();
   const [showReport, setShowReport] = useState(false);
@@ -152,7 +167,18 @@ function ClientPage() {
         </div>
       )}
 
-      <ClientDetailView detail={detail} budgets={budgets} isAdmin={isAdmin} onMutate={onMutate} />
+      <ClientDetailView
+        detail={detail}
+        budgets={budgets}
+        isAdmin={isAdmin}
+        moveTargets={moveTargets}
+        onMoveCampaign={(campaignId, clientId) => {
+          void moveCampaignToClient({ data: { campaignId, clientId } }).then(() =>
+            router.invalidate(),
+          );
+        }}
+        onMutate={onMutate}
+      />
     </div>
   );
 }

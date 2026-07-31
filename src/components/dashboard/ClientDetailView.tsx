@@ -11,6 +11,9 @@ interface Props {
   detail: ClientDetail;
   budgets: CampaignBudget[];
   isAdmin: boolean;
+  /** Clients a campaign can be re-attributed to, and the handler (admin only). */
+  moveTargets?: { id: string; name: string }[];
+  onMoveCampaign?: (campaignId: string, clientId: string | null) => void;
   onMutate: (
     action: "add" | "remove",
     accountId: string,
@@ -20,7 +23,14 @@ interface Props {
 /** Full client performance detail — every ad account, every campaign (with drill-down), objective-
  *  aware KPIs, budget and pacing. Shared by the /clients list preview and the standalone /clients/$id
  *  page so both stay in sync. Range is controlled by the caller (loader window). */
-export function ClientDetailView({ detail, budgets, isAdmin, onMutate }: Props) {
+export function ClientDetailView({
+  detail,
+  budgets,
+  isAdmin,
+  moveTargets,
+  onMoveCampaign,
+  onMutate,
+}: Props) {
   const [newAccount, setNewAccount] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState("ALL");
@@ -269,7 +279,11 @@ export function ClientDetailView({ detail, budgets, isAdmin, onMutate }: Props) 
             </div>
           )}
         </div>
-        <CampaignTable campaigns={visibleCampaigns} />
+        <CampaignTable
+          campaigns={visibleCampaigns}
+          moveTargets={isAdmin ? moveTargets : undefined}
+          onMove={isAdmin ? onMoveCampaign : undefined}
+        />
       </section>
 
       <section className="rounded-xl border border-border bg-card overflow-hidden">

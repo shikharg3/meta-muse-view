@@ -170,7 +170,12 @@ export async function fetchClientDetail(
   const accountIds = scope?.length ? effective.filter((a) => scope.includes(a)) : effective;
   const notionIds = (row.notionAccountIds as string[] | null) ?? [];
 
-  if (accountIds.length === 0) {
+  // Ownership is per campaign, not per account: shared accounts are split by brand name / manual
+  // override, and an override can also pull a campaign in from an account this client doesn't own.
+  const attribution = await clientCampaignScope(id, accountIds);
+  const allAccountIds = [...new Set([...accountIds, ...attribution.extraAccountIds])];
+
+  if (allAccountIds.length === 0) {
     return {
       id: row.id,
       name: row.name,
@@ -196,16 +201,13 @@ export async function fetchClientDetail(
     };
   }
 
-  // On accounts shared with another current client, account-level rows can't be split — so those
-  // accounts' totals come from campaign-level rows minus the campaigns that belong to the other
-  // client. Uncontested accounts keep the cheaper account-level path.
-  const attribution = await clientCampaignScope(id, accountIds);
+  // Accounts needing campaign-level totals (account-level rows can't be split).
   const splitSet = new Set(attribution.splitAccountIds);
-  const accountLevelIds = accountIds.filter((a) => !splitSet.has(a));
+  const accountLevelIds = allAccountIds.filter((a) => !splitSet.has(a));
   const noRows = Promise.resolve([] as (typeof schema.insightsDaily.$inferSelect)[]);
 
   const [accountRows, accountTotals, campaignTotals] = await Promise.all([
-    db.select().from(schema.accounts).where(inArray(schema.accounts.id, accountIds)),
+    db.select().from(schema.accounts).where(inArray(schema.accounts.id, allAccountIds)),
     accountLevelIds.length
       ? db
           .select()
@@ -260,7 +262,7 @@ export async function fetchClientDetail(
   for (const r of campaignTotals) addRow(r.accountId, r);
   const insightRows = [...accountTotals, ...campaignTotals];
 
-  const accounts: ClientAccountRow[] = accountIds.map((aid) => {
+  const accounts: ClientAccountRow[] = allAccountIds.map((aid) => {
     const t = perAccount.get(aid);
     const k = deriveKpis({
       spend: t?.spend ?? 0,
@@ -289,7 +291,7 @@ export async function fetchClientDetail(
   // Nested campaign→ad set→ad tree scoped to this client's accounts (drill-down), minus campaigns
   // on contested accounts that belong to the other client.
   const excluded = new Set(attribution.excludedCampaignIds);
-  const campaigns = (await fetchCampaigns(w, accountIds))
+  const campaigns = (await fetchCampaigns(w, allAccountIds))
     .filter((c) => !excluded.has(c.id))
     .sort((a, b) => b.spend - a.spend);
   // Spend against the current engagement budget = spend since its start date.
@@ -714,4 +716,46 @@ export async function fetchAccountDirectory(): Promise<AccountDirectory> {
       };
     }),
   };
+}
+
+/**
+ * Manually assign a campaign to a client (or clear the assignment, restoring automatic attribution).
+ * Admin-only and audited: it silently changes which client a campaign's spend lands under.
+ */
+export async function setCampaignClient(
+  campaignId: string,
+  clientId: string | null,
+): Promise<{ ok: boolean; error?: string }> {
+  const me = await currentUser();
+  if (!me || !isAdmin(me.role)) return { ok: false, error: "Admins only." };
+  const [campaign] = await db
+    .select({ id: schema.campaigns.id, name: schema.campaigns.name })
+    .from(schema.campaigns)
+    .where(eq(schema.campaigns.id, campaignId));
+  if (!campaign) return { ok: false, error: "Unknown campaign." };
+
+  if (clientId === null) {
+    await db
+      .delete(schema.campaignClientOverrides)
+      .where(eq(schema.campaignClientOverrides.campaignId, campaignId));
+    await audit("campaign.client_reset", `cleared override on "${campaign.name}"`);
+    return { ok: true };
+  }
+  const target = await getClientRow(clientId);
+  if (!target) return { ok: false, error: "Unknown client." };
+  await db
+    .insert(schema.campaignClientOverrides)
+    .values({ campaignId, clientId, setBy: me.email })
+    .onConflictDoUpdate({
+      target: schema.campaignClientOverrides.campaignId,
+      set: { clientId, setBy: me.email, createdAt: new Date() },
+    });
+  await audit("campaign.client_set", `moved "${campaign.name}" to ${target.name}`);
+  return { ok: true };
+}
+
+/** Current manual campaign→client assignments, for surfacing "moved here" in the UI. */
+export async function listCampaignOverrides(): Promise<Record<string, string>> {
+  const rows = await db.select().from(schema.campaignClientOverrides);
+  return Object.fromEntries(rows.map((r) => [r.campaignId, r.clientId]));
 }

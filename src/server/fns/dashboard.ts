@@ -396,6 +396,14 @@ export async function fetchCampaigns(w: DateWindow, accountIds?: string[]): Prom
     actionTotals("ad", w),
   ]);
   const accName = new Map(accountRows.map((a) => [a.id, a.name]));
+  // A disabled ad account stops delivery for EVERYTHING under it, but Meta leaves each campaign's
+  // own `status` as ACTIVE (only the account is disabled). Surface PAUSED so the UI never implies a
+  // dead account is still running.
+  const disabledAccounts = new Set(
+    accountRows.filter((a) => accountStatus(a.status) === "DISABLED").map((a) => a.id),
+  );
+  const displayStatus = (accountId: string, own: string | null): Campaign["status"] =>
+    (disabledAccounts.has(accountId) ? "PAUSED" : (own ?? "ACTIVE")) as Campaign["status"];
   const creativeById = new Map(creativeRows.map((c) => [c.id, c]));
   const campT = new Map(campTotals.map((t) => [t.entityId, t]));
   const setT = new Map(setTotals.map((t) => [t.entityId, t]));
@@ -440,7 +448,7 @@ export async function fetchCampaigns(w: DateWindow, accountIds?: string[]): Prom
         return {
           id: ad.id,
           name: ad.name,
-          status: (ad.status ?? "ACTIVE") as Campaign["status"],
+          status: displayStatus(ad.accountId, ad.status),
           spend: ak.spend,
           impressions: ak.impressions,
           ctr: ak.ctr,
@@ -466,7 +474,7 @@ export async function fetchCampaigns(w: DateWindow, accountIds?: string[]): Prom
       return {
         id: s.id,
         name: s.name,
-        status: (s.status ?? "ACTIVE") as Campaign["status"],
+        status: displayStatus(s.accountId, s.status),
         spend: sk.spend,
         ctr: sk.ctr,
         roas: sk.roas,
@@ -480,7 +488,7 @@ export async function fetchCampaigns(w: DateWindow, accountIds?: string[]): Prom
     return {
       id: c.id,
       name: c.name,
-      status: (c.status ?? "ACTIVE") as Campaign["status"],
+      status: displayStatus(c.accountId, c.status),
       objective: (c.objective ?? "CONVERSIONS") as Campaign["objective"],
       accountId: c.accountId,
       accountName: accName.get(c.accountId) ?? c.accountId,

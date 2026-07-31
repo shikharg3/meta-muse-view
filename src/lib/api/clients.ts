@@ -6,6 +6,8 @@ import {
   fetchClientBudgets,
   fetchClientFilterOptions,
   fetchClientCampaigns,
+  setCampaignClient,
+  listCampaignOverrides,
 } from "@/server/fns/clients";
 import { resolveWindow, type RangeSpec } from "@/lib/range";
 
@@ -30,3 +32,12 @@ export const getClientBudgets = createServerFn({ method: "GET" })
 export const mutateClientAccounts = createServerFn({ method: "POST" })
   .inputValidator((d: { id: string; action: "add" | "remove"; accountId: string }) => d)
   .handler(({ data }) => updateClientAccounts(data.id, data.action, data.accountId));
+
+export const getCampaignOverrides = createServerFn({ method: "GET" }).handler(() =>
+  listCampaignOverrides(),
+);
+
+/** Move a campaign to another client, or pass clientId=null to restore automatic attribution. */
+export const moveCampaignToClient = createServerFn({ method: "POST" })
+  .inputValidator((d: { campaignId: string; clientId: string | null }) => d)
+  .handler(({ data }) => setCampaignClient(data.campaignId, data.clientId));
