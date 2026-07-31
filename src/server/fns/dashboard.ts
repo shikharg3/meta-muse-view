@@ -12,8 +12,15 @@ import {
 } from "@/server/agg";
 import { addDays, type DateWindow } from "@/lib/range";
 import { brandTitles } from "@/notion/parse";
-import { creativeFormat, creativeImageUrl, hueFromId, resultSpec } from "@/server/creative";
+import {
+  creativeFormat,
+  creativeImageUrl,
+  hueFromId,
+  resultSpec,
+  type CreativeFacts,
+} from "@/server/creative";
 import type {
+  Ad,
   AdAccount,
   BreakdownRow,
   Campaign,
@@ -25,6 +32,17 @@ import type {
 import { isCycleRunning } from "@/sync/cycle";
 
 const num = (v: unknown): number => Number(v ?? 0);
+
+/** One row of summed insight totals for an entity over a window. */
+export interface EntityTotals {
+  entityId: string;
+  spend: number;
+  impressions: number;
+  clicks: number;
+  conversions: number;
+  revenue: number;
+  reach: number;
+}
 
 /** Summed insight totals grouped by entity, for a level over the window. */
 function totalsByEntity(level: string, w: DateWindow, accountIds?: string[]) {
@@ -380,36 +398,64 @@ export async function fetchOverviewEvents(w: DateWindow): Promise<ClientEvent[]>
   return canonicalEvents(rows);
 }
 
-export async function fetchCampaigns(w: DateWindow, accountIds?: string[]): Promise<Campaign[]> {
+export async function fetchCampaigns(
+  w: DateWindow,
+  accountIds?: string[],
+  opts: { includeAds?: boolean } = {},
+): Promise<Campaign[]> {
   // Optional account scope (used by the per-client view). Empty = no rows.
   const inAccts = accountIds ? inArray(schema.campaigns.accountId, accountIds) : undefined;
   const inAcctsSet = accountIds ? inArray(schema.adSets.accountId, accountIds) : undefined;
   const inAcctsAd = accountIds ? inArray(schema.ads.accountId, accountIds) : undefined;
+  // Ads are the bulk of this payload (7.3k ads ≈ 3.7 MB) and are only needed on drill-down, so they
+  // are opt-in; `adCount` still lets the UI show how many there are. Results come from Meta's own
+  // ad-set/campaign action totals rather than summing ads, so they don't depend on ads being loaded.
+  const withAds = opts.includeAds === true;
   const [
     campaignRows,
     adsetRows,
     adRows,
+    adCounts,
     accountRows,
     creativeRows,
     campTotals,
     setTotals,
     adTotals,
     adActions,
+    setActions,
+    campActions,
   ] = await Promise.all([
     db.select().from(schema.campaigns).where(inAccts),
     db.select().from(schema.adSets).where(inAcctsSet),
     // Narrow column list: the full row pulls jsonb payloads this view never reads.
+    withAds
+      ? db
+          .select({
+            id: schema.ads.id,
+            name: schema.ads.name,
+            status: schema.ads.status,
+            adSetId: schema.ads.adSetId,
+            accountId: schema.ads.accountId,
+            creativeId: schema.ads.creativeId,
+          })
+          .from(schema.ads)
+          .where(inAcctsAd)
+      : Promise.resolve(
+          [] as {
+            id: string;
+            name: string;
+            status: string | null;
+            adSetId: string;
+            accountId: string;
+            creativeId: string | null;
+          }[],
+        ),
+    // Cheap count so the UI can show "N ads" without shipping them.
     db
-      .select({
-        id: schema.ads.id,
-        name: schema.ads.name,
-        status: schema.ads.status,
-        adSetId: schema.ads.adSetId,
-        accountId: schema.ads.accountId,
-        creativeId: schema.ads.creativeId,
-      })
+      .select({ adSetId: schema.ads.adSetId, n: sql<number>`count(*)` })
       .from(schema.ads)
-      .where(inAcctsAd),
+      .where(inAcctsAd)
+      .groupBy(schema.ads.adSetId),
     db
       .select({
         id: schema.accounts.id,
@@ -417,36 +463,40 @@ export async function fetchCampaigns(w: DateWindow, accountIds?: string[]): Prom
         status: schema.accounts.status,
       })
       .from(schema.accounts),
-    // Project ONLY the five creative fields the UI needs. Selecting `raw` here loaded ~134 MB and
-    // cost ~3s per call; this is the single biggest win in this function.
-    db
-      .select({
-        id: schema.adCreatives.id,
-        thumbnailUrl: schema.adCreatives.thumbnailUrl,
-        objectType: sql<string | null>`${schema.adCreatives.raw}->>'object_type'`,
-        imageUrl: sql<string | null>`${schema.adCreatives.raw}->>'image_url'`,
-        videoImageUrl: sql<
-          string | null
-        >`${schema.adCreatives.raw}->'object_story_spec'->'video_data'->>'image_url'`,
-        linkPicture: sql<
-          string | null
-        >`${schema.adCreatives.raw}->'object_story_spec'->'link_data'->>'picture'`,
-        childAttachments: sql<number>`coalesce(jsonb_array_length(${schema.adCreatives.raw}->'object_story_spec'->'link_data'->'child_attachments'), 0)`,
-      })
-      .from(schema.adCreatives)
-      // Only the creatives referenced by ads in scope — a client view needs a handful, not all 24k.
-      .where(
-        accountIds
-          ? inArray(
-              schema.adCreatives.id,
-              db.select({ id: schema.ads.creativeId }).from(schema.ads).where(inAcctsAd),
-            )
-          : undefined,
-      ),
+    // Project ONLY the five creative fields the UI needs (selecting `raw` loaded ~134 MB), and only
+    // when ads are actually being returned — creatives exist purely to decorate ads.
+    withAds
+      ? db
+          .select({
+            id: schema.adCreatives.id,
+            thumbnailUrl: schema.adCreatives.thumbnailUrl,
+            objectType: sql<string | null>`${schema.adCreatives.raw}->>'object_type'`,
+            imageUrl: sql<string | null>`${schema.adCreatives.raw}->>'image_url'`,
+            videoImageUrl: sql<
+              string | null
+            >`${schema.adCreatives.raw}->'object_story_spec'->'video_data'->>'image_url'`,
+            linkPicture: sql<
+              string | null
+            >`${schema.adCreatives.raw}->'object_story_spec'->'link_data'->>'picture'`,
+            childAttachments: sql<number>`coalesce(jsonb_array_length(${schema.adCreatives.raw}->'object_story_spec'->'link_data'->'child_attachments'), 0)`,
+          })
+          .from(schema.adCreatives)
+          // Only creatives referenced by ads in scope — a client view needs a handful, not all 24k.
+          .where(
+            accountIds
+              ? inArray(
+                  schema.adCreatives.id,
+                  db.select({ id: schema.ads.creativeId }).from(schema.ads).where(inAcctsAd),
+                )
+              : undefined,
+          )
+      : Promise.resolve([] as ({ id: string } & CreativeFacts)[]),
     totalsByEntity("campaign", w, accountIds),
     totalsByEntity("adset", w, accountIds),
-    totalsByEntity("ad", w, accountIds),
-    actionTotals("ad", w, accountIds),
+    withAds ? totalsByEntity("ad", w, accountIds) : Promise.resolve([] as EntityTotals[]),
+    withAds ? actionTotals("ad", w, accountIds) : Promise.resolve(new Map<string, number>()),
+    actionTotals("adset", w, accountIds),
+    actionTotals("campaign", w, accountIds),
   ]);
   const accName = new Map(accountRows.map((a) => [a.id, a.name]));
   // A disabled ad account stops delivery for EVERYTHING under it, but Meta leaves each campaign's
@@ -474,6 +524,7 @@ export async function fetchCampaigns(w: DateWindow, accountIds?: string[]): Prom
     arr.push(s);
     adsetsByCampaign.set(s.campaignId, arr);
   }
+  const adCountBySet = new Map(adCounts.map((r) => [r.adSetId, Number(r.n)]));
 
   return campaignRows.map((c) => {
     const rs = resultSpec(c.objective);
@@ -532,9 +583,11 @@ export async function fetchCampaigns(w: DateWindow, accountIds?: string[]): Prom
         ctr: sk.ctr,
         roas: sk.roas,
         frequency: sk.impressions / Math.max(1, sk.reach),
-        results: ads.reduce((n, a) => n + a.results, 0),
+        // From the ad-set's OWN action totals, so it is correct whether or not ads were loaded.
+        results: rs.type === "reach" ? sk.reach : (setActions.get(`${s.id}:${rs.type}`) ?? 0),
         resultLabel: rs.label,
         audience: summarizeTargeting(s.targeting) ?? s.name,
+        adCount: adCountBySet.get(s.id) ?? 0,
         ads,
       };
     });
@@ -553,9 +606,134 @@ export async function fetchCampaigns(w: DateWindow, accountIds?: string[]): Prom
       cpm: k.cpm,
       roas: k.roas,
       frequency: k.impressions / Math.max(1, k.reach),
-      results: adSets.reduce((n, s) => n + s.results, 0),
+      // Campaign-level action totals — independent of whether ads/ad sets were loaded.
+      results: rs.type === "reach" ? k.reach : (campActions.get(`${c.id}:${rs.type}`) ?? 0),
       resultLabel: rs.label,
       adSets,
+    };
+  });
+}
+
+/**
+ * Ads for ONE ad set, loaded on drill-down. The campaign list deliberately omits ads (they were
+ * ~3.7 MB of a 4 MB payload), so the table fetches them per ad set when a row is expanded.
+ */
+export async function fetchAdSetAds(adSetId: string, w: DateWindow): Promise<Ad[]> {
+  const [set] = await db
+    .select({ id: schema.adSets.id, campaignId: schema.adSets.campaignId })
+    .from(schema.adSets)
+    .where(eq(schema.adSets.id, adSetId));
+  if (!set) return [];
+  const [campaign] = await db
+    .select({ objective: schema.campaigns.objective })
+    .from(schema.campaigns)
+    .where(eq(schema.campaigns.id, set.campaignId));
+  const rs = resultSpec(campaign?.objective);
+
+  const adRows = await db
+    .select({
+      id: schema.ads.id,
+      name: schema.ads.name,
+      status: schema.ads.status,
+      accountId: schema.ads.accountId,
+      creativeId: schema.ads.creativeId,
+    })
+    .from(schema.ads)
+    .where(eq(schema.ads.adSetId, adSetId));
+  if (adRows.length === 0) return [];
+  const adIds = adRows.map((a) => a.id);
+  const creativeIds = adRows.map((a) => a.creativeId).filter((id): id is string => id !== null);
+
+  const [totals, actions, creatives, accountRows] = await Promise.all([
+    db
+      .select({
+        entityId: schema.insightsDaily.entityId,
+        spend: sql<number>`coalesce(sum(${schema.insightsDaily.spend}),0)`,
+        impressions: sql<number>`coalesce(sum(${schema.insightsDaily.impressions}),0)`,
+        clicks: sql<number>`coalesce(sum(${schema.insightsDaily.clicks}),0)`,
+        conversions: sql<number>`coalesce(sum(${schema.insightsDaily.conversions}),0)`,
+        revenue: sql<number>`coalesce(sum(${schema.insightsDaily.conversionValues}),0)`,
+        reach: sql<number>`coalesce(max(${schema.insightsDaily.reach}),0)`,
+      })
+      .from(schema.insightsDaily)
+      .where(
+        and(
+          eq(schema.insightsDaily.level, "ad"),
+          inArray(schema.insightsDaily.entityId, adIds),
+          gte(schema.insightsDaily.date, w.since),
+          lte(schema.insightsDaily.date, w.until),
+        ),
+      )
+      .groupBy(schema.insightsDaily.entityId),
+    db.execute(sql`
+      select entity_id, elem->>'action_type' as type, sum((elem->>'value')::double precision) as val
+      from insights_daily
+      cross join lateral jsonb_array_elements(actions) elem
+      where level = 'ad' and date >= ${w.since} and date <= ${w.until}
+        and entity_id in (select jsonb_array_elements_text(${JSON.stringify(adIds)}::jsonb))
+      group by 1, 2
+    `),
+    creativeIds.length
+      ? db
+          .select({
+            id: schema.adCreatives.id,
+            thumbnailUrl: schema.adCreatives.thumbnailUrl,
+            objectType: sql<string | null>`${schema.adCreatives.raw}->>'object_type'`,
+            imageUrl: sql<string | null>`${schema.adCreatives.raw}->>'image_url'`,
+            videoImageUrl: sql<
+              string | null
+            >`${schema.adCreatives.raw}->'object_story_spec'->'video_data'->>'image_url'`,
+            linkPicture: sql<
+              string | null
+            >`${schema.adCreatives.raw}->'object_story_spec'->'link_data'->>'picture'`,
+            childAttachments: sql<number>`coalesce(jsonb_array_length(${schema.adCreatives.raw}->'object_story_spec'->'link_data'->'child_attachments'), 0)`,
+          })
+          .from(schema.adCreatives)
+          .where(inArray(schema.adCreatives.id, creativeIds))
+      : Promise.resolve([] as ({ id: string } & CreativeFacts)[]),
+    db
+      .select({ id: schema.accounts.id, status: schema.accounts.status })
+      .from(schema.accounts)
+      .where(inArray(schema.accounts.id, [...new Set(adRows.map((a) => a.accountId))])),
+  ]);
+
+  const adT = new Map(totals.map((t) => [t.entityId, t]));
+  const actionByKey = new Map<string, number>();
+  for (const r of actions as unknown as { entity_id: string; type: string; val: number }[]) {
+    actionByKey.set(`${r.entity_id}:${r.type}`, Number(r.val) || 0);
+  }
+  const creativeById = new Map(creatives.map((c) => [c.id, c]));
+  const disabled = new Set(
+    accountRows.filter((a) => accountStatus(a.status) === "DISABLED").map((a) => a.id),
+  );
+
+  return adRows.map((ad) => {
+    const at = adT.get(ad.id);
+    const ak = deriveKpis({
+      spend: num(at?.spend),
+      impressions: num(at?.impressions),
+      clicks: num(at?.clicks),
+      conversions: num(at?.conversions),
+      revenue: num(at?.revenue),
+      reach: num(at?.reach),
+    });
+    const creative = ad.creativeId ? creativeById.get(ad.creativeId) : undefined;
+    return {
+      id: ad.id,
+      name: ad.name,
+      // A disabled account stops delivery regardless of the ad's own status.
+      status: (disabled.has(ad.accountId) ? "PAUSED" : (ad.status ?? "ACTIVE")) as Ad["status"],
+      spend: ak.spend,
+      impressions: ak.impressions,
+      ctr: ak.ctr,
+      cpc: ak.cpc,
+      roas: ak.roas,
+      conversions: ak.conversions,
+      results: rs.type === "reach" ? ak.reach : (actionByKey.get(`${ad.id}:${rs.type}`) ?? 0),
+      resultLabel: rs.label,
+      format: creativeFormat(creative),
+      thumbHue: hueFromId(ad.id),
+      thumbnailUrl: creativeImageUrl(creative),
     };
   });
 }

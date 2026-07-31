@@ -1,12 +1,14 @@
 import { Fragment, useState } from "react";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronRight, Loader2 } from "lucide-react";
 import { StatusPill } from "@/components/dashboard/StatusPill";
 import { useSort, SortHeader } from "@/components/dashboard/SortableTable";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { fmtCurrency, fmtPct, fmtCompact } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { Ad, Campaign } from "@/lib/types";
-import { Link } from "@tanstack/react-router";
+import { Link, useSearch } from "@tanstack/react-router";
+import { getAdSetAds } from "@/lib/api/dashboard";
+import { rangeSpec } from "@/lib/range";
 
 type Selected = { ad: Ad; campaign: string } | null;
 
@@ -46,7 +48,21 @@ export function CampaignTable({
     },
     "spend",
   );
+  // Ads are NOT in the campaign payload (they were ~3.7 MB of 4 MB); fetch per ad set on expand.
+  const [adsBySet, setAdsBySet] = useState<Record<string, Ad[]>>({});
+  const [loadingSet, setLoadingSet] = useState<Record<string, boolean>>({});
+  const search = useSearch({ strict: false }) as { range?: unknown; from?: string; to?: string };
+
   const toggle = (id: string) => setOpen((p) => ({ ...p, [id]: !p[id] }));
+  const toggleAdSet = (adSetId: string, alreadyLoaded: boolean) => {
+    const wasOpen = open[adSetId];
+    toggle(adSetId);
+    if (wasOpen || alreadyLoaded || loadingSet[adSetId]) return;
+    setLoadingSet((p) => ({ ...p, [adSetId]: true }));
+    void getAdSetAds({ data: { adSetId, ...rangeSpec(search) } })
+      .then((ads) => setAdsBySet((p) => ({ ...p, [adSetId]: ads })))
+      .finally(() => setLoadingSet((p) => ({ ...p, [adSetId]: false })));
+  };
 
   return (
     <>
@@ -208,10 +224,11 @@ export function CampaignTable({
                     {isOpen &&
                       c.adSets.map((s) => {
                         const isSetOpen = open[s.id];
+                        const loadedAds = adsBySet[s.id] ?? (s.ads.length ? s.ads : undefined);
                         return (
                           <Fragment key={s.id}>
                             <tr
-                              onClick={() => toggle(s.id)}
+                              onClick={() => toggleAdSet(s.id, loadedAds !== undefined)}
                               className="bg-muted/20 hover:bg-accent/40 cursor-pointer"
                             >
                               <td className="px-5 py-2.5">
@@ -235,6 +252,11 @@ export function CampaignTable({
                                         {s.frequency.toFixed(1)}× frequency
                                       </div>
                                     )}
+                                    {s.adCount > 0 && (
+                                      <div className="text-[10px] text-muted-foreground">
+                                        {s.adCount} {s.adCount === 1 ? "ad" : "ads"}
+                                      </div>
+                                    )}
                                   </div>
                                 </div>
                               </td>
@@ -255,8 +277,18 @@ export function CampaignTable({
                                 {fmtCompact(s.results)}
                               </td>
                             </tr>
+                            {isSetOpen && loadingSet[s.id] && (
+                              <tr className="bg-muted/30">
+                                <td colSpan={9} className="px-5 py-3">
+                                  <span className="flex items-center gap-2 pl-12 text-[11px] text-muted-foreground">
+                                    <Loader2 className="size-3 animate-spin" />
+                                    Loading {s.adCount > 0 ? `${s.adCount} ads` : "ads"}…
+                                  </span>
+                                </td>
+                              </tr>
+                            )}
                             {isSetOpen &&
-                              s.ads.map((ad) => (
+                              (loadedAds ?? []).map((ad) => (
                                 <tr
                                   key={ad.id}
                                   onClick={() => setSelected({ ad, campaign: c.name })}

@@ -62,6 +62,8 @@ export interface AdSet {
   resultLabel: string;
   audience: string;
   frequency: number;
+  /** Total ads in this ad set. `ads` is loaded on demand (drill-down), so it may be empty. */
+  adCount: number;
   ads: Ad[];
 }
 export interface Campaign {

@@ -6,6 +6,7 @@ import {
   fetchAccounts,
   fetchBreakdowns,
   fetchBusinessSummary,
+  fetchAdSetAds,
   fetchCampaigns,
   fetchCampaignOptions,
   fetchCreatives,
@@ -74,3 +75,8 @@ export const runSearch = createServerFn({ method: "GET" })
 export const getExportCsv = createServerFn({ method: "GET" })
   .inputValidator((input: { kind: CsvKind } & RangeSpec) => input)
   .handler(({ data }) => exportCsv(data.kind, resolveWindow(data)));
+
+/** Ads for one ad set, fetched on drill-down (the campaign list omits ads to keep it light). */
+export const getAdSetAds = createServerFn({ method: "GET" })
+  .inputValidator((input: { adSetId: string } & RangeSpec) => input)
+  .handler(({ data }) => fetchAdSetAds(data.adSetId, resolveWindow(data)));

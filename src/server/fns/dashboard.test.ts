@@ -6,6 +6,7 @@ import {
   fetchAccounts,
   disabledSinceMap,
   fetchBusinessSummary,
+  fetchAdSetAds,
   fetchCampaigns,
   searchEntities,
   windowDeltas,
@@ -180,11 +181,27 @@ test("fetchCampaigns derives objective-based results and hi-res creative urls", 
       { action_type: "link_click", value: "30" },
     ],
   });
-  const [camp] = await fetchCampaigns(windowFromDays(30));
+  // Ads are omitted by default (they were ~3.7 MB of the campaigns payload) but still counted.
+  const [lean] = await fetchCampaigns(windowFromDays(30));
+  expect(lean.adSets[0].ads).toEqual([]);
+  expect(lean.adSets[0].adCount).toBe(1);
+  // Results must NOT depend on ads being loaded — they come from the entity's own action totals.
+  expect(lean.adSets[0].resultLabel).toBe("Leads");
+  expect(lean.results).toBeCloseTo(7);
+
+  // Opt-in eager path keeps working.
+  const [camp] = await fetchCampaigns(windowFromDays(30), undefined, { includeAds: true });
   const ad = camp.adSets[0].ads[0];
   expect(ad.results).toBeCloseTo(7); // leads, not link clicks
   expect(ad.resultLabel).toBe("Leads");
   expect(ad.thumbnailUrl).toBe("https://cdn/full.jpg"); // image_url over thumbnail
+
+  // On-demand loader returns the same ad for drill-down.
+  const onDemand = await fetchAdSetAds("s1", windowFromDays(30));
+  expect(onDemand).toHaveLength(1);
+  expect(onDemand[0].id).toBe(ad.id);
+  expect(onDemand[0].results).toBeCloseTo(7);
+  expect(onDemand[0].thumbnailUrl).toBe("https://cdn/full.jpg");
 }, 20000);
 
 test("searchEntities matches accounts by name/id and campaigns by name", async () => {
