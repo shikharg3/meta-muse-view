@@ -168,19 +168,18 @@ test("fetchCampaigns derives objective-based results and hi-res creative urls", 
     thumbnailUrl: "https://cdn/thumb.jpg",
     raw: { image_url: "https://cdn/full.jpg" },
   });
-  await db.insert(schema.insightsDaily).values({
-    level: "ad",
-    entityId: "a1",
-    date: today,
-    accountId: "act_1",
-    spend: 50,
-    impressions: 500,
-    clicks: 25,
-    actions: [
-      { action_type: "lead", value: "7" },
-      { action_type: "link_click", value: "30" },
-    ],
-  });
+  // The real sync writes insights at ALL four levels, so seed the same shape: entity results are
+  // read from each entity's OWN action totals, not rolled up from ads.
+  const actions = [
+    { action_type: "lead", value: "7" },
+    { action_type: "link_click", value: "30" },
+  ];
+  const metrics = { date: today, accountId: "act_1", spend: 50, impressions: 500, clicks: 25 };
+  await db.insert(schema.insightsDaily).values([
+    { level: "campaign", entityId: "c1", ...metrics, actions },
+    { level: "adset", entityId: "s1", ...metrics, actions },
+    { level: "ad", entityId: "a1", ...metrics, actions },
+  ]);
   // Ads are omitted by default (they were ~3.7 MB of the campaigns payload) but still counted.
   const [lean] = await fetchCampaigns(windowFromDays(30));
   expect(lean.adSets[0].ads).toEqual([]);
