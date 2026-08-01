@@ -85,14 +85,6 @@ export interface Campaign {
   resultLabel: string;
   adSets: AdSet[];
 }
-export interface CreativeCard extends Ad {
-  campaign: string;
-  account: string;
-  accountId: string;
-  title?: string | null;
-  body?: string | null;
-  callToActionType?: string | null;
-}
 export interface BreakdownRow {
   label: string;
   spend: number;

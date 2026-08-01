@@ -14,8 +14,6 @@ const fakeClient: Partial<InsightsClient> = {
       return [
         { id: "a1", name: "Ad 1", status: "ACTIVE", adset_id: "s1", creative: { id: "cr1" } },
       ];
-    if (edge === "adcreatives")
-      return [{ id: "cr1", name: "Creative 1", thumbnail_url: "http://x/y.png" }];
     return [];
   },
 };
@@ -27,7 +25,7 @@ beforeEach(async () => {
     .values({ id: "act_1", name: "Acc", currency: "USD", status: "ACTIVE" });
 });
 
-test("syncs campaigns/adsets/ads/creatives and is idempotent", async () => {
+test("syncs campaigns/adsets/ads and is idempotent", async () => {
   await syncStructure(fakeClient as InsightsClient, "act_1");
   await syncStructure(fakeClient as InsightsClient, "act_1"); // second run must not duplicate
 
@@ -35,7 +33,10 @@ test("syncs campaigns/adsets/ads/creatives and is idempotent", async () => {
   expect(await db.select().from(schema.adSets)).toHaveLength(1);
   const ads = await db.select().from(schema.ads);
   expect(ads).toHaveLength(1);
+  // The ad still carries its creative id (it comes free on the ad node) but creative tracking is
+  // paused, so nothing is written to ad_creatives.
   expect(ads[0].creativeId).toBe("cr1");
+  expect(await db.select().from(schema.adCreatives)).toHaveLength(0);
 }, 30000);
 
 test("syncAccounts upserts the accounts table and returns ids", async () => {
@@ -112,7 +113,6 @@ test("promotes campaign/adset/ad config fields into columns", async () => {
             preview_shareable_link: "https://fb.me/x",
           },
         ];
-      if (edge === "adcreatives") return [{ id: "cr1", name: "Cr", thumbnail_url: "http://x" }];
       return [];
     },
   };
@@ -130,33 +130,4 @@ test("promotes campaign/adset/ad config fields into columns", async () => {
   const [ad] = await db.select().from(schema.ads);
   expect(ad.previewShareableLink).toBe("https://fb.me/x");
   expect(ad.trackingSpecs).toEqual([{ "action.type": ["offsite_conversion"] }]);
-}, 30000);
-
-test("promotes creative copy from object_story_spec when not at the root", async () => {
-  const client: Partial<InsightsClient> = {
-    async getChildren(_p, edge): Promise<GraphNode[]> {
-      if (edge === "adcreatives")
-        return [
-          {
-            id: "cr1",
-            name: "Cr",
-            object_story_spec: {
-              link_data: {
-                message: "Body copy here",
-                name: "Headline here",
-                call_to_action: { type: "PLAY_GAME" },
-              },
-            },
-            asset_feed_spec: { bodies: [{ text: "v1" }] },
-          },
-        ];
-      return [];
-    },
-  };
-  await syncStructure(client as InsightsClient, "act_1");
-  const [cr] = await db.select().from(schema.adCreatives);
-  expect(cr.body).toBe("Body copy here");
-  expect(cr.title).toBe("Headline here");
-  expect(cr.callToActionType).toBe("PLAY_GAME");
-  expect(cr.assetFeedSpec).toEqual({ bodies: [{ text: "v1" }] });
 }, 30000);

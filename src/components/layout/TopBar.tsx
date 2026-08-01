@@ -19,7 +19,6 @@ import type { CsvKind } from "@/server/fns/dashboard";
 
 function csvKindForPath(path: string): CsvKind | null {
   if (path.startsWith("/campaigns")) return "campaigns";
-  if (path.startsWith("/creatives")) return "creatives";
   if (path.startsWith("/audiences")) return "breakdowns";
   if (path === "/overview" || path.startsWith("/accounts")) return "accounts";
   return null;

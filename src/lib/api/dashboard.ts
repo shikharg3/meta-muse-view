@@ -9,7 +9,6 @@ import {
   fetchAdSetAds,
   fetchCampaigns,
   fetchCampaignOptions,
-  fetchCreatives,
   fetchOverview,
   searchEntities,
   type CsvKind,
@@ -32,10 +31,6 @@ export const listCampaigns = createServerFn({ method: "GET" })
 export const getAccount = createServerFn({ method: "GET" })
   .inputValidator((input: { id: string } & RangeSpec) => input)
   .handler(({ data }) => fetchAccount(data.id, resolveWindow(data)));
-
-export const listCreatives = createServerFn({ method: "GET" })
-  .inputValidator((spec: RangeSpec) => spec)
-  .handler(({ data }) => fetchCreatives(resolveWindow(data)));
 
 export const getBreakdowns = createServerFn({ method: "GET" })
   .inputValidator(

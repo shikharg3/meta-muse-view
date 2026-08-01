@@ -30,26 +30,6 @@ function meta(node: GraphNode) {
   };
 }
 
-/** Ad copy lives at the creative root for some ads and inside object_story_spec for others. */
-function creativeCopy(cr: GraphNode): {
-  title: string | null;
-  body: string | null;
-  cta: string | null;
-} {
-  const spec = (cr.object_story_spec ?? {}) as Record<string, unknown>;
-  const data = (spec.link_data ?? spec.video_data ?? spec.photo_data ?? {}) as Record<
-    string,
-    unknown
-  >;
-  const callToAction = (data.call_to_action ?? {}) as Record<string, unknown>;
-  const ctaValue = (callToAction.value ?? {}) as Record<string, unknown>;
-  return {
-    title: str(cr.title) ?? str(data.name) ?? str(ctaValue.link_title),
-    body: str(cr.body) ?? str(data.message),
-    cta: str(cr.call_to_action_type) ?? str(callToAction.type),
-  };
-}
-
 export async function syncStructure(client: InsightsClient, accountId: string): Promise<void> {
   // Full field sets (the client drops fields this token can't read); everything lands in `raw`.
   // Heavy nodes are paged smaller so Meta doesn't 500 with "reduce the amount of data".
@@ -131,40 +111,6 @@ export async function syncStructure(client: InsightsClient, accountId: string): 
       .insert(schema.ads)
       .values(vals)
       .onConflictDoUpdate({ target: schema.ads.id, set: vals });
-  }
-
-  // Full creative field set; copy/CTA promoted from the root or object_story_spec, assets in jsonb.
-  // object_story_spec is large and 1080px thumbnails are heavy, so page small.
-  const creatives = await client.getChildren(accountId, "adcreatives", NODE_FIELDS.creative, {
-    thumbnail_width: 1080,
-    thumbnail_height: 1080,
-    limit: 25,
-  });
-  for (const cr of creatives) {
-    const copy = creativeCopy(cr);
-    const vals = {
-      id: String(cr.id),
-      name: str(cr.name),
-      thumbnailUrl: str(cr.thumbnail_url),
-      title: copy.title,
-      body: copy.body,
-      callToActionType: copy.cta,
-      linkUrl: str(cr.link_url),
-      videoId: str(cr.video_id),
-      imageHash: str(cr.image_hash),
-      imageUrl: str(cr.image_url),
-      objectType: str(cr.object_type),
-      effectiveObjectStoryId: str(cr.effective_object_story_id),
-      instagramPermalinkUrl: str(cr.instagram_permalink_url),
-      objectStorySpec: jsonOf(cr.object_story_spec),
-      assetFeedSpec: jsonOf(cr.asset_feed_spec),
-      raw: cr,
-      syncedAt: now(),
-    };
-    await db
-      .insert(schema.adCreatives)
-      .values(vals)
-      .onConflictDoUpdate({ target: schema.adCreatives.id, set: vals });
   }
 }
 
