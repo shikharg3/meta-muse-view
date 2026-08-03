@@ -12,6 +12,7 @@ import { BREAKDOWN_GROUPS, CORE_METRICS } from "@/meta/fieldsets";
 import { accountStatus } from "@/server/agg";
 import { addDays } from "@/lib/range";
 import { syncClients } from "./jobs/clients";
+import { syncNotionDailyBudgets } from "./jobs/notion-budget";
 import { syncEdges, syncActivities, syncLeadForms } from "./jobs/objects";
 import {
   markSync,
@@ -350,6 +351,28 @@ export async function runCycle(opts: { full?: boolean } = {}): Promise<void> {
       if (n > 0) console.log(`[sync] alerts: ${n} new spend-drop alert(s)`);
     } catch (e) {
       console.error("[sync] alert detection failed:", e);
+    }
+    // Daily only: push the daily budget actually in force back onto the Notion board. Runs after the
+    // refresh above so the campaign/ad-set rows it sums are current.
+    if (opts.full) {
+      try {
+        const b = await syncNotionDailyBudgets();
+        if (b) {
+          const note =
+            `${b.updated} updated, ${b.unchanged} unchanged, ${b.skipped} skipped` +
+            `${b.renamedTo ? `, column renamed to "${b.renamedTo}"` : ""}` +
+            `${b.warning ? ` — ${b.warning}` : ""}`;
+          console.log(`[sync] notion daily budgets: ${note}`);
+          await recordServiceHealth("notion-budget", b.warning === null, note);
+        }
+      } catch (e) {
+        console.error("[sync] notion daily budget push failed:", e);
+        await recordServiceHealth(
+          "notion-budget",
+          false,
+          e instanceof Error ? e.message : String(e),
+        );
+      }
     }
     console.log("[sync] cycle done");
   } finally {

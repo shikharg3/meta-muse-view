@@ -106,8 +106,9 @@ function SyncNowButton({ running }: { running: boolean }) {
   );
 }
 
-/** Admin-only: refresh ONLY the Notion client-board mapping (clients, statuses, Active Account
- *  IDs) — fast, no Meta data pull. For "I just edited the sheet" moments. */
+/** Admin-only: re-read the Notion client-board mapping (clients, statuses, Active Account IDs) and
+ *  push the auto-updated daily-budget column back. Fast — no Meta data pull. For "I just edited the
+ *  sheet" moments. */
 function SyncNotionButton() {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
@@ -117,7 +118,9 @@ function SyncNotionButton() {
     setBusy(true);
     try {
       const r = await syncNotionNow();
-      setMsg(r.ok ? `Notion: ${r.clients} clients` : "Notion sync failed");
+      setMsg(
+        r.ok ? `Notion: ${r.clients} clients, ${r.budgets ?? 0} budgets` : "Notion sync failed",
+      );
       await router.invalidate();
     } finally {
       setBusy(false);
@@ -131,7 +134,7 @@ function SyncNotionButton() {
       className="hidden sm:inline-flex h-9 text-xs"
       onClick={() => void onClick()}
       disabled={busy}
-      title="Refresh only the Notion board mapping (clients, statuses, Active Account IDs). Fast — does not pull Meta data."
+      title="Re-read the Notion board mapping (clients, statuses, Active Account IDs) and push the auto-updated daily budgets back. Fast — does not pull Meta data."
     >
       {busy ? <RefreshCw className="size-3.5 animate-spin" /> : <Table2 className="size-3.5" />}
       {busy ? "Syncing…" : (msg ?? "Sync Notion")}

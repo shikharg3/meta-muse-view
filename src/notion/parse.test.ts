@@ -7,6 +7,8 @@ import {
   parseCampaignRow,
   parseClientName,
   brandTitles,
+  resolvePropertyKey,
+  LIVE_STATUSES,
 } from "./parse";
 import { parseNotionDbId } from "./client";
 import type { NotionPage } from "./client";
@@ -156,6 +158,65 @@ test("clubClients takes the active account from the winning-status row, not fini
   expect(c.status).toBe("Live");
   expect(c.activeAccountIds).toEqual(["act_current"]); // the finished row's stale active is excluded
   expect(c.accountIds.sort()).toEqual(["act_current", "act_other", "act_stale"].sort()); // all tracked
+});
+
+test("resolvePropertyKey survives the cosmetic drift real boards have", () => {
+  // Exact match wins even when a marked variant is also present.
+  const keys = [
+    "Campaign",
+    "Daily Budget ($)",
+    "Ads Platform ", // trailing space, as on the live board
+    " Meta URL", // leading space
+    "Remaining to send  ($)", // double space
+  ];
+  expect(resolvePropertyKey(keys, "Daily Budget ($)")).toBe("Daily Budget ($)");
+  expect(resolvePropertyKey(keys, "Ads Platform")).toBe("Ads Platform ");
+  expect(resolvePropertyKey(keys, "Meta URL")).toBe(" Meta URL");
+  expect(resolvePropertyKey(keys, "Remaining to send ($)")).toBe("Remaining to send  ($)");
+  expect(resolvePropertyKey(keys, "Budget ($)")).toBeNull();
+  // Once the auto-update marker is stamped on, the same lookup still finds the column.
+  expect(resolvePropertyKey(["🤖 Daily Budget ($)"], "Daily Budget ($)")).toBe(
+    "🤖 Daily Budget ($)",
+  );
+  expect(resolvePropertyKey(["Daily Budget ($)", "🤖 Daily Budget ($)"], "Daily Budget ($)")).toBe(
+    "Daily Budget ($)",
+  );
+});
+
+test("a Budget Finished - Top Up row outranks other statuses and keeps its active account", () => {
+  // The status means "still running, awaiting a top-up". Missing from the priority table it scored 0
+  // and lost to "Not started", which handed the client the wrong row's active account.
+  const clubbed = clubClients(
+    [
+      {
+        pageId: "p1",
+        title: "wildcasino.ag (August)",
+        clientRelationIds: [],
+        activeIds: ["act_topup"],
+        otherIds: [],
+        status: "Budget Finished - Top Up",
+        budget: null,
+        startDate: null,
+        endDate: "2026-08-31",
+      },
+      {
+        pageId: "p2",
+        title: "wildcasino.ag (September)",
+        clientRelationIds: [],
+        activeIds: ["act_future"],
+        otherIds: [],
+        status: "Not started",
+        budget: null,
+        startDate: null,
+        endDate: "2026-09-30",
+      },
+    ],
+    new Map(),
+  );
+  expect(clubbed).toHaveLength(1);
+  expect(clubbed[0].status).toBe("Budget Finished - Top Up");
+  expect(clubbed[0].activeAccountIds).toEqual(["act_topup"]);
+  expect(LIVE_STATUSES).toContain("Budget Finished - Top Up");
 });
 
 test("parseCampaignRow extracts columns incl. client relation and skips titleless rows", () => {

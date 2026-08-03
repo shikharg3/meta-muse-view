@@ -28,6 +28,22 @@ export function clientSlug(key: string): string {
   return key.replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "unnamed";
 }
 
+/** Collapse a column name to a comparable form: case, spacing, punctuation and any emoji marker are
+ *  cosmetic in Notion and DO drift ("Ads Platform ", " Meta URL", "🤖 Daily Budget ($)"). */
+const keyShape = (s: string): string => s.toLowerCase().replace(/[^a-z0-9]+/g, "");
+
+/**
+ * The real column name for `want` among `keys`, ignoring cosmetic drift (stray spaces, an emoji
+ * marker, punctuation). Returns null when the board genuinely has no such column, so a caller can
+ * report a missing column instead of silently reading undefined.
+ */
+export function resolvePropertyKey(keys: Iterable<string>, want: string): string | null {
+  const target = keyShape(want);
+  for (const k of keys) if (k === want) return k; // exact match wins
+  for (const k of keys) if (keyShape(k) === target) return k;
+  return null;
+}
+
 /**
  * Distinct campaign-row (brand) titles from a client's stored `raw` pages
  * (`[{ pageId, title }]`). Agency clients group several brand rows under one
@@ -101,14 +117,20 @@ export function parseClientName(page: NotionPage): string {
   return plain(page.properties?.["Client Name"]).trim();
 }
 
-// Highest-priority status wins when a client has multiple board rows.
+// Highest-priority status wins when a client has multiple board rows. Every option on the board must
+// appear here: an unlisted status scores 0 and would lose to "Not started", taking the client's
+// active-account set from the wrong row.
 const STATUS_PRIORITY: Record<string, number> = {
-  Live: 5,
+  Live: 6,
+  "Budget Finished - Top Up": 5, // still running, just awaiting a top-up
   "On Boarding": 4,
   Paused: 3,
   "Full Budget Finished": 2,
   "Not started": 1,
 };
+
+/** Statuses meaning the engagement is (or should be) delivering right now. */
+export const LIVE_STATUSES: readonly string[] = ["Live", "Budget Finished - Top Up", "On Boarding"];
 
 /**
  * Group campaigns into clients. A campaign groups by its linked Clients-board entity (the

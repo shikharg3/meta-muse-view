@@ -10,6 +10,7 @@ import { DEFAULT_CHAT_MODEL, DEFAULT_CHAT_EFFORT } from "@/lib/chat-options";
 import { MetaClient } from "@/meta/client";
 import { isCycleRunning } from "@/sync/cycle";
 import { syncClients } from "@/sync/jobs/clients";
+import { syncNotionDailyBudgets } from "@/sync/jobs/notion-budget";
 import { parseNotionDbId } from "@/notion/client";
 import { requireAdmin, audit } from "./auth";
 import { getRecentSyncEvents } from "@/sync/state";
@@ -206,13 +207,24 @@ export async function saveNotionForm(data: {
   return { ok: true };
 }
 
-export async function runNotionSync(): Promise<{ ok: boolean; clients?: number; error?: string }> {
+export async function runNotionSync(): Promise<{
+  ok: boolean;
+  clients?: number;
+  budgets?: number;
+  error?: string;
+}> {
   await requireAdmin();
   try {
     const n = await syncClients();
     if (n === null) return { ok: false, error: "Notion is not configured" };
-    await audit("sync.notion", `synced ${n} clients from Notion`);
-    return { ok: true, clients: n };
+    // Reading the mapping and writing back the auto-updated daily-budget column are two halves of the
+    // same board sync. The push needs no Meta call — it sums structure rows already in Postgres.
+    const b = await syncNotionDailyBudgets();
+    await audit(
+      "sync.notion",
+      `synced ${n} clients from Notion; wrote ${b?.updated ?? 0} daily budget(s)`,
+    );
+    return { ok: true, clients: n, budgets: b?.updated ?? 0 };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }

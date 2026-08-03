@@ -96,11 +96,23 @@ function SyncStatus() {
             value={s.notion ? (s.notion.ok ? "OK" : "failing") : "—"}
             tone={s.notion ? (s.notion.ok ? "ok" : "bad") : undefined}
           />
+          <Tile
+            label="Notion budget push"
+            value={s.notionBudget ? (s.notionBudget.ok ? "OK" : "failing") : "—"}
+            tone={s.notionBudget ? (s.notionBudget.ok ? "ok" : "bad") : undefined}
+          />
         </div>
         {s.notion && !s.notion.ok && (
           <div className="text-xs text-destructive">
             Notion client-board sync failing{s.notion.note ? `: ${s.notion.note}` : ""} — re-share
             the board with the integration.
+          </div>
+        )}
+        {s.notionBudget && !s.notionBudget.ok && (
+          <div className="text-xs text-destructive">
+            Notion daily-budget write-back failing
+            {s.notionBudget.note ? `: ${s.notionBudget.note}` : ""} — the 🤖 Daily Budget ($) column
+            may be stale.
           </div>
         )}
         <div

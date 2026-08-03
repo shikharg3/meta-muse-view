@@ -33,6 +33,8 @@ export interface SyncStatusView {
     tier: AccessTier | null;
   };
   notion: ServiceHealth | null;
+  /** Health of the daily write-back that maintains the board's auto-updated daily-budget column. */
+  notionBudget: ServiceHealth | null;
   events: SyncEventView[];
   errors: { accountId: string; error: string; at: string | null }[];
 }
@@ -120,7 +122,10 @@ export async function fetchSyncStatus(): Promise<SyncStatusView> {
   const dayAgo = Date.now() - 24 * 3_600_000;
   const c = cov[0];
   const r = ref[0];
-  const notion = await getServiceHealth("notion");
+  const [notion, notionBudget] = await Promise.all([
+    getServiceHealth("notion"),
+    getServiceHealth("notion-budget"),
+  ]);
   return {
     accounts: {
       total: Number(c?.total ?? 0),
@@ -140,6 +145,7 @@ export async function fetchSyncStatus(): Promise<SyncStatusView> {
       tier: normalizeTier(token[0]?.tier ?? null),
     },
     notion,
+    notionBudget,
     events: events.map((e) => ({
       at: e.at.toISOString(),
       kind: e.kind,

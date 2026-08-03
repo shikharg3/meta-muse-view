@@ -17,6 +17,12 @@ export interface NotionProp {
   [k: string]: unknown;
 }
 
+/** One column's schema entry: its stable id (rename-proof) and value type. */
+export interface NotionPropSchema {
+  id: string;
+  type: string;
+}
+
 export class NotionClient {
   constructor(
     private token: string,
@@ -77,6 +83,35 @@ export class NotionClient {
       cursor = body.has_more ? (body.next_cursor as string) : undefined;
     } while (cursor);
     return out;
+  }
+
+  /** Column schema of a data source, keyed by its EXACT Notion column name. */
+  async getProperties(dataSourceId: string): Promise<Record<string, NotionPropSchema>> {
+    const ds = await this.req(`/data_sources/${dataSourceId}`);
+    const props = (ds.properties ?? {}) as Record<string, { id?: unknown; type?: unknown }>;
+    const out: Record<string, NotionPropSchema> = {};
+    for (const [name, def] of Object.entries(props)) {
+      out[name] = { id: String(def.id ?? ""), type: String(def.type ?? "") };
+    }
+    return out;
+  }
+
+  /** Rename a column. Notion references properties by id inside formulas/rollups/views, so this only
+   *  changes the label — board logic is untouched. */
+  async renameProperty(dataSourceId: string, currentName: string, newName: string): Promise<void> {
+    await this.req(`/data_sources/${dataSourceId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ properties: { [currentName]: { name: newName } } }),
+    });
+  }
+
+  /** Write one number cell. Addressed by property ID, not name, so renaming the column (or someone
+   *  else adding a similarly-named one) can never redirect the write. */
+  async setPageNumber(pageId: string, propertyId: string, value: number): Promise<void> {
+    await this.req(`/pages/${pageId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ properties: { [propertyId]: { number: value } } }),
+    });
   }
 }
 
