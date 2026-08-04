@@ -105,6 +105,25 @@ export class NotionClient {
     });
   }
 
+  /** Create a dollar-formatted number column and return its schema entry. Notion rejects an unknown
+   *  `format` on some workspaces, so fall back to an unformatted number. */
+  async createNumberProperty(dataSourceId: string, name: string): Promise<NotionPropSchema | null> {
+    const patch = async (config: Record<string, unknown>): Promise<Record<string, unknown>> =>
+      this.req(`/data_sources/${dataSourceId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ properties: { [name]: config } }),
+      });
+    let body: Record<string, unknown>;
+    try {
+      body = await patch({ number: { format: "dollar" } });
+    } catch {
+      body = await patch({ number: {} });
+    }
+    const props = (body.properties ?? {}) as Record<string, { id?: unknown; type?: unknown }>;
+    const def = props[name];
+    return def ? { id: String(def.id ?? ""), type: String(def.type ?? "") } : null;
+  }
+
   /** Write one number cell. Addressed by property ID, not name, so renaming the column (or someone
    *  else adding a similarly-named one) can never redirect the write. */
   async setPageNumber(pageId: string, propertyId: string, value: number): Promise<void> {

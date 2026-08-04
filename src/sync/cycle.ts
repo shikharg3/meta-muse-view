@@ -352,15 +352,15 @@ export async function runCycle(opts: { full?: boolean } = {}): Promise<void> {
     } catch (e) {
       console.error("[sync] alert detection failed:", e);
     }
-    // Daily only: push the daily budget actually in force back onto the Notion board. Runs after the
-    // refresh above so the campaign/ad-set rows it sums are current.
+    // Daily only: push the deliverable daily budget and trailing spend back onto the Notion board.
+    // Runs after the refresh above so the campaign/ad-set/account rows it reads are current.
     if (opts.full) {
       try {
         const b = await syncNotionDailyBudgets();
         if (b) {
           const note =
             `${b.updated} updated, ${b.unchanged} unchanged, ${b.skipped} skipped` +
-            `${b.renamedTo ? `, column renamed to "${b.renamedTo}"` : ""}` +
+            `${b.columnsTouched.length ? `, ${b.columnsTouched.join("; ")}` : ""}` +
             `${b.warning ? ` — ${b.warning}` : ""}`;
           console.log(`[sync] notion daily budgets: ${note}`);
           await recordServiceHealth("notion-budget", b.warning === null, note);
