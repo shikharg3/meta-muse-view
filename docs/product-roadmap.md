@@ -62,9 +62,7 @@ what it spent*.
 | C/D — Creative library + generator | **In, reframed**: ingest and analyse market creatives scraped from Telegram groups, then derive briefs/prompts — not an internal designer↔buyer file pipeline |
 | E — Account survival + QA | **On hold** |
 | F — Money + margin / client P&L | **Rejected** |
-
-Open: whether infrastructure *procurement economics* (Track G) counts as parked with E, or is a
-separate track worth keeping.
+| G — Infrastructure procurement economics | **Narrowed to reconciliation only**: kill WatchTower's hand-typed statuses and its stale duplicate of daily budget. The survival/procurement analytics (provider scorecard, survival analysis, warm-up evidence, spare-pool forecasting) are parked with E. |
 
 ---
 
@@ -138,22 +136,26 @@ firing, geo compliance, naming lint, duplicate audiences); rejection/policy trac
 
 ## 4. New tracks under consideration
 
-### G. Infrastructure procurement economics
+### G. WatchTower reconciliation — *live, narrow*
 
-Different framing from E: not firefighting bans, but *buying account supply well*. Requires joining
-WatchTower's supply chain to this app's performance and disable data on `act_` id.
+The only part in scope: WatchTower maintains account/BM/pixel/page statuses by hand in Firestore,
+and carries `AdAccount.dailyBudget` as a third manual copy of a number Meta already reports. This
+app polls the truth hourly. Reconcile, and flag divergence instead of retyping it.
 
-- **Provider scorecard** — which supplier's accounts survive longest per dollar spent. Needs
-  Notion's `Ads Platform` / `Provider Name` + WatchTower agency contacts + our `disabledSince`.
-- **Survival analysis** — account lifetime by provider / geo / vertical / spend-ramp shape. We hold
-  `created_time`, full spend history, `disable_reason`, `disabledSince`.
-- **Warm-up playbooks** — encode the spend-ramp curves that historically survived; WatchTower
-  already has `warmingThresholdDays` and a Warming page but no evidence behind the number.
-- **Spare-pool forecasting** — `sparePoolMinCount` is a static setting; burn rate is derivable.
-- **Status reconciliation** — stop hand-typing account/BM statuses in WatchTower; reconcile against
-  the hourly Meta poll and flag divergence.
-- **Kill the third budget copy** — WatchTower's `AdAccount.dailyBudget` is a stale manual duplicate
-  of what Meta reports.
+A design fork to settle when it is picked up, because it decides which box and which repo the work
+lands in:
+
+1. **Push** — this app writes reconciled status/budget into Firestore (mirrors the Notion write-back
+   pattern already proven in `sync/jobs/notion-budget.ts`).
+2. **Pull** — WatchTower reads a small read-only endpoint here and reconciles client-side.
+3. **Shared entity service** — extract the `act_` id graph once and let both consume it. Most
+   correct, most work; only worth it if the parked analytics below ever revive.
+
+Parked with E (same data, procurement framing rather than firefighting): provider scorecard —
+which supplier's accounts survive longest per dollar (`Ads Platform` / `Provider Name` + WatchTower
+agency contacts + our `disabledSince`); survival analysis by provider/geo/spend-ramp; evidence-based
+warm-up curves to replace WatchTower's guessed `warmingThresholdDays`; spare-pool burn forecasting
+against its static `sparePoolMinCount`.
 
 ### H. Data already synced and never used
 
@@ -244,11 +246,11 @@ data nobody else has. Not a decision to drift into.
 | 8 | Buyer digest into Telegram | K | B |
 | 9 | Asset reconciliation (designed but never run) | C/D | `meta_objects` + designer library |
 | 10 | Prompt library with lineage | M | C/D |
-| 11 | Provider survival scorecard | G | entity graph |
-| 12 | Account survival analysis | G | entity graph |
-| 13 | Warm-up playbooks from evidence | G | entity graph |
-| 14 | Spare-pool burn forecasting | G | entity graph |
-| 15 | WatchTower status reconciliation | G | entity graph |
+| 11 | WatchTower status + budget reconciliation | G | `act_` id join, push/pull decision |
+| 12 | Provider survival scorecard | parked (E) | entity graph |
+| 13 | Account survival analysis | parked (E) | entity graph |
+| 14 | Warm-up playbooks from evidence | parked (E) | entity graph |
+| 15 | Spare-pool burn forecasting | parked (E) | entity graph |
 | 16 | Dayparting recommendations + pre-peak burnout alert | H | — |
 | 17 | Audience saturation curves | H | — |
 | 18 | Attribution-window intelligence | H | — |
@@ -264,7 +266,7 @@ data nobody else has. Not a decision to drift into.
 
 ## 7. Open questions
 
-1. Is Track G (procurement economics) parked with E, or a live track?
+1. Track G: push into Firestore, pull from an endpoint here, or extract a shared entity service?
 2. Track A: delivered reports and share links first, or full client logins?
 3. Where do designer creatives live today (Drive / Dropbox / Notion `Creative Files`)? Decides
    whether Track C/D can reconcile our own library or only the Meta-side one.
