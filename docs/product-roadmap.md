@@ -75,8 +75,21 @@ overwhelmingly access control, presentation and the trust surface — not analyt
 
 - **Exists:** report engine with CSV/PDF + markup, per-client data model, attribution engine,
   approval-based auth with `superadmin|admin|member`.
-- **Missing:** a `client` role bound to one or more `clients.id`, and a scope boundary. Every server
-  fn queries agency-wide today.
+- **Missing:** a `client` role bound to a `clients.id`, and a scope boundary. Every server fn queries
+  agency-wide today.
+
+**Identity grain: one login per `clients.id`.** Checked against production: of 55 live clients, 43
+are single-row and 12 multi-row — but most multi-row cases are *successive engagements of one brand*
+(betonline.ag May/June/July 2026; acrpoker.eu Poker/Money Maker/Welcome Bonus;
+fortunegalaxy.io Palmluck ×2), which a client should see merged. Only ~3 are genuinely multi-brand:
+**OneAgency** (CafeCasino / Lucky Rebel / Slots.lv), **omni agency** (8 rows), and **bspin.io**
+(which also carries casincity.io). Those need a **brand filter inside their own dashboard** — a UI
+affordance over the per-row scope attribution already resolves — not separate logins.
+
+Known limit, accepted: a single brand under an agency cannot be given a login that hides its
+siblings. If that is ever required, the model becomes explicit scope grants. Keeping scope
+resolution in **one function** makes that upgrade additive rather than a rewrite — the same
+discipline that makes view-as-client nearly free.
 
 **Secure by construction, not by inspection.** Sprinkling `if (isClient)` across existing fns will
 leak eventually. Resolve an explicit scope object (allowed account ids + owned campaign ids, via the
@@ -309,15 +322,12 @@ data nobody else has. Not a decision to drift into.
 ## 7. Open questions
 
 1. Track G: push into Firestore, pull from an endpoint here, or extract a shared entity service?
-2. Track A identity model: who logs in — the agency entity (e.g. OneAgency) or the individual brand
-   (Lucky Rebel, Slots.lv)? Attribution already models brands under agency clients, so the scope
-   boundary must mirror whichever grain clients actually expect.
-3. Track A: which attribution window do client-facing numbers use, and are periods frozen once
-   reported?
-4. Where do designer creatives live today (Drive / Dropbox / Notion `Creative Files`)? Decides
+2. Track A: which attribution window do client-facing numbers use, and are periods frozen once
+   reported? `actions_by_window` means an unfrozen figure keeps moving for 28 days.
+3. Where do designer creatives live today (Drive / Dropbox / Notion `Creative Files`)? Decides
    whether Track C/D can reconcile our own library or only the Meta-side one.
-5. How many Telegram groups, and roughly what daily volume? Sizes storage, dedupe and vision cost.
-6. Interface direction (Track K): does the daily buyer loop live in Telegram or the web app?
-7. Breadth vs depth (Track L): more channels, or deeper on Meta?
-8. Does the portal being public change hosting? The droplet is a single 3 GB instance with no
+4. How many Telegram groups, and roughly what daily volume? Sizes storage, dedupe and vision cost.
+5. Interface direction (Track K): does the daily buyer loop live in Telegram or the web app?
+6. Breadth vs depth (Track L): more channels, or deeper on Meta?
+7. Does the portal being public change hosting? The droplet is a single 3 GB instance with no
    redundancy; client logins turn uptime into an SLA conversation.
