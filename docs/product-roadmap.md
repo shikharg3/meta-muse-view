@@ -348,6 +348,8 @@ else has. Not a decision to drift into.
 | 26 | Finalised/frozen reporting periods + fixed client attribution window | A | — |
 | 27 | Admin "view as client" mode | A | scope-as-argument |
 | 28 | Multi-platform ingestion (Google/TikTok/Kwai) | L | strategic decision |
+| 29 | **Blocked-spend signal** — configured vs deliverable budget per client: how much intended daily spend is stopped by disabled or unfunded accounts. `canDeliver()` already computes the input | E/H | — |
+| 30 | **Prepaid top-up alert** — fire when a client's deliverable budget collapses while recent spend stays high (Slots.lv: 19 of 20 campaigns blocked, $7.5k/day recent spend against $1.6k of remaining capacity) | E | idea 29 |
 
 Withdrawn: WatchTower status/budget reconciliation, provider survival scorecard, account survival
 analysis, warm-up playbooks, spare-pool forecasting, field-ownership registry across systems, and
