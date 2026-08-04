@@ -19,7 +19,7 @@ The discriminator is hosting: DOT Agency runs on the **DigitalOcean droplet**; t
 | --- | --- |
 | **MetaConsole** — DO droplet, `analytics.madsmonitor.com` | this app: Meta sync, attribution, reporting, AI chat |
 | **Notion** campaigns board — `dotaudiences` workspace | commercial layer; already integrated both ways |
-| **Asset Library** — `library.dotaudiences.com` (Base44) | *pending confirmation.* SaaS-hosted so it is on neither droplet, but it sits on a DOT domain and is DOT's own designer → media-buyer workflow. Treated as DOT until confirmed otherwise. |
+| **Asset Library** — `library.dotaudiences.com` (Base44) | **In scope, read-only.** SaaS on a DOT domain, and DOT's own designer → media-buyer workflow, so treated like Notion. MetaConsole reads asset metadata and writes nothing: Base44 stays the designers' source of truth. |
 
 Out of scope — **do not integrate, do not read, do not sync**. Listed only as a guardrail so this
 boundary is not re-crossed by a future proposal: everything on the Hetzner box, including the
@@ -179,6 +179,20 @@ needs its own Telegram account and session, its own ingestion worker (the existi
 scheduler is the natural pattern to follow), its own object storage, and either a manual hand-off of
 generated creatives or its own Meta publishing leg via the Ad Creative API.
 
+**Asset Library integration (read-only).** Base44 auto-generates REST endpoints matching each app's
+data model, and `@base44/sdk` exposes an `entities` module keyed by `appId` + an account-level API
+key. The constraint that shapes the design: the **service role is only available inside
+Base44-hosted backend functions — an external backend gets user-level permissions only.** So rather
+than handing MetaConsole a broad account key, add a purpose-built **backend function inside the Asset
+Library** that returns exactly the asset metadata needed. One explicit contract, no broad
+credential, and writes are impossible by construction rather than by policy. (The app id appears to
+be `69eb3537ab5f6a418b76c014`, inferred from the public `media.base44.com` asset URL — to be
+confirmed in Base44's settings.)
+
+What that unlocks: matching designed assets against the 5,202 `ad_image` + 2,530 `ad_video` objects
+already synced here — i.e. which creatives were designed but never run (wasted design hours), which
+ran and how they performed, and closing the creative loop at the design end.
+
 **Volume math** (operator estimate: 400–500 assets/day; file sizes and vision pricing below are my
 estimates, to be replaced by measurement once group links are shared):
 
@@ -293,6 +307,7 @@ else has. Not a decision to drift into.
 | Multi-tenant identity + row-level scoping | A (decided), M | **Critical path.** Scope-as-argument, `client` role, invite-only client users (never self-signup), view-as-client, presentation aliases, no markup leakage. |
 | Object storage + CDN | C/D | A real purchase (e.g. DO Spaces). The droplet has 108 GB free but only **3 GB RAM**, and there is no large-memory DOT box to offload to. |
 | DOT Telegram account + session + worker | C/D | Must be built from scratch; no session may be reused. |
+| Base44 read integration | C/D idea 9 | A backend function inside the Asset Library exposing asset metadata; external clients cannot use the service role. Needs Base44 edit access + the app id. |
 | DOT publishing leg (Meta Ad Creative API) | C/D, if generated creatives are to reach Meta without manual steps | Otherwise the hand-off is manual via the Asset Library. |
 | Similarity index | B (near-duplicate creatives), C/D | `pgvector` is **not available** on this Postgres 16.14 — only `pg_trgm` and `pgcrypto`. Needs `postgresql-16-pgvector` or another approach. |
 | LLM/vision cost guardrails | C/D, agent work | The `finance.tsx` per-user cost tracking pattern already exists; hundreds of assets/day × vision calls is real money. |
@@ -342,9 +357,8 @@ ad-comment sentiment as a Track B input — all required PetalPixel projects.
 
 ## 7. Open questions
 
-1. **Asset Library boundary.** `library.dotaudiences.com` is Base44-hosted, so on neither droplet,
-   but sits on a DOT domain and is DOT's own designer → media-buyer workflow. Is it in scope for
-   integration (and does DOT hold Base44 API access), or is the hosting rule absolute?
+1. **Base44 integration shape:** confirm DOT can add a backend function to the Asset Library app (it
+   is DOT's own app, so this should be available) and confirm the app id in account settings.
 2. **Track A:** which attribution window do client-facing numbers use, and are periods frozen once
    reported? `actions_by_window` means an unfrozen figure keeps moving for 28 days.
 3. **Telegram group links** — pending, so real volume, repost rate, format and language mix can
