@@ -37,19 +37,42 @@ manual overrides), audiences and activity views, admin/superadmin/member auth wi
 Deliberately stubbed: `/creatives` renders a "being rebuilt" placeholder while all the data above
 sits in Postgres.
 
-### Adjacent systems we already run
+### The system landscape
 
-| System | Owns | Join key |
+Discovered 2026-08-03 while answering "where do designer creatives live". The answer surfaced six
+more systems, and it reframes the roadmap: **the biggest risk is not missing features, it is
+fragmentation.**
+
+| System | Where | Owns |
 | --- | --- | --- |
-| **MetaConsole** (this app) | performance truth, polled hourly from Meta | `accounts.id` |
-| **WatchTower** (`watch.madsmonitor.com`) | infrastructure supply chain: Profile → BusinessManager → AdAccount → Pixel/Page with `banned`/`restricted`/`in_review` statuses, agency contacts, `warmingThresholdDays`, `sparePoolMinCount` — hand-maintained in Firestore | `AdAccount.metaAccountId` |
-| **Notion** campaigns board | commercial layer: engagements, budgets, statuses, Supplier Payment Log | `Active Account ID` |
-| **TG Bot** (`tg.madsmonitor.com`) | live Telethon **user** session, reads joined groups, LLM summarisation | — |
+| **MetaConsole** (this app) | DO droplet | performance truth polled hourly via a system token; attribution; reporting; AI chat |
+| **Asset Library** | `library.dotaudiences.com` — **Base44** (no-code, third-party hosted) | designer asset uploads, design requests, and its own "track performance" claim |
+| **Meta Ads Uploader v0.2** | `/opt/meta-ads-uploader`, Hetzner :3003 | builds **and publishes** campaigns/ad sets/creatives/ads via Meta OAuth; syncs accounts, images, videos, Pages, Pixels; bulk variant builder; creative + targeting templates; publish history |
+| **WatchTower** | `watch.madsmonitor.com`, Firestore | infrastructure supply chain: Profile → BM → AdAccount → Pixel/Page with hand-typed statuses, agency contacts, warming thresholds, spare-pool minimums |
+| **fbtools** | `/opt/fbtools`, Hetzner :3001 | Facebook account automation: cookie auto-login, token refresh, proxy pool, **ad-comment monitoring with sentiment**, Telegram notifications, worker queue |
+| **TG Bot** | `/opt/tg-bot`, Hetzner :8000 | live Telethon **user** session reading joined groups; LLM summarisation |
+| **n8n** | `/opt/n8n`, Hetzner :5678 | general workflow automation engine, already running |
+| **Notion** campaigns board | SaaS | commercial layer: engagements, budgets, statuses, Supplier Payment Log |
+| **VA Task Manager** | `tasks.madsmonitor.com` | VA task assignment |
+| **finance-app** | `/opt/finance-app`, Hetzner | finance (separate from this app's LLM-cost view) |
 
-Consequences worth acting on: `dailyBudget` is manually duplicated in Notion **and** WatchTower
-while Meta holds the truth; WatchTower's statuses are typed by hand while this app already polls
-them hourly; and no system joins *which provider supplied an account* to *how long it survived and
-what it spent*.
+Three consequences that should drive the roadmap more than any new feature:
+
+1. **The creative pipeline already exists — in three disconnected apps.** Base44 Asset Library
+   (design requests, uploads) → Meta Ads Uploader (build, bulk variants, publish) → MetaConsole
+   (performance). Nothing joins them, so no one can answer "did the asset we designed get published,
+   and did it work?" Track C should build the **join and the intelligence**, not a publisher or a
+   library — both already exist.
+2. **The same Meta facts are synced independently by at least three apps**, with three different
+   token strategies: this app (system user token), the uploader (OAuth user token), fbtools
+   (cookies + proxies). Meta assets, ad accounts and pages are duplicated across all three.
+   Previously found: `dailyBudget` exists in Notion, WatchTower **and** Meta.
+3. **Signals exist that this app cannot see.** fbtools monitors ad-comment sentiment — a leading
+   indicator of creative fatigue *and* of policy/brand risk in iGaming — and none of it reaches the
+   creative intelligence in Track B.
+
+Also relevant: n8n is already running, so Track C/D orchestration may need no new infrastructure,
+and WatchTower's statuses are still typed by hand while this app polls the truth hourly.
 
 ---
 
@@ -159,7 +182,32 @@ Meta Ad Library ─┘                                      (offer, angle, forma
   joined group; a bot account cannot), already listens on `events.NewMessage` and backfills via
   `iter_messages`. It does **not** yet call `download_media` — that is the addition.
 - **Missing:** object storage + CDN, media dedupe, vision/OCR analysis, similarity index.
-- **Four design constraints:**
+
+**Revised scope, given the landscape above.** Do *not* build a publisher or an asset library — Meta
+Ads Uploader and the Base44 Asset Library already exist. Track C/D builds the ingestion, the
+analysis, the join to our own results, and the brief/prompt output. Generation feeds the existing
+uploader; the uploader's **bulk variant builder** and creative templates are the natural landing
+point for generated variants.
+
+**Volume math** (operator estimate: 400–500 assets/day; file sizes and vision pricing below are my
+estimates, to be replaced by measurement once group links are shared):
+
+- ~450/day ≈ 13.5k/month ≈ 164k/year.
+- At an assumed 80/20 image/video mix (~300 KB and ~3 MB), raw media ≈ **380 MB/day ≈ 11 GB/month ≈
+  138 GB/year** — which exceeds the droplet's 108 GB free space inside a year. Object storage is
+  confirmed as a real requirement, or thumbnails hot with originals in cold storage.
+- Reposting in these groups is heavy; if 40–70% are duplicates, unique assets are ~150–270/day.
+  Perceptual-hash dedupe **before** analysis is therefore the main cost lever, and OCR can run
+  locally (tesseract) to keep text extraction off the vision bill entirely.
+- Analysing only unique assets is cheap at this scale — roughly single-digit dollars per day on
+  current vision pricing. The cost risk is re-analysing reposts, not the volume itself.
+
+**Operational caution:** do not scrape with the production Telethon session. It backs a live
+client-summary product, and scraping behaviour risks the account. Use a separate Telegram account and
+session for ingestion.
+
+**Four design constraints:**
+
   1. **Dedupe before you spend.** Those groups repost the same asset endlessly; perceptual-hash
      first, analyse once, or vision cost scales with reposts instead of information.
   2. **Extract the offer, not just the image.** In iGaming the offer ("100% up to $500 + 50 free
@@ -324,9 +372,11 @@ data nobody else has. Not a decision to drift into.
 1. Track G: push into Firestore, pull from an endpoint here, or extract a shared entity service?
 2. Track A: which attribution window do client-facing numbers use, and are periods frozen once
    reported? `actions_by_window` means an unfrozen figure keeps moving for 28 days.
-3. Where do designer creatives live today (Drive / Dropbox / Notion `Creative Files`)? Decides
-   whether Track C/D can reconcile our own library or only the Meta-side one.
-4. How many Telegram groups, and roughly what daily volume? Sizes storage, dedupe and vision cost.
+3. **Answered:** designer creatives live in the Base44-hosted Asset Library
+   (`library.dotaudiences.com`). Open follow-up: does it stay on Base44 and integrate over its API
+   (fast, limited), or get absorbed into this app (full join, real work)? API access/keys unknown.
+4. **Answered (estimate):** 400–500 assets/day across the creative groups; group links to be shared
+   so real volume, repost rate, format and language mix can be measured rather than assumed.
 5. Interface direction (Track K): does the daily buyer loop live in Telegram or the web app?
 6. Breadth vs depth (Track L): more channels, or deeper on Meta?
 7. Does the portal being public change hosting? The droplet is a single 3 GB instance with no
