@@ -57,7 +57,7 @@ what it spent*.
 
 | Track | Decision |
 | --- | --- |
-| A — Client-facing dashboard | **In** |
+| A — Client-facing dashboard | **In — full client portal with logins.** Real client accounts with row-level scoping, not share links. Makes multi-tenant identity critical-path and the foundation for any later white-labelling (Track M). |
 | B — Creative intelligence | **In** |
 | C/D — Creative library + generator | **In, reframed**: ingest and analyse market creatives scraped from Telegram groups, then derive briefs/prompts — not an internal designer↔buyer file pipeline |
 | E — Account survival + QA | **On hold** |
@@ -70,17 +70,50 @@ what it spent*.
 
 ### A. Client-facing portal (replaces AgencyAnalytics)
 
-Table stakes, not a moat — AgencyAnalytics is a commodity. The reporting engine already exists, so
-the work is ~80% access control and ~20% presentation.
+**Decided: full portal with client logins.** The reporting engine already exists, so the work is
+overwhelmingly access control, presentation and the trust surface — not analytics.
 
-- **Exists:** report engine with CSV/PDF + markup, per-client data model, attribution.
-- **Missing:** multi-tenant identity. `users.role` is only `superadmin|admin|member` and every
-  server fn queries agency-wide. Client access means row-level scoping on every query plus an audit
-  story.
-- **Cheaper v1:** no logins. Scheduled white-label digests + signed per-client share links cancel
-  the subscription sooner and reveal what clients actually read before we build screens for it.
-- **Differentiator:** the client-facing creative showcase (from Track B). Own creatives with
-  performance is precisely what AgencyAnalytics does badly.
+- **Exists:** report engine with CSV/PDF + markup, per-client data model, attribution engine,
+  approval-based auth with `superadmin|admin|member`.
+- **Missing:** a `client` role bound to one or more `clients.id`, and a scope boundary. Every server
+  fn queries agency-wide today.
+
+**Secure by construction, not by inspection.** Sprinkling `if (isClient)` across existing fns will
+leak eventually. Resolve an explicit scope object (allowed account ids + owned campaign ids, via the
+existing `ownedCampaignIds` attribution) and have client-facing fns *require* it as an argument, so
+an unscoped query cannot be written by accident. Note `clients.id` is a guessable slug
+(`wildcasino-ag`), so no route may key off an id without an authorisation check.
+
+**What clients must never see** — the non-obvious part:
+
+- **The markup.** Reports already take a commission `markup`; if you bill on it, raw spend cannot
+  appear anywhere in the portal, including CSV exports and the chat agent.
+- **Your infrastructure.** Account names expose the rented-account supply chain
+  (`DOT-GO-GMT-8-7`, `Amber Media-（UTC-4）-5`) and imply providers. The portal needs a presentation
+  alias layer over accounts and campaigns.
+- **Internal vocabulary.** Notion statuses like `Full Budget Finished` / `Budget Finished - Top Up`
+  are operations language, not client language.
+
+**Numbers that move.** `actions_by_window` means yesterday's conversions keep changing for up to 28
+days. A client who screenshots Monday's figure will notice. Needs an explicit policy: "as of"
+timestamps, a fixed attribution window for client-facing views, and finalised/frozen periods.
+
+**Support surface.** An admin "view as client" mode is near-free if scope is an argument and
+painful if it is implicit in the session — and it is what makes "my numbers look wrong" calls
+debuggable.
+
+**Only possible once clients log in:**
+
+- **Client-scoped AI chat** — "why did my CPA rise last week?". The agent, tools, history and
+  per-user cost tracking already exist; needs scope injected into every tool and a per-client cost
+  cap. No competitor in this space has this.
+- **Creative showcase + approval loop** — clients approve/reject creatives, which feeds Track C/D
+  production. Turns the portal from read-only reporting into workflow.
+- **Self-serve report builder** — a scoped `/reports`, which removes the request-a-report loop.
+- **Shared pacing view** — contracted budget vs projected burn-out (already computed in
+  `ClientDetailView`), which pre-empts "are we on track" emails.
+
+Push notification still matters after logins: email/Telegram digests that deep-link into the portal.
 
 ### B. Creative intelligence
 
@@ -223,7 +256,7 @@ data nobody else has. Not a decision to drift into.
 
 | Prerequisite | Gates | Notes |
 | --- | --- | --- |
-| Multi-tenant identity + row-level scoping | A, M | The long pole. Not a feature flag. |
+| Multi-tenant identity + row-level scoping | A (decided), M | **Critical path.** Scope-as-argument, `client` role, invite-only client users (never self-signup), view-as-client, presentation aliases, no markup leakage. |
 | Object storage + CDN | C/D, and the upload half of any creative library | Droplet has 108 GB free but only **3 GB RAM**; media work belongs on the Hetzner box (8 CPU / 16 GB) which already holds the TG session. |
 | Similarity index | B (near-duplicate creatives), C/D | `pgvector` is **not available** on this Postgres 16.14 — only `pg_trgm` and `pgcrypto`. Needs `postgresql-16-pgvector` or another approach. |
 | Entity graph across the four systems | G, and any cross-system reporting | `act_` id is the join key present in all of them. |
@@ -261,15 +294,30 @@ data nobody else has. Not a decision to drift into.
 | 23 | Policy linter + rejection archive | J | — |
 | 24 | Agent write-actions behind approval | K | — |
 | 25 | Multi-platform ingestion (Google/TikTok/Kwai) | L | strategic decision |
+| 26 | Divergence feed — every human-typed value that disagrees with Meta (Notion status, WatchTower status, budget copies, contracted geo vs delivery, contracted URL vs live ad) | G/A | — |
+| 27 | Field ownership registry — declare per field which system owns it and which mirrors it | G | — |
+| 28 | Client-scoped AI chat ("why did my CPA rise?") | A | scope boundary + per-client cost cap |
+| 29 | Client creative showcase + approve/reject loop | A | B, scope boundary |
+| 30 | Self-serve scoped report builder | A | scope boundary |
+| 31 | Client pacing view (contracted budget vs projected burn-out) | A | scope boundary |
+| 32 | Presentation alias layer for accounts/campaigns (hide infrastructure) | A | scope boundary |
+| 33 | Finalised/frozen reporting periods + fixed client attribution window | A | — |
+| 34 | Admin "view as client" mode | A | scope-as-argument |
 
 ---
 
 ## 7. Open questions
 
 1. Track G: push into Firestore, pull from an endpoint here, or extract a shared entity service?
-2. Track A: delivered reports and share links first, or full client logins?
-3. Where do designer creatives live today (Drive / Dropbox / Notion `Creative Files`)? Decides
+2. Track A identity model: who logs in — the agency entity (e.g. OneAgency) or the individual brand
+   (Lucky Rebel, Slots.lv)? Attribution already models brands under agency clients, so the scope
+   boundary must mirror whichever grain clients actually expect.
+3. Track A: which attribution window do client-facing numbers use, and are periods frozen once
+   reported?
+4. Where do designer creatives live today (Drive / Dropbox / Notion `Creative Files`)? Decides
    whether Track C/D can reconcile our own library or only the Meta-side one.
-4. How many Telegram groups, and roughly what daily volume? Sizes storage, dedupe and vision cost.
-5. Interface direction (Track K): does the daily buyer loop live in Telegram or the web app?
-6. Breadth vs depth (Track L): more channels, or deeper on Meta?
+5. How many Telegram groups, and roughly what daily volume? Sizes storage, dedupe and vision cost.
+6. Interface direction (Track K): does the daily buyer loop live in Telegram or the web app?
+7. Breadth vs depth (Track L): more channels, or deeper on Meta?
+8. Does the portal being public change hosting? The droplet is a single 3 GB instance with no
+   redundancy; client logins turn uptime into an SLA conversation.
