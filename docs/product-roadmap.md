@@ -158,6 +158,42 @@ data already synced to DOT's Postgres.
 - **Feeds:** Track A (client-facing creative showcase), Track C/D (the join that turns scraped market
   data into a moat), Track I (localisation source material).
 
+**Audience-analysis ceiling — measured, 2026-08-05.** Probed all 89 breakdowns Meta accepts on this
+token against live accounts. Conclusion: **there is almost nothing new worth syncing.** Depth comes
+from using what is already stored, not from more API calls.
+
+- **Already synced, already deep:** age, gender, age×gender, country, region, device_platform, the
+  publisher_platform × platform_position × impression_device triple, both hourly framings, frequency
+  buckets, and 7 creative-asset dimensions at ad level. Crucially the breakdown sync requests
+  `actions` + `action_values` and stores the whole response in `raw`, so **the full conversion funnel
+  is already available per dimension** (40+ action types observed on `age|gender` alone) — the app
+  currently aggregates only one picked action type and discards the rest at query time.
+- **The real gap is level, not dimension.** Standard breakdowns sync at account + campaign only, so
+  *age × creative* cannot be asked. Fix is ad-level `age|gender` + `device_platform` + `country`
+  ONLY — region (908 values) and hourly at ad level would explode cardinality.
+- **OS does not exist** as a Meta breakdown (`os` and `operating_system` are both rejected). OS
+  *family* is derivable from `impression_device`: Android $318,805 vs iOS $160,407 vs desktop $11,213
+  over the sampled window.
+- **Offer is not a dimension** anywhere in Meta. It has to be derived from creative text/landing
+  pages — which is Track C/D's offer extraction, not an ingestion change.
+- **Blocked by Meta's combination rule:** `platform_position` alone, every `sot_*`, plus
+  `standard_event_content_type`, all `media_*` (type/format/text/urls/creator), `mdsa_landing_destination`,
+  `instagram_ads_*`, `existing_post_id`, `breakdown_ad_objective`. Meta always applies a default
+  `action_type` action-breakdown and rejects `(action_type, <dim>)` regardless of fields, level or
+  date range. The hoped-for conversion-quality family is therefore a dead end.
+- **Accepted but zero rows:** `is_conversion_id_modeled`, `fidelity_type`, `overlap_segment`,
+  `creative_automation_asset_id`, `app_id`, `skan_conversion_id`, and (long-standing)
+  `comscore_market`, `product_id`.
+- **Rejected outright:** `zip`, `dma` (deprecated in favour of `comscore_market`), `rta_ugc_topic`,
+  `pa_creator_ig_handle`, `impression_view_time_advertiser_hour_v2`, `product_brand_breakdown`, `mmm`.
+- **Returns one null bucket only** (no analytical value today): `signal_source_bucket`,
+  `conversion_destination`, `landing_destination` (= "website"), `place_page_id`, `user_persona_id`,
+  `user_persona_name`, `rule_set_name`.
+- **Genuinely new but currently single-valued:** `ad_format_asset`, `gen_ai_asset_type` (= "original"),
+  `creative_relaxation_asset_type` (= "original"), `flexible_format_asset_type`, `reels_trending_topic`
+  (= "Uncategorized") — all return ad-level rows with actions. Worth revisiting only if Advantage+
+  creative, AI variations or Reels placements start being used.
+
 ### C/D. Market creative intelligence → briefs → generation
 
 ```
