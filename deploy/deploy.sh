@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 #
-# The single deploy path for MetaConsole. Run it ON the droplet:
+# The single deploy path for MetaConsole. Run it ON the droplet, and always pass the commit you
+# expect to ship so a forgotten push fails loudly instead of silently deploying someone else's HEAD:
 #
-#   ssh <droplet> 'bash /opt/meta-dashboard/deploy/deploy.sh'
+#   ssh <droplet> "EXPECT=$(git rev-parse HEAD) bash /opt/meta-dashboard/deploy/deploy.sh"
+#
+# IMPORTANT: this checkout's `origin` is the LOCAL bare repo /opt/meta.git, not GitHub. Code only
+# reaches the server via `git push droplet <branch>` from a workstation. Pushing to GitHub alone
+# changes nothing here — which is exactly what EXPECT catches.
 #
 # Both operators may deploy. Concurrent deploys are the hazard this script exists to remove:
 # there is one checkout, one `.output/` build directory, and `meta-web` boots straight from
@@ -40,6 +45,14 @@ main() {
   # directly on the droplet and that needs a human, not an automatic merge.
   git pull --ff-only "$remote" "$branch"
   after="$(git rev-parse HEAD)"
+
+  # A forgotten `git push droplet` is the failure this guards: without it the pull is a no-op and the
+  # deploy would happily rebuild and restart on stale code, reporting success.
+  if [[ -n "${EXPECT:-}" && "$after" != "$EXPECT" ]]; then
+    echo "deploy: ABORT — expected $EXPECT but the checkout is at $after" >&2
+    echo "deploy: run 'git push droplet ${branch}' from your workstation, then deploy again" >&2
+    exit 1
+  fi
 
   if [[ "$before" == "$after" ]]; then
     echo "deploy: already at ${after:0:8} — rebuilding anyway to be certain the running build matches"

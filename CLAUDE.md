@@ -40,9 +40,17 @@ convenient it looks.
   auto-committing to one branch otherwise produces non-fast-forward rejections. **Never force-push**
   — it silently erases the other operator's work.
 - Cut a short-lived branch for anything multi-file or risky, and merge it back yourself.
-- **Remotes:** `origin` (GitHub) is the source of truth and what the server pulls from. `droplet` is
-  a bare mirror on the server. `madsmonitor` is a code mirror pushed by the maintainer only — it
-  needs a separate key, so do not expect it to work from every machine.
+- **Remotes — push to `origin` AND `droplet` for anything you intend to deploy.** They serve
+  different purposes and neither substitutes for the other:
+  - `origin` (GitHub) — the collaboration source of truth. This is what the other operator pulls.
+  - `droplet` (`ssh://…/opt/meta.git`, a bare repo on the server) — **the only path code takes onto
+    the server.** The deployed checkout's own `origin` is that bare repo, *not* GitHub, and there is
+    no hook. Push to GitHub alone and the server sees nothing.
+  - `madsmonitor` — a code mirror pushed by the maintainer only; it needs a separate key, so do not
+    expect it to work from every machine.
+
+  Because forgetting the `droplet` push deploys stale code while reporting success, always pass
+  `EXPECT` when deploying (see below) — it turns that mistake into a hard failure.
 - **Stage explicitly — never `git add -A` or `git add .`** Scratch files (`.tmp-*.ts`, screenshots,
   local notes) are not all gitignored, and one careless commit puts them in three remotes.
 - Conventional commit messages. Explain *why* in the body when the reasoning is not obvious from the
@@ -50,17 +58,23 @@ convenient it looks.
 
 ## Deploying
 
-One command, from either operator:
+One command, from either operator. Always pass the commit you expect to ship:
 
 ```bash
-ssh <droplet> 'bash /opt/meta-dashboard/deploy/deploy.sh'
+git push origin feat/meta-integration && git push droplet feat/meta-integration
+ssh <droplet> "EXPECT=$(git rev-parse HEAD) bash /opt/meta-dashboard/deploy/deploy.sh"
 ```
 
-It takes a lock, fast-forwards the checkout, reinstalls dependencies only if the manifest moved,
-builds, restarts both services, and fails loudly if health does not come back. Deploying by hand is
-what the script replaces: there is a single checkout and a single `.output/`, and `meta-web` boots
-directly from `.output/server/index.mjs`, so two overlapping deploys can restart onto a half-written
-build. Always deploy through the script.
+The script takes a lock, fast-forwards the checkout, aborts if the result is not `EXPECT`, reinstalls
+dependencies only if the manifest moved, builds, restarts both services, and fails loudly if health
+does not come back. Deploying by hand is what it replaces: there is a single checkout and a single
+`.output/`, and `meta-web` boots directly from `.output/server/index.mjs`, so two overlapping deploys
+can restart onto a half-written build.
+
+*Worth fixing properly at some point:* point the server checkout's `origin` at GitHub with a deploy
+key, so one push is enough and the bare repo stops being a second source of truth. That needs a
+deploy key added on the GitHub side, so it is a deliberate change rather than something to do in
+passing.
 
 Docs-only changes need no deploy. `meta-sync` **does** need the restart whenever sync or job code
 changes — it is long-lived and only picks up new code on restart.
