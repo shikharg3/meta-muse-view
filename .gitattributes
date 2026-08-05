@@ -1,0 +1,22 @@
+# Normalise all text to LF in the repository and on checkout. Without this, a Windows
+# checkout stores CRLF and a macOS/Linux collaborator sees whole-file diffs that bury the
+# real change — and prettier and git end up fighting each other on every commit.
+* text=auto eol=lf
+
+# Shell scripts break outright with CRLF line endings (the shebang picks up the \r), so be
+# explicit even though the rule above already covers them.
+*.sh text eol=lf
+
+# Binary assets must never be line-ending normalised.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.avif binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+*.pdf binary
