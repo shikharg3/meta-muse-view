@@ -29,7 +29,7 @@ import {
   recordServiceHealth,
 } from "./state";
 import { runOnce, type Jobs } from "./run";
-import { detectSpendDropAlerts } from "./alerts";
+import { detectSpendDropAlerts, detectAccountAlerts } from "./alerts";
 
 // First sync of an account backfills as much history as Meta retains; later cycles
 // only refresh the trailing edge. Meta caps plain insights at 37 months but
@@ -351,6 +351,18 @@ export async function runCycle(opts: { full?: boolean } = {}): Promise<void> {
       if (n > 0) console.log(`[sync] alerts: ${n} new spend-drop alert(s)`);
     } catch (e) {
       console.error("[sync] alert detection failed:", e);
+    }
+    // Account-level alerts: disabled, nearly out of prepaid budget, and active-but-stopped. Runs
+    // every cycle so a disable or a drained account surfaces within the hour.
+    try {
+      const a = await detectAccountAlerts();
+      const total = a.account_disabled + a.low_funds + a.no_spend;
+      if (total > 0)
+        console.log(
+          `[sync] alerts: ${a.account_disabled} disabled, ${a.low_funds} low-funds, ${a.no_spend} no-spend`,
+        );
+    } catch (e) {
+      console.error("[sync] account alert detection failed:", e);
     }
     // Daily only: push the deliverable daily budget and trailing spend back onto the Notion board.
     // Runs after the refresh above so the campaign/ad-set/account rows it reads are current.
