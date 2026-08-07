@@ -1,5 +1,11 @@
 import { test, expect } from "bun:test";
-import { forecastBudgetEnd, MAX_PROJECTION_DAYS } from "./budget-forecast";
+import {
+  forecastBudgetEnd,
+  paceWindow,
+  MAX_PROJECTION_DAYS,
+  MIN_PACE_DAYS,
+  PACE_DAYS,
+} from "./budget-forecast";
 
 const TODAY = "2026-07-31";
 
@@ -106,4 +112,40 @@ test("pace is echoed unchanged so callers can display it", () => {
   expect(
     forecastBudgetEnd({ total: 1_000, spent: 100, dailyPace: 12.34, today: TODAY }).dailyPace,
   ).toBe(12.34);
+});
+
+test("paceWindow uses the full trailing window for an engagement that predates it", () => {
+  const w = paceWindow({ startDate: "2026-01-01", until: "2026-07-31" });
+  expect(w).toEqual({ from: "2026-07-18", days: PACE_DAYS }); // 18th..31st inclusive = 14 days
+});
+
+test("paceWindow clamps to the engagement start so a recycled account's history cannot leak in", () => {
+  // The failure this prevents: an ad account moved onto a new engagement still carries the previous
+  // client's spend, which would give a brand-new engagement a fully-formed burn rate.
+  expect(paceWindow({ startDate: "2026-07-26", until: "2026-07-31" })).toEqual({
+    from: "2026-07-26",
+    days: 6,
+  });
+  // Exactly at the window edge it is the whole window, not a clamp.
+  expect(paceWindow({ startDate: "2026-07-18", until: "2026-07-31" })?.days).toBe(PACE_DAYS);
+});
+
+test("paceWindow refuses to average an engagement younger than the minimum", () => {
+  expect(paceWindow({ startDate: "2026-07-31", until: "2026-07-31" })).toBeNull(); // 1 day
+  expect(paceWindow({ startDate: "2026-07-30", until: "2026-07-31" })).toBeNull(); // 2 days
+  expect(paceWindow({ startDate: "2026-07-29", until: "2026-07-31" })?.days).toBe(MIN_PACE_DAYS);
+});
+
+test("paceWindow falls back to the trailing window when there is no start date", () => {
+  expect(paceWindow({ startDate: null, until: "2026-07-31" })).toEqual({
+    from: "2026-07-18",
+    days: PACE_DAYS,
+  });
+});
+
+test("paceWindow day counts are unaffected by month and year boundaries", () => {
+  expect(paceWindow({ startDate: "2026-02-26", until: "2026-03-02" })?.days).toBe(5);
+  expect(paceWindow({ startDate: "2026-12-30", until: "2027-01-02" })?.days).toBe(4);
+  // 2028 is a leap year: Feb 27, 28, 29 then Mar 1.
+  expect(paceWindow({ startDate: "2028-02-27", until: "2028-03-01" })?.days).toBe(4);
 });

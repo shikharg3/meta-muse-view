@@ -3,6 +3,30 @@ import { addDays } from "@/lib/range";
 /** Beyond this the projection is meaningless (a few cents/day against a large budget). */
 export const MAX_PROJECTION_DAYS = 730; // ~2 years
 
+/** Trailing window the burn rate is averaged over (complete days only). Shared so the dashboard's
+ *  forecast and the one written back to Notion can never disagree. */
+export const PACE_DAYS = 14;
+
+/** Fewer complete days than this and an average is noise, not a pace. */
+export const MIN_PACE_DAYS = 3;
+
+/**
+ * The window a burn rate should be measured over: the trailing `PACE_DAYS`, but never reaching back
+ * before the engagement started. Ad accounts are recycled between engagements, so an unclamped window
+ * would average in the PREVIOUS client's spend and project a brand-new engagement as already burning.
+ * Returns null when there are not yet `MIN_PACE_DAYS` complete days to average.
+ */
+export function paceWindow(input: {
+  startDate: string | null;
+  until: string;
+}): { from: string; days: number } | null {
+  const { startDate, until } = input;
+  const trailing = addDays(until, -(PACE_DAYS - 1));
+  const from = startDate && startDate > trailing ? startDate : trailing;
+  const days = Math.round((Date.parse(until) - Date.parse(from)) / 86_400_000) + 1;
+  return days >= MIN_PACE_DAYS ? { from, days } : null;
+}
+
 export interface BudgetForecast {
   /** Forecast burn-out date (YYYY-MM-DD); null when no forecast is possible. */
   projectedEndDate: string | null;

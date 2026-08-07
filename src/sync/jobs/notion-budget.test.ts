@@ -3,10 +3,12 @@ import {
   sumDailyBudget,
   planRow,
   planSpendRow,
+  planEndDate,
   canDeliver,
   avgDailySpend,
   AUTO_BUDGET_COLUMN,
   AUTO_SPEND_COLUMN,
+  AUTO_PROJECTED_END_COLUMN,
   SPEND_WINDOW_DAYS,
   type AttributedCampaign,
   type ActiveAdSet,
@@ -189,4 +191,47 @@ test("planSpendRow follows the same live-only rule and skips unchanged values", 
 test("both auto-updated columns carry the marker the plain lookup still resolves", () => {
   expect(AUTO_BUDGET_COLUMN).toBe("🤖 Daily Budget ($)");
   expect(AUTO_SPEND_COLUMN).toBe("🤖 Avg Daily Spend 7d ($)");
+});
+
+test("planEndDate writes a projection only for live rows, and never rewrites the same date", () => {
+  const live = { status: "Live", current: null, projected: "2026-09-14", reason: null };
+  expect(planEndDate(live)).toEqual({ date: "2026-09-14", skip: null });
+  // Replacing an earlier projection is a normal update.
+  expect(planEndDate({ ...live, current: "2026-09-01" }).date).toBe("2026-09-14");
+  // Same date: no write, so `Last edited time` keeps meaning a human touched the row.
+  expect(planEndDate({ ...live, current: "2026-09-14" })).toEqual({
+    date: null,
+    skip: "unchanged",
+  });
+  // A finished engagement's accounts get recycled, so its dates are none of our business.
+  for (const status of ["Full Budget Finished", "Paused", "Not started", null]) {
+    expect(planEndDate({ ...live, status })).toEqual({ date: null, skip: "not a live engagement" });
+  }
+});
+
+test("planEndDate surfaces the forecaster's reason instead of writing a blank", () => {
+  // The real cases on this board: no budget on the row, an engagement that started but has not spent
+  // yet, and a pace so low the date would be meaningless.
+  for (const reason of ["no budget set", "no recent spend", "pace too low to project"]) {
+    expect(planEndDate({ status: "Live", current: null, projected: null, reason })).toEqual({
+      date: null,
+      skip: reason,
+    });
+  }
+  expect(
+    planEndDate({ status: "Live", current: "2026-09-01", projected: null, reason: null }).skip,
+  ).toBe("not forecastable");
+});
+
+test("an exhausted budget projects today, and that date is written", () => {
+  // forecastBudgetEnd returns today with reason "budget exhausted"; the row should still be updated,
+  // because "the money is gone" is exactly what the column needs to say.
+  expect(
+    planEndDate({ status: "Live", current: "2026-12-01", projected: "2026-08-06", reason: null })
+      .date,
+  ).toBe("2026-08-06");
+});
+
+test("the projected-end column carries the machine-written marker", () => {
+  expect(AUTO_PROJECTED_END_COLUMN).toBe("🤖 Projected End Date");
 });

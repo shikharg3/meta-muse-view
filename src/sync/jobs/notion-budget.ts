@@ -1,5 +1,5 @@
 import { setTimeout as sleep } from "node:timers/promises";
-import { and, eq, gte, isNull, lte, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, isNull, lte, sql } from "drizzle-orm";
 import { db, schema } from "@/db/client";
 import { getNotionCredentials } from "@/lib/credentials";
 import {
@@ -14,10 +14,12 @@ import { ownedCampaignIds } from "@/server/fns/campaign-attribution";
 import { accountStatus } from "@/server/agg";
 import { addDays } from "@/lib/range";
 import { effectiveAccountIds } from "./clients";
+import { forecastBudgetEnd, paceWindow, MIN_PACE_DAYS, PACE_DAYS } from "@/lib/budget-forecast";
 
 /**
- * Maintain two auto-updated columns on the Notion campaigns board: the daily budget that can
- * ACTUALLY be spent, and what was actually spent per day recently.
+ * Maintain three auto-updated columns on the Notion campaigns board: the daily budget that can
+ * ACTUALLY be spent, what was actually spent per day recently, and when the engagement budget is
+ * projected to run out.
  *
  * Meta exposes no account-level daily budget: it lives on the campaign (CBO) or on each ad set
  * (ABO), never both, so one level per campaign sums exactly. A board row can span many ad accounts
@@ -29,18 +31,31 @@ import { effectiveAccountIds } from "./clients";
  * forever. On rented, prepaid accounts (the common case here) that made a naive sum overstate the
  * budget by up to 71×. Both stops are checked from data already synced hourly.
  *
+ * The end-date projection has its own trap: ad accounts are recycled between engagements, so
+ * LIFETIME spend on a row's accounts is far larger than the engagement budget (betonline.ag: $27k
+ * lifetime against a $10.8k budget). Spend is therefore counted only from the row's own start date,
+ * which is what makes `Budget ($) − spent` a true remaining figure.
+ *
+ * It writes a SEPARATE column and never touches Notion's `End Date (Estimated)`, for two reasons:
+ * that column is what was *planned*, and comparing plan against projection is the overrun signal the
+ * dashboard is built on; and `clubClients` picks each client's current engagement by latest end date,
+ * so writing computed dates there would feed back into which row supplies the budget the projection
+ * is derived from.
+ *
  * Ownership reuses the dashboard's attribution: the client-level whitelist first (an account reused
  * by a later client), then a name split between sibling rows of one client that share an account, so
  * a shared account is never counted twice.
  */
 
-/** Board columns this job owns. */
+/** Board columns this job owns. `End Date (Estimated)` is deliberately NOT one of them. */
 export const BUDGET_COLUMN = "Daily Budget ($)";
 export const SPEND_COLUMN = "Avg Daily Spend 7d ($)";
-/** Stamped onto both column names so the team can see the values are machine-written. */
+export const PROJECTED_END_COLUMN = "Projected End Date";
+/** Stamped onto every column name so the team can see the values are machine-written. */
 export const AUTO_MARKER = "🤖";
 export const AUTO_BUDGET_COLUMN = `${AUTO_MARKER} ${BUDGET_COLUMN}`;
 export const AUTO_SPEND_COLUMN = `${AUTO_MARKER} ${SPEND_COLUMN}`;
+export const AUTO_PROJECTED_END_COLUMN = `${AUTO_MARKER} ${PROJECTED_END_COLUMN}`;
 
 /** Complete days averaged for the spend column. Today is excluded — it is partial until it syncs. */
 export const SPEND_WINDOW_DAYS = 7;
@@ -210,6 +225,29 @@ export function planSpendRow(input: {
   return { dollars: spend, skip: null };
 }
 
+export interface DatePlan {
+  date: string | null;
+  skip: string | null;
+}
+
+/**
+ * Whether to push a projected burn-out date onto a row. `reason` is the forecaster's own explanation
+ * for having no date (no budget, no recent spend, pace too low), surfaced verbatim so a blank cell is
+ * always explainable.
+ */
+export function planEndDate(input: {
+  status: string | null;
+  current: string | null;
+  projected: string | null;
+  reason: string | null;
+}): DatePlan {
+  const { status, current, projected, reason } = input;
+  if (notLive(status)) return { date: null, skip: "not a live engagement" };
+  if (projected === null) return { date: null, skip: reason ?? "not forecastable" };
+  if (current === projected) return { date: null, skip: "unchanged" };
+  return { date: projected, skip: null };
+}
+
 export interface NotionBudgetRow {
   pageId: string;
   title: string;
@@ -225,6 +263,19 @@ export interface NotionBudgetRow {
   spendCurrent: number | null;
   spendWritten: number | null;
   spendSkip: string | null;
+  /** Campaigns attributed to this row, whatever their status — the pool spend is summed over. */
+  assignedCampaigns: number;
+  /** Inputs behind the projection, kept so a written date can be audited without re-running. */
+  notionBudget: number | null;
+  startDate: string | null;
+  spentSinceStart: number | null;
+  dailyPace: number | null;
+  daysRemaining: number | null;
+  endCurrent: string | null;
+  /** The date the projection produced, even when no column existed to write it to (dry runs). */
+  endProposed: string | null;
+  endWritten: string | null;
+  endSkip: string | null;
 }
 
 export interface NotionBudgetResult {
@@ -278,6 +329,16 @@ function numberCell(page: NotionPage, id: string): number | null {
   return null;
 }
 
+/** Read a page's date cell (start only) by column id. */
+function dateCell(page: NotionPage, id: string): string | null {
+  for (const p of Object.values(page.properties ?? {})) {
+    if (propId(p) !== id) continue;
+    const d = p.date as { start?: unknown } | null | undefined;
+    return typeof d?.start === "string" ? d.start.slice(0, 10) : null;
+  }
+  return null;
+}
+
 interface ClientCtx {
   id: string;
   pageIds: string[];
@@ -293,7 +354,11 @@ interface BoardRow {
   status: string | null;
   budgetCurrent: number | null;
   spendCurrent: number | null;
+  endCurrent: string | null;
   accountIds: string[];
+  /** The row's OWN engagement budget and start date, straight off the board. */
+  notionBudget: number | null;
+  startDate: string | null;
 }
 
 /** Resolve a column by name, creating it when absent, and stamp the auto-update marker on it. */
@@ -303,19 +368,34 @@ async function ensureColumn(
   props: Record<string, NotionPropSchema>,
   plainName: string,
   markedName: string,
+  kind: "number" | "date",
   touched: string[],
+  dryRun: boolean,
 ): Promise<{ column: NotionPropSchema; error: string | null } | null> {
   const existing = resolvePropertyKey(Object.keys(props), plainName);
   if (!existing) {
-    const created = await notion.createNumberProperty(dsId, markedName);
+    if (dryRun) {
+      touched.push(`would create "${markedName}"`);
+      return null; // no id to write against, so this column reports as skipped
+    }
+    const created = await notion.createProperty(
+      dsId,
+      markedName,
+      kind === "number" ? { number: { format: "dollar" } } : { date: {} },
+      kind === "number" ? { number: {} } : undefined,
+    );
     if (!created) return null;
     touched.push(`created "${markedName}"`);
     return { column: created, error: null };
   }
   const column = props[existing];
-  if (column.type !== "number")
-    return { column, error: `"${existing}" is a ${column.type} column, not a number` };
+  if (column.type !== kind)
+    return { column, error: `"${existing}" is a ${column.type} column, not a ${kind}` };
   if (!existing.startsWith(AUTO_MARKER)) {
+    if (dryRun) {
+      touched.push(`would rename "${existing}" → "${markedName}"`);
+      return { column, error: null };
+    }
     try {
       await notion.renameProperty(dsId, existing, markedName);
       touched.push(`renamed "${existing}" → "${markedName}"`);
@@ -330,18 +410,46 @@ async function ensureColumn(
 }
 
 /**
- * Recompute both auto-updated columns from live Meta data and write back only what changed.
+ * Recompute all three auto-updated columns from live Meta data and write back only what changed.
  * Returns null when Notion is not configured.
+ *
+ * `dryRun` computes and reports everything without touching Notion (columns are still resolved, but
+ * nothing is created, renamed or written). This job mutates a board the whole team works in, so being
+ * able to inspect a run before it lands is worth the branch.
  */
 export async function syncNotionDailyBudgets(
   client?: NotionClient,
+  opts: { dryRun?: boolean } = {},
 ): Promise<NotionBudgetResult | null> {
   const creds = await getNotionCredentials();
   if (!creds) return null;
   const notion = client ?? new NotionClient(creds.token);
 
-  const until = addDays(new Date().toISOString().slice(0, 10), -1); // last complete day
+  const today = new Date().toISOString().slice(0, 10);
+  const until = addDays(today, -1); // last complete day
   const since = addDays(until, -(SPEND_WINDOW_DAYS - 1));
+  const paceSince = addDays(until, -(PACE_DAYS - 1));
+
+  /**
+   * Campaign-level spend for a set of campaigns over a closed window. Campaign level reconciles
+   * exactly with account level on this data, so it is safe to sum here and it keeps the figure
+   * attribution-aware (a recycled account's other campaigns are excluded by the caller).
+   */
+  const spendOf = async (campaignIds: string[], from: string, to: string): Promise<number> => {
+    if (campaignIds.length === 0) return 0;
+    const [r] = await db
+      .select({ s: sql<number>`coalesce(sum(${schema.insightsDaily.spend}), 0)` })
+      .from(schema.insightsDaily)
+      .where(
+        and(
+          eq(schema.insightsDaily.level, "campaign"),
+          inArray(schema.insightsDaily.entityId, campaignIds),
+          gte(schema.insightsDaily.date, from),
+          lte(schema.insightsDaily.date, to),
+        ),
+      );
+    return Number(r?.s ?? 0);
+  };
 
   const [campaignRows, adSetRows, accountRows, clientRows, spendRows] = await Promise.all([
     db
@@ -444,7 +552,9 @@ export async function syncNotionDailyBudgets(
       props,
       BUDGET_COLUMN,
       AUTO_BUDGET_COLUMN,
+      "number",
       result.columnsTouched,
+      opts.dryRun ?? false,
     );
     if (!budgetCol) continue;
     if (budgetCol.error) {
@@ -457,9 +567,22 @@ export async function syncNotionDailyBudgets(
       props,
       SPEND_COLUMN,
       AUTO_SPEND_COLUMN,
+      "number",
       result.columnsTouched,
+      opts.dryRun ?? false,
     );
     if (spendCol?.error) result.warning = spendCol.error;
+    const endCol = await ensureColumn(
+      notion,
+      dsId,
+      props,
+      PROJECTED_END_COLUMN,
+      AUTO_PROJECTED_END_COLUMN,
+      "date",
+      result.columnsTouched,
+      opts.dryRun ?? false,
+    );
+    if (endCol?.error) result.warning = endCol.error;
 
     const pages = await notion.queryDataSource(dsId);
     const byClient = new Map<string, BoardRow[]>();
@@ -475,6 +598,11 @@ export async function syncNotionDailyBudgets(
         status: parsed.status,
         budgetCurrent: numberCell(page, budgetCol.column.id),
         spendCurrent: spendCol ? numberCell(page, spendCol.column.id) : null,
+        endCurrent: endCol ? dateCell(page, endCol.column.id) : null,
+        // The row's own contracted budget and engagement start — never the clubbed client's, so a
+        // client with several engagements projects each one from its own numbers.
+        notionBudget: parsed.budget,
+        startDate: parsed.startDate,
         // A client with a single row owns its manual add/remove overrides unambiguously; with several
         // rows only the removals can be applied, since an addition names no row.
         accountIds:
@@ -495,6 +623,11 @@ export async function syncNotionDailyBudgets(
       sum: DailyBudgetSum | null;
       budget: RowPlan;
       spend: RowPlan;
+      end: DatePlan;
+      assigned: number;
+      spentSinceStart: number | null;
+      dailyPace: number | null;
+      daysRemaining: number | null;
     }
     const work: RowWork[] = [];
     const noMapping = "not in the synced client mapping — re-run the Notion sync";
@@ -504,6 +637,11 @@ export async function syncNotionDailyBudgets(
         sum: null,
         budget: { dollars: null, skip: noMapping },
         spend: { dollars: null, skip: noMapping },
+        end: { date: null, skip: noMapping },
+        assigned: 0,
+        spentSinceStart: null,
+        dailyPace: null,
+        daysRemaining: null,
       });
     }
 
@@ -524,6 +662,7 @@ export async function syncNotionDailyBudgets(
           else pagesByAccount.set(a, [r.pageId]);
         }
       }
+      const liveRowCount = rows.reduce((n, r) => (isLive.get(r.pageId) ? n + 1 : n), 0);
       const vocabByPage = new Map<string, BrandVocab>(
         rows.map((r) => [r.pageId, brandVocab(r.pageId, r.title, [r.title])]),
       );
@@ -560,6 +699,11 @@ export async function syncNotionDailyBudgets(
             sum: null,
             budget: planRow({ status: row.status, current: row.budgetCurrent, sum: null }),
             spend: planSpendRow({ status: row.status, current: row.spendCurrent, spend: null }),
+            end: { date: null, skip: "not a live engagement" },
+            assigned: 0,
+            spentSinceStart: null,
+            dailyPace: null,
+            daysRemaining: null,
           });
           continue;
         }
@@ -585,6 +729,67 @@ export async function syncNotionDailyBudgets(
             spend = avgDailySpend(mine.reduce((n, c) => n + (spendByCampaign.get(c.id) ?? 0), 0));
           }
         }
+
+        // Projection: the row's contracted budget, minus what these campaigns spent SINCE the
+        // engagement started, divided by their own recent pace. Lifetime spend would be wrong — these
+        // ad accounts carry earlier engagements too — and so would an unclamped pace window.
+        let spentSinceStart: number | null = null;
+        let dailyPace: number | null = null;
+        let end: DatePlan;
+        const pw = paceWindow({ startDate: row.startDate, until });
+        if (skip) {
+          end = { date: null, skip };
+        } else if (row.notionBudget == null) {
+          end = { date: null, skip: "no Budget ($) on this row" };
+        } else if (!row.startDate) {
+          end = { date: null, skip: "no start date on this row" };
+        } else if (!pw) {
+          end = { date: null, skip: `engagement younger than ${MIN_PACE_DAYS} complete days` };
+        } else {
+          // Account rotation is the trap here: an engagement's money was spent on whichever accounts
+          // it used over time, but the board row only lists the CURRENT ones. betonline.ag was moved
+          // onto a fresh empty account mid-engagement, which would make spent-to-date read $0 against
+          // a $10,800 budget instead of the true $1,131 remaining. So when the client has exactly one
+          // live row, spend is summed over the client's whole effective account set (still filtered by
+          // the cross-client whitelist). With several live rows the row's own accounts are the only
+          // safe scope, since history cannot be apportioned between sibling brands.
+          const spendAccounts = liveRowCount === 1 ? ctx.effective : row.accountIds;
+          const ids = spendAccounts.flatMap((a) =>
+            (byAccount.get(a) ?? [])
+              .filter((c) => !ctx.owned || ctx.owned.has(c.id))
+              .map((c) => c.id),
+          );
+          const [spentTotal, paceTotal] = await Promise.all([
+            spendOf(ids, row.startDate, until),
+            spendOf(ids, pw.from, until),
+          ]);
+          spentSinceStart = spentTotal;
+          dailyPace = paceTotal / pw.days;
+          const f = forecastBudgetEnd({
+            total: row.notionBudget,
+            spent: spentSinceStart,
+            dailyPace,
+            today,
+          });
+          end = planEndDate({
+            status: row.status,
+            current: row.endCurrent,
+            projected: f.projectedEndDate,
+            reason: f.reason,
+          });
+          work.push({
+            row,
+            sum,
+            budget: planRow({ status: row.status, current: row.budgetCurrent, sum }),
+            spend: planSpendRow({ status: row.status, current: row.spendCurrent, spend }),
+            end,
+            assigned: mine.length,
+            spentSinceStart,
+            dailyPace,
+            daysRemaining: f.daysRemaining,
+          });
+          continue;
+        }
         work.push({
           row,
           sum,
@@ -594,11 +799,17 @@ export async function syncNotionDailyBudgets(
           spend: skip
             ? { dollars: null, skip }
             : planSpendRow({ status: row.status, current: row.spendCurrent, spend }),
+          end,
+          assigned: mine.length,
+          spentSinceStart,
+          dailyPace,
+          daysRemaining: null,
         });
       }
     }
 
-    for (const { row, sum, budget, spend } of work) {
+    for (const w of work) {
+      const { row, sum, budget, spend, end } = w;
       result.rows += 1;
       const detail: NotionBudgetRow = {
         pageId: row.pageId,
@@ -613,6 +824,16 @@ export async function syncNotionDailyBudgets(
         spendCurrent: row.spendCurrent,
         spendWritten: null,
         spendSkip: spend.skip,
+        assignedCampaigns: w.assigned,
+        notionBudget: row.notionBudget,
+        startDate: row.startDate,
+        spentSinceStart: w.spentSinceStart,
+        dailyPace: w.dailyPace,
+        daysRemaining: w.daysRemaining,
+        endCurrent: row.endCurrent,
+        endProposed: end.date,
+        endWritten: null,
+        endSkip: end.skip,
       };
       for (const [plan, column, key] of [
         [budget, budgetCol.column, "budgetWritten"],
@@ -623,11 +844,22 @@ export async function syncNotionDailyBudgets(
           else result.skipped += 1;
           continue;
         }
-        await notion.setPageNumber(row.pageId, column.id, plan.dollars);
+        if (!opts.dryRun) {
+          await notion.setPageValue(row.pageId, column.id, { number: plan.dollars });
+          await sleep(WRITE_GAP_MS);
+        }
         detail[key] = plan.dollars;
         result.updated += 1;
-        await sleep(WRITE_GAP_MS);
       }
+      if (end.date !== null && endCol) {
+        if (!opts.dryRun) {
+          await notion.setPageValue(row.pageId, endCol.column.id, { date: { start: end.date } });
+          await sleep(WRITE_GAP_MS);
+        }
+        detail.endWritten = end.date;
+        result.updated += 1;
+      } else if (end.skip === "unchanged") result.unchanged += 1;
+      else result.skipped += 1;
       result.details.push(detail);
     }
   }

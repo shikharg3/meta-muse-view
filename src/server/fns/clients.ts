@@ -17,7 +17,7 @@ import { currentUser, audit } from "@/server/fns/auth";
 import { isAdmin } from "@/lib/auth/users";
 import { clientCampaignScope } from "./campaign-attribution";
 import { attributeCampaign, brandVocab } from "@/lib/attribution";
-import { forecastBudgetEnd } from "@/lib/budget-forecast";
+import { forecastBudgetEnd, PACE_DAYS } from "@/lib/budget-forecast";
 
 const num = (v: unknown): number => Number(v ?? 0);
 /** Server-side calendar day (UTC), the reference point for budget pacing. */
@@ -357,9 +357,6 @@ export async function fetchClientDetail(
     budget: budgetOf(row, budgetSpent, paceSpend / PACE_DAYS, today),
   };
 }
-
-/** Trailing window the burn rate is averaged over (complete days only). */
-const PACE_DAYS = 14;
 
 function budgetOf(
   row: typeof schema.clients.$inferSelect,

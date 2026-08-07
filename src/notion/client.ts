@@ -105,31 +105,46 @@ export class NotionClient {
     });
   }
 
-  /** Create a dollar-formatted number column and return its schema entry. Notion rejects an unknown
-   *  `format` on some workspaces, so fall back to an unformatted number. */
-  async createNumberProperty(dataSourceId: string, name: string): Promise<NotionPropSchema | null> {
-    const patch = async (config: Record<string, unknown>): Promise<Record<string, unknown>> =>
+  /**
+   * Create a column and return its schema entry. `fallback` is tried when the primary config is
+   * rejected — Notion refuses an unknown number `format` on some workspaces.
+   */
+  async createProperty(
+    dataSourceId: string,
+    name: string,
+    config: Record<string, unknown>,
+    fallback?: Record<string, unknown>,
+  ): Promise<NotionPropSchema | null> {
+    const patch = async (c: Record<string, unknown>): Promise<Record<string, unknown>> =>
       this.req(`/data_sources/${dataSourceId}`, {
         method: "PATCH",
-        body: JSON.stringify({ properties: { [name]: config } }),
+        body: JSON.stringify({ properties: { [name]: c } }),
       });
     let body: Record<string, unknown>;
     try {
-      body = await patch({ number: { format: "dollar" } });
-    } catch {
-      body = await patch({ number: {} });
+      body = await patch(config);
+    } catch (e) {
+      if (!fallback) throw e;
+      body = await patch(fallback);
     }
     const props = (body.properties ?? {}) as Record<string, { id?: unknown; type?: unknown }>;
     const def = props[name];
     return def ? { id: String(def.id ?? ""), type: String(def.type ?? "") } : null;
   }
 
-  /** Write one number cell. Addressed by property ID, not name, so renaming the column (or someone
-   *  else adding a similarly-named one) can never redirect the write. */
-  async setPageNumber(pageId: string, propertyId: string, value: number): Promise<void> {
+  /**
+   * Write one cell. Addressed by property ID, not name, so renaming the column (or someone else
+   * adding a similarly-named one) can never redirect the write. `value` is the Notion property value
+   * object, e.g. `{ number: 12 }` or `{ date: { start: "2026-08-20" } }`.
+   */
+  async setPageValue(
+    pageId: string,
+    propertyId: string,
+    value: Record<string, unknown>,
+  ): Promise<void> {
     await this.req(`/pages/${pageId}`, {
       method: "PATCH",
-      body: JSON.stringify({ properties: { [propertyId]: { number: value } } }),
+      body: JSON.stringify({ properties: { [propertyId]: value } }),
     });
   }
 }
