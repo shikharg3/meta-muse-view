@@ -195,18 +195,38 @@ test("both auto-updated columns carry the marker the plain lookup still resolves
 
 test("planEndDate writes a projection only for live rows, and never rewrites the same date", () => {
   const live = { status: "Live", current: null, projected: "2026-09-14", reason: null };
-  expect(planEndDate(live)).toEqual({ date: "2026-09-14", skip: null });
+  expect(planEndDate(live)).toEqual({ date: "2026-09-14", clear: false, skip: null });
   // Replacing an earlier projection is a normal update.
   expect(planEndDate({ ...live, current: "2026-09-01" }).date).toBe("2026-09-14");
   // Same date: no write, so `Last edited time` keeps meaning a human touched the row.
   expect(planEndDate({ ...live, current: "2026-09-14" })).toEqual({
     date: null,
+    clear: false,
     skip: "unchanged",
   });
   // A finished engagement's accounts get recycled, so its dates are none of our business.
   for (const status of ["Full Budget Finished", "Paused", "Not started", null]) {
-    expect(planEndDate({ ...live, status })).toEqual({ date: null, skip: "not a live engagement" });
+    expect(planEndDate({ ...live, status })).toEqual({
+      date: null,
+      clear: false,
+      skip: "not a live engagement",
+    });
   }
+});
+
+test("a live row that can no longer be projected has its stale date blanked", () => {
+  // The basis changed under these rows once already: a date nothing stands behind any more is worse
+  // than an empty cell, so it is cleared rather than left to be believed.
+  const gone = { status: "Live", projected: null, reason: "no recent spend" };
+  expect(planEndDate({ ...gone, current: "2026-09-14" })).toEqual({
+    date: null,
+    clear: true,
+    skip: "no recent spend",
+  });
+  // Nothing there to clear, so nothing is written.
+  expect(planEndDate({ ...gone, current: null }).clear).toBe(false);
+  // A non-live row is never touched, stale date or not.
+  expect(planEndDate({ ...gone, status: "Paused", current: "2026-09-14" }).clear).toBe(false);
 });
 
 test("planEndDate surfaces the forecaster's reason instead of writing a blank", () => {
@@ -215,6 +235,7 @@ test("planEndDate surfaces the forecaster's reason instead of writing a blank", 
   for (const reason of ["no budget set", "no recent spend", "pace too low to project"]) {
     expect(planEndDate({ status: "Live", current: null, projected: null, reason })).toEqual({
       date: null,
+      clear: false,
       skip: reason,
     });
   }

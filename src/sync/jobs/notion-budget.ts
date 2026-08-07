@@ -47,14 +47,17 @@ import { forecastBudgetEnd, paceWindow, MIN_PACE_DAYS, PACE_DAYS } from "@/lib/b
  * a shared account is never counted twice.
  */
 
-/** Board columns this job owns. `End Date (Estimated)` is deliberately NOT one of them. */
+/** Board columns this job owns. `End Date (Estimated)` and `Budget ($)` are deliberately NOT among
+ *  them — the first records what was planned, the second what was contracted. Both are human-owned. */
 export const BUDGET_COLUMN = "Daily Budget ($)";
 export const SPEND_COLUMN = "Avg Daily Spend 7d ($)";
+export const FUNDS_COLUMN = "Funds Remaining ($)";
 export const PROJECTED_END_COLUMN = "Projected End Date";
 /** Stamped onto every column name so the team can see the values are machine-written. */
 export const AUTO_MARKER = "🤖";
 export const AUTO_BUDGET_COLUMN = `${AUTO_MARKER} ${BUDGET_COLUMN}`;
 export const AUTO_SPEND_COLUMN = `${AUTO_MARKER} ${SPEND_COLUMN}`;
+export const AUTO_FUNDS_COLUMN = `${AUTO_MARKER} ${FUNDS_COLUMN}`;
 export const AUTO_PROJECTED_END_COLUMN = `${AUTO_MARKER} ${PROJECTED_END_COLUMN}`;
 
 /** Complete days averaged for the spend column. Today is excluded — it is partial until it syncs. */
@@ -91,6 +94,23 @@ export function canDeliver(a: AccountDelivery): boolean {
   return (cap - (a.amountSpent ?? 0)) / 100 > HEADROOM_MIN_USD;
 }
 
+/**
+ * Whether to push the funded-money figure onto a row. This is `spend_cap − amount_spent` summed over
+ * the accounts the row can actually spend from — the number that decides when delivery stops, and the
+ * input the projected end date is derived from.
+ */
+export function planFundsRow(input: {
+  status: string | null;
+  current: number | null;
+  funds: number | null;
+}): RowPlan {
+  const { status, current, funds } = input;
+  if (notLive(status))
+    return { dollars: null, skip: "not a live engagement; keeping the recorded value" };
+  if (funds === null) return { dollars: null, skip: "funds not determinable" };
+  if (same(current, funds)) return { dollars: null, skip: "unchanged" };
+  return { dollars: funds, skip: null };
+}
 export interface AttributedCampaign {
   id: string;
   accountId: string;
@@ -227,6 +247,8 @@ export function planSpendRow(input: {
 
 export interface DatePlan {
   date: string | null;
+  /** Blank an existing value: a live row we can no longer project must not keep a stale date. */
+  clear: boolean;
   skip: string | null;
 }
 
@@ -242,10 +264,13 @@ export function planEndDate(input: {
   reason: string | null;
 }): DatePlan {
   const { status, current, projected, reason } = input;
-  if (notLive(status)) return { date: null, skip: "not a live engagement" };
-  if (projected === null) return { date: null, skip: reason ?? "not forecastable" };
-  if (current === projected) return { date: null, skip: "unchanged" };
-  return { date: projected, skip: null };
+  if (notLive(status)) return { date: null, clear: false, skip: "not a live engagement" };
+  if (projected === null)
+    // A live row whose projection has become unsupportable gets its date blanked rather than left
+    // showing a figure nothing stands behind any more.
+    return { date: null, clear: current !== null, skip: reason ?? "not forecastable" };
+  if (current === projected) return { date: null, clear: false, skip: "unchanged" };
+  return { date: projected, clear: false, skip: null };
 }
 
 export interface NotionBudgetRow {
@@ -263,6 +288,11 @@ export interface NotionBudgetRow {
   spendCurrent: number | null;
   spendWritten: number | null;
   spendSkip: string | null;
+  fundsCurrent: number | null;
+  fundsWritten: number | null;
+  fundsSkip: string | null;
+  /** spend_cap - amount_spent across the accounts this row can actually spend from. */
+  fundsRemaining: number | null;
   /** Campaigns attributed to this row, whatever their status — the pool spend is summed over. */
   assignedCampaigns: number;
   /** Inputs behind the projection, kept so a written date can be audited without re-running. */
@@ -275,6 +305,8 @@ export interface NotionBudgetRow {
   /** The date the projection produced, even when no column existed to write it to (dry runs). */
   endProposed: string | null;
   endWritten: string | null;
+  /** True when a stale date was blanked because the row can no longer be projected. */
+  endCleared: boolean;
   endSkip: string | null;
 }
 
@@ -354,6 +386,7 @@ interface BoardRow {
   status: string | null;
   budgetCurrent: number | null;
   spendCurrent: number | null;
+  fundsCurrent: number | null;
   endCurrent: string | null;
   accountIds: string[];
   /** The row's OWN engagement budget and start date, straight off the board. */
@@ -494,6 +527,7 @@ export async function syncNotionDailyBudgets(
 
   const currencyOf = new Map(accountRows.map((a) => [a.id, a.currency]));
   const deliverable = new Set(accountRows.filter((a) => canDeliver(a)).map((a) => a.id));
+  const accountById = new Map(accountRows.map((a) => [a.id, a]));
   const spendByCampaign = new Map(spendRows.map((r) => [r.entityId, Number(r.spend ?? 0)]));
 
   const byAccount = new Map<string, AttributedCampaign[]>();
@@ -572,6 +606,17 @@ export async function syncNotionDailyBudgets(
       opts.dryRun ?? false,
     );
     if (spendCol?.error) result.warning = spendCol.error;
+    const fundsCol = await ensureColumn(
+      notion,
+      dsId,
+      props,
+      FUNDS_COLUMN,
+      AUTO_FUNDS_COLUMN,
+      "number",
+      result.columnsTouched,
+      opts.dryRun ?? false,
+    );
+    if (fundsCol?.error) result.warning = fundsCol.error;
     const endCol = await ensureColumn(
       notion,
       dsId,
@@ -598,6 +643,7 @@ export async function syncNotionDailyBudgets(
         status: parsed.status,
         budgetCurrent: numberCell(page, budgetCol.column.id),
         spendCurrent: spendCol ? numberCell(page, spendCol.column.id) : null,
+        fundsCurrent: fundsCol ? numberCell(page, fundsCol.column.id) : null,
         endCurrent: endCol ? dateCell(page, endCol.column.id) : null,
         // The row's own contracted budget and engagement start — never the clubbed client's, so a
         // client with several engagements projects each one from its own numbers.
@@ -618,15 +664,27 @@ export async function syncNotionDailyBudgets(
       }
     }
 
+    // An account listed by two DIFFERENT live rows cannot have its balance attributed to either:
+    // campaign attribution can split delivery, but it cannot split a prepaid balance. Three accounts
+    // on this board are currently claimed twice, which would double-count the same money.
+    const liveClaims = new Map<string, number>();
+    for (const rs of byClient.values())
+      for (const r of rs)
+        if (!notLive(r.status))
+          for (const a of new Set(r.accountIds)) liveClaims.set(a, (liveClaims.get(a) ?? 0) + 1);
+    const sharedAccounts = new Set([...liveClaims].filter(([, n]) => n > 1).map(([a]) => a));
+
     interface RowWork {
       row: BoardRow;
       sum: DailyBudgetSum | null;
       budget: RowPlan;
       spend: RowPlan;
+      funds: RowPlan;
       end: DatePlan;
       assigned: number;
       spentSinceStart: number | null;
       dailyPace: number | null;
+      fundsRemaining: number | null;
       daysRemaining: number | null;
     }
     const work: RowWork[] = [];
@@ -637,10 +695,12 @@ export async function syncNotionDailyBudgets(
         sum: null,
         budget: { dollars: null, skip: noMapping },
         spend: { dollars: null, skip: noMapping },
-        end: { date: null, skip: noMapping },
+        funds: { dollars: null, skip: noMapping },
+        end: { date: null, clear: false, skip: noMapping },
         assigned: 0,
         spentSinceStart: null,
         dailyPace: null,
+        fundsRemaining: null,
         daysRemaining: null,
       });
     }
@@ -699,10 +759,12 @@ export async function syncNotionDailyBudgets(
             sum: null,
             budget: planRow({ status: row.status, current: row.budgetCurrent, sum: null }),
             spend: planSpendRow({ status: row.status, current: row.spendCurrent, spend: null }),
-            end: { date: null, skip: "not a live engagement" },
+            funds: planFundsRow({ status: row.status, current: row.fundsCurrent, funds: null }),
+            end: { date: null, clear: false, skip: "not a live engagement" },
             assigned: 0,
             spentSinceStart: null,
             dailyPace: null,
+            fundsRemaining: null,
             daysRemaining: null,
           });
           continue;
@@ -735,39 +797,75 @@ export async function syncNotionDailyBudgets(
         // ad accounts carry earlier engagements too — and so would an unclamped pace window.
         let spentSinceStart: number | null = null;
         let dailyPace: number | null = null;
+        let fundsRemaining: number | null = null;
         let end: DatePlan;
         const pw = paceWindow({ startDate: row.startDate, until });
+
+        // Money left is what is FUNDED into the ad accounts, not what was contracted. Notion's
+        // `Budget ($)` records the contract and is not updated when an account is topped up:
+        // betonline.ag showed $1,131 left against its contract while the account it had just been
+        // rotated onto held $6,678 of real, spendable funds. `spend_cap − amount_spent` is ground
+        // truth, synced hourly, and it is exactly what stops delivery when it hits zero.
+        const sharedHere = row.accountIds.filter((a) => sharedAccounts.has(a));
+        const funded = row.accountIds.flatMap((a) => {
+          if (sharedAccounts.has(a)) return [];
+          const acct = accountById.get(a);
+          return acct && canDeliver(acct) ? [acct] : [];
+        });
+        const uncapped = funded.some((a) => (a.spendCap ?? 0) <= 0);
+        // No attributable account means the figure is unknown, NOT zero: a row whose only accounts are
+        // shared with another live engagement does have money, it just cannot be claimed here.
+        if (!uncapped && funded.length > 0)
+          fundsRemaining =
+            Math.round(funded.reduce((n, a) => n + ((a.spendCap ?? 0) - (a.amountSpent ?? 0)), 0)) /
+            100;
+
         if (skip) {
-          end = { date: null, skip };
-        } else if (row.notionBudget == null) {
-          end = { date: null, skip: "no Budget ($) on this row" };
-        } else if (!row.startDate) {
-          end = { date: null, skip: "no start date on this row" };
+          end = { date: null, clear: false, skip };
+        } else if (uncapped) {
+          end = {
+            date: null,
+            clear: false,
+            skip: "an account has no spend cap, so funds are unbounded",
+          };
+        } else if (funded.length === 0 && sharedHere.length > 0) {
+          end = {
+            date: null,
+            clear: false,
+            skip: `funds shared with another live engagement (${sharedHere.length} account(s))`,
+          };
+        } else if (funded.length === 0) {
+          end = {
+            date: null,
+            clear: false,
+            skip: "no account on this row can spend (disabled or unfunded)",
+          };
         } else if (!pw) {
-          end = { date: null, skip: `engagement younger than ${MIN_PACE_DAYS} complete days` };
+          end = {
+            date: null,
+            clear: false,
+            skip: `engagement younger than ${MIN_PACE_DAYS} complete days`,
+          };
         } else {
-          // Account rotation is the trap here: an engagement's money was spent on whichever accounts
-          // it used over time, but the board row only lists the CURRENT ones. betonline.ag was moved
-          // onto a fresh empty account mid-engagement, which would make spent-to-date read $0 against
-          // a $10,800 budget instead of the true $1,131 remaining. So when the client has exactly one
-          // live row, spend is summed over the client's whole effective account set (still filtered by
-          // the cross-client whitelist). With several live rows the row's own accounts are the only
-          // safe scope, since history cannot be apportioned between sibling brands.
-          const spendAccounts = liveRowCount === 1 ? ctx.effective : row.accountIds;
-          const ids = spendAccounts.flatMap((a) =>
+          // Pace must come from the engagement's own recent spend, which may sit on accounts it has
+          // since been rotated OFF — a freshly funded account has no history of its own. When the
+          // client has one live row the whole effective set is safe to average over; with several,
+          // history cannot be apportioned between sibling brands.
+          const paceAccounts = liveRowCount === 1 ? ctx.effective : row.accountIds;
+          const ids = paceAccounts.flatMap((a) =>
             (byAccount.get(a) ?? [])
               .filter((c) => !ctx.owned || ctx.owned.has(c.id))
               .map((c) => c.id),
           );
           const [spentTotal, paceTotal] = await Promise.all([
-            spendOf(ids, row.startDate, until),
+            row.startDate ? spendOf(ids, row.startDate, until) : Promise.resolve(0),
             spendOf(ids, pw.from, until),
           ]);
-          spentSinceStart = spentTotal;
+          spentSinceStart = row.startDate ? spentTotal : null;
           dailyPace = paceTotal / pw.days;
           const f = forecastBudgetEnd({
-            total: row.notionBudget,
-            spent: spentSinceStart,
+            total: fundsRemaining,
+            spent: 0,
             dailyPace,
             today,
           });
@@ -782,14 +880,24 @@ export async function syncNotionDailyBudgets(
             sum,
             budget: planRow({ status: row.status, current: row.budgetCurrent, sum }),
             spend: planSpendRow({ status: row.status, current: row.spendCurrent, spend }),
+            funds: planFundsRow({
+              status: row.status,
+              current: row.fundsCurrent,
+              funds: fundsRemaining,
+            }),
             end,
             assigned: mine.length,
             spentSinceStart,
             dailyPace,
+            fundsRemaining,
             daysRemaining: f.daysRemaining,
           });
           continue;
         }
+        // Every no-projection path above bypassed planEndDate, so apply its clearing rule here too:
+        // a live row must not keep a date the current basis cannot support.
+        if (end.date === null && !end.clear && !notLive(row.status) && row.endCurrent !== null)
+          end = { ...end, clear: true };
         work.push({
           row,
           sum,
@@ -799,17 +907,23 @@ export async function syncNotionDailyBudgets(
           spend: skip
             ? { dollars: null, skip }
             : planSpendRow({ status: row.status, current: row.spendCurrent, spend }),
+          funds: planFundsRow({
+            status: row.status,
+            current: row.fundsCurrent,
+            funds: fundsRemaining,
+          }),
           end,
           assigned: mine.length,
           spentSinceStart,
           dailyPace,
+          fundsRemaining,
           daysRemaining: null,
         });
       }
     }
 
     for (const w of work) {
-      const { row, sum, budget, spend, end } = w;
+      const { row, sum, budget, spend, funds, end } = w;
       result.rows += 1;
       const detail: NotionBudgetRow = {
         pageId: row.pageId,
@@ -824,6 +938,10 @@ export async function syncNotionDailyBudgets(
         spendCurrent: row.spendCurrent,
         spendWritten: null,
         spendSkip: spend.skip,
+        fundsCurrent: row.fundsCurrent,
+        fundsWritten: null,
+        fundsSkip: funds.skip,
+        fundsRemaining: w.fundsRemaining,
         assignedCampaigns: w.assigned,
         notionBudget: row.notionBudget,
         startDate: row.startDate,
@@ -833,11 +951,13 @@ export async function syncNotionDailyBudgets(
         endCurrent: row.endCurrent,
         endProposed: end.date,
         endWritten: null,
+        endCleared: false,
         endSkip: end.skip,
       };
       for (const [plan, column, key] of [
         [budget, budgetCol.column, "budgetWritten"],
         [spend, spendCol?.column, "spendWritten"],
+        [funds, fundsCol?.column, "fundsWritten"],
       ] as const) {
         if (plan.dollars === null || !column) {
           if (plan.skip === "unchanged") result.unchanged += 1;
@@ -851,12 +971,29 @@ export async function syncNotionDailyBudgets(
         detail[key] = plan.dollars;
         result.updated += 1;
       }
-      if (end.date !== null && endCol) {
+      if (
+        funds.dollars === null &&
+        fundsCol &&
+        !notLive(row.status) &&
+        row.fundsCurrent !== null &&
+        funds.skip === "funds not determinable"
+      ) {
         if (!opts.dryRun) {
-          await notion.setPageValue(row.pageId, endCol.column.id, { date: { start: end.date } });
+          await notion.setPageValue(row.pageId, fundsCol.column.id, { number: null });
+          await sleep(WRITE_GAP_MS);
+        }
+        detail.fundsSkip = "cleared: funds not attributable to this row";
+        result.updated += 1;
+      }
+      if ((end.date !== null || end.clear) && endCol) {
+        if (!opts.dryRun) {
+          await notion.setPageValue(row.pageId, endCol.column.id, {
+            date: end.date === null ? null : { start: end.date },
+          });
           await sleep(WRITE_GAP_MS);
         }
         detail.endWritten = end.date;
+        detail.endCleared = end.clear;
         result.updated += 1;
       } else if (end.skip === "unchanged") result.unchanged += 1;
       else result.skipped += 1;
