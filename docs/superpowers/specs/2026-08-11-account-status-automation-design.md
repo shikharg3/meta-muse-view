@@ -7,9 +7,8 @@
 
 `Account Status` on the Notion campaigns board is written entirely by hand. Code only reads it:
 `parseCampaignRow` picks it up at `src/notion/parse.ts:104` and it lands on `clients.status` via
-`src/sync/jobs/clients.ts:60`. The only write-back path in the app is `runNotionBudget`, whose three
-`setPageValue` callsites (`src/sync/jobs/notion-budget.ts:988`, `:1002`, `:1010`) touch only the four
-`🤖` numeric/date columns.
+`src/sync/jobs/clients.ts:60`. The only write-back path in the app is `syncNotionDailyBudgets`, whose
+three `setPageValue` callsites touch only the four `🤖` numeric/date columns.
 
 That manual field is load-bearing twice over:
 
@@ -28,7 +27,7 @@ Meanwhile Meta already knows the delivery half of the answer, and nothing surfac
 |---|---|---|
 | 1 | The machine never overwrites a human-owned status value | Those rows are where the `CLAUDE.md` invariant already says machine writes must stop, because their ad accounts get recycled onto the next client |
 | 2 | A machine-only value covers "account active but cannot deliver" | Keeps machine and human value sets disjoint, so the value itself carries provenance and no bookkeeping is needed |
-| 3 | Strict all-or-nothing rungs; no partial thresholds | A status field holds a label, not a degree. Under-spend is already visible from `🤖 Avg Daily Spend 7d ($)` against `🤖 Daily Budget ($)` |
+| 3 | Strict all-or-nothing rungs; no partial thresholds | A status field holds a label, not a degree. Under-spend is already visible from `🤖 Avg Daily Spend 7d ($)` against `🤖 Daily Budget ($)`, which is the engagement's *target* daily spend |
 | 4 | Manual override lives in Postgres with a dashboard UI | Follows the existing `campaignClientOverrides` convention, and gives `setBy` / `createdAt` provenance |
 
 ## The ownership model
@@ -150,17 +149,24 @@ pins the order so the change is deliberate and cannot drift.
 
 ## Write path
 
-Host: `runNotionBudget` (`src/sync/jobs/notion-budget.ts`). It already resolves per-row accounts,
-client context, campaign attribution, column lookup, `dryRun`, and write pacing. A separate job would
-duplicate all of it.
+Host: `syncNotionDailyBudgets` (`src/sync/jobs/notion-budget.ts:546`). It already resolves per-row
+accounts, client context, campaign attribution, column lookup, `dryRun`, and write pacing. A separate
+job would duplicate all of it.
 
 The ladder lives in a **new pure module** taking already-fetched rows and returning a status per
 page — no I/O, unit-testable in the style of the existing `canDeliver` tests, and it keeps the
 1,100-line job from growing much.
 
-- **One new batched query:** ads joined to ad sets (`adSets.id = ads.adSetId`) filtered to the
-  attributed campaign ids, selecting `effectiveStatus` at both levels. Ads carry no `campaignId`, so
-  the join goes through `ad_sets`. One query per cycle for all rows, never per row.
+- **Reuses structures the job already builds.** `AttributedCampaign` already carries `active`
+  (`effectiveStatus === "ACTIVE"`) and `deliverable` (from `canDeliver()`), computed per campaign at
+  `notion-budget.ts:656-657`, and the job already resolves the campaigns belonging to each row. Rungs
+  2 and 3's campaign half therefore need no new data at all.
+- **The existing ad-set and ad queries cannot be reused as-is.** Both are filtered to
+  `effectiveStatus = "ACTIVE"` (`:595` for ad sets, `:640` for ads) because they exist to sum budgets
+  and pick creatives. The ladder needs the *complement*: to tell "no ad set is active" apart from "no
+  ad set has synced" (rung 3 vs 3b), and to test whether every ad is `DISAPPROVED`. So each query is
+  widened to select `effectiveStatus` and filter in memory, rather than a second pair of queries
+  being added. Ads carry no `campaignId`, so the ad join continues through `ad_sets`.
 - **Column resolution:** `Account Status` is found by name with `resolvePropertyKey`, which already
   tolerates case, spacing and emoji drift. It is deliberately **not** passed through `ensureColumn`,
   so it is never renamed to a `🤖` name — that marker means "machine-written, do not hand-edit",
@@ -227,6 +233,14 @@ Out of scope, deliberately: the blocked-spend quantity (roadmap idea 29), Notion
 - A test pinning `STATUS_PRIORITY` order, and a `LIVE_STATUSES` membership test asserting
   `On Boarding` and `Budget Finished - Top Up` are retained.
 - `bunx tsc --noEmit` and `bun run lint` clean.
-- A real `runNotionBudget({ dryRun: true })` against the live board, whose reported plan is read and
+- A real `syncNotionDailyBudgets(undefined, { dryRun: true })` against the live board, whose reported plan is read and
   sanity-checked before any write is enabled — the board is shared with the whole team, so the first
   real write happens only after the dry run looks right.
+
+---
+
+*Line references were taken against `feat/meta-integration` at the parent of the commit adding this
+document, and against an in-progress local refactor of `notion-budget.ts` that changes
+`🤖 Daily Budget ($)` from Meta's in-force daily budget to the engagement's target daily spend. The
+structural facts they support are stable; the numbers are a snapshot and symbol names are the
+reliable anchor.*
