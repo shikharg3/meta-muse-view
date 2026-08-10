@@ -15,6 +15,7 @@ import { accountStatus } from "@/server/agg";
 import { addDays } from "@/lib/range";
 import { effectiveAccountIds } from "./clients";
 import { forecastBudgetEnd, paceWindow, PACE_DAYS } from "@/lib/budget-forecast";
+import { clickDestinations, groupByLandingPage } from "@/lib/creative-links";
 
 /**
  * Maintain three auto-updated columns on the Notion campaigns board: the daily budget that can
@@ -53,12 +54,39 @@ export const BUDGET_COLUMN = "Daily Budget ($)";
 export const SPEND_COLUMN = "Avg Daily Spend 7d ($)";
 export const FUNDS_COLUMN = "Funds Remaining ($)";
 export const PROJECTED_END_COLUMN = "Projected End Date";
+export const DESTINATION_COLUMN = "Destination URL";
 /** Stamped onto every column name so the team can see the values are machine-written. */
 export const AUTO_MARKER = "🤖";
 export const AUTO_BUDGET_COLUMN = `${AUTO_MARKER} ${BUDGET_COLUMN}`;
 export const AUTO_SPEND_COLUMN = `${AUTO_MARKER} ${SPEND_COLUMN}`;
 export const AUTO_FUNDS_COLUMN = `${AUTO_MARKER} ${FUNDS_COLUMN}`;
 export const AUTO_PROJECTED_END_COLUMN = `${AUTO_MARKER} ${PROJECTED_END_COLUMN}`;
+export const AUTO_DESTINATION_COLUMN = `${AUTO_MARKER} ${DESTINATION_COLUMN}`;
+
+/** Notion rejects a rich_text value over 2000 characters. */
+const TEXT_CELL_LIMIT = 2000;
+
+/**
+ * The destinations for one row, as the cell text: one URL per line, most-spending first.
+ *
+ * Only what a click actually opens (see `clickDestinations`), de-duplicated to one entry per landing
+ * page so a tracker carrying per-ad utm parameters does not fill the cell with the same page twice.
+ * Over the cell limit the list is truncated with a count, never silently cut mid-URL.
+ */
+export function destinationCell(urls: string[]): string {
+  const lines: string[] = [];
+  for (const u of urls) {
+    const next = lines.length ? `${lines.join("\n")}\n${u}` : u;
+    if (next.length > TEXT_CELL_LIMIT) {
+      const note = `… +${urls.length - lines.length} more`;
+      while (lines.length && `${lines.join("\n")}\n${note}`.length > TEXT_CELL_LIMIT) lines.pop();
+      lines.push(note);
+      break;
+    }
+    lines.push(u);
+  }
+  return lines.join("\n");
+}
 
 /** Complete days averaged for the spend column. Today is excluded — it is partial until it syncs. */
 export const SPEND_WINDOW_DAYS = 7;
@@ -319,6 +347,10 @@ export interface NotionBudgetRow {
   /** The date the projection produced, even when no column existed to write it to (dry runs). */
   endProposed: string | null;
   endWritten: string | null;
+  /** Destination cell as it stood, what was written (null = untouched), and why when skipped. */
+  destCurrent: string;
+  destWritten: string | null;
+  destSkip: string | null;
   /** True when a stale date was blanked because the row can no longer be projected. */
   endCleared: boolean;
   endSkip: string | null;
@@ -385,6 +417,50 @@ function dateCell(page: NotionPage, id: string): string | null {
   return null;
 }
 
+export interface TextPlan {
+  /** Cell text to write, or null when nothing should be written. */
+  text: string | null;
+  skip: string | null;
+}
+
+/**
+ * The destination cell for one row: where its live ads actually send people.
+ *
+ * Non-live rows are never written (their ads are not running, and the recorded value is history).
+ * A live row with no live ads has its cell cleared, because a stale destination is worse than an
+ * empty one — it reads as "we are sending traffic here" when nothing is running.
+ */
+export function planDestinations(input: {
+  status: string | null;
+  current: string;
+  urls: string[];
+}): TextPlan {
+  const { status, current, urls } = input;
+  if (notLive(status)) return { text: null, skip: "not a live engagement" };
+  const text = destinationCell(urls);
+  if (!text) {
+    // Clearing beats leaving a stale page that reads as "traffic goes here" when nothing is running.
+    return current.trim()
+      ? { text: "", skip: null }
+      : { text: null, skip: "no live ads with a link" };
+  }
+  if (text === current.trim()) return { text: null, skip: "unchanged" };
+  return { text, skip: null };
+}
+
+/** Read a page's rich-text cell by column id, flattened to plain text. */
+function textCell(page: NotionPage, id: string): string {
+  for (const p of Object.values(page.properties ?? {})) {
+    if (propId(p) !== id) continue;
+    const parts = (p.rich_text ?? []) as { plain_text?: unknown }[];
+    return parts
+      .map((t) => (typeof t.plain_text === "string" ? t.plain_text : ""))
+      .join("")
+      .trim();
+  }
+  return "";
+}
+
 interface ClientCtx {
   id: string;
   pageIds: string[];
@@ -402,6 +478,7 @@ interface BoardRow {
   spendCurrent: number | null;
   fundsCurrent: number | null;
   endCurrent: string | null;
+  destCurrent: string;
   accountIds: string[];
   /** The row's OWN engagement budget and start date, straight off the board. */
   notionBudget: number | null;
@@ -415,7 +492,7 @@ async function ensureColumn(
   props: Record<string, NotionPropSchema>,
   plainName: string,
   markedName: string,
-  kind: "number" | "date",
+  kind: "number" | "date" | "rich_text",
   touched: string[],
   dryRun: boolean,
 ): Promise<{ column: NotionPropSchema; error: string | null } | null> {
@@ -428,7 +505,11 @@ async function ensureColumn(
     const created = await notion.createProperty(
       dsId,
       markedName,
-      kind === "number" ? { number: { format: "dollar" } } : { date: {} },
+      kind === "number"
+        ? { number: { format: "dollar" } }
+        : kind === "date"
+          ? { date: {} }
+          : { rich_text: {} },
       kind === "number" ? { number: {} } : undefined,
     );
     if (!created) return null;
@@ -498,46 +579,68 @@ export async function syncNotionDailyBudgets(
     return Number(r?.s ?? 0);
   };
 
-  const [campaignRows, adSetRows, accountRows, clientRows, spendRows] = await Promise.all([
-    db
-      .select({
-        id: schema.campaigns.id,
-        accountId: schema.campaigns.accountId,
-        name: schema.campaigns.name,
-        dailyBudget: schema.campaigns.dailyBudget,
-        lifetimeBudget: schema.campaigns.lifetimeBudget,
-        effectiveStatus: schema.campaigns.effectiveStatus,
-      })
-      .from(schema.campaigns),
-    db
-      .select({ campaignId: schema.adSets.campaignId, dailyBudget: schema.adSets.dailyBudget })
-      .from(schema.adSets)
-      .where(eq(schema.adSets.effectiveStatus, "ACTIVE")),
-    db
-      .select({
-        id: schema.accounts.id,
-        currency: schema.accounts.currency,
-        status: schema.accounts.status,
-        spendCap: schema.accounts.spendCap,
-        amountSpent: schema.accounts.amountSpent,
-      })
-      .from(schema.accounts),
-    db.select().from(schema.clients).where(isNull(schema.clients.removedAt)),
-    db
-      .select({
-        entityId: schema.insightsDaily.entityId,
-        spend: sql<number>`sum(${schema.insightsDaily.spend})`,
-      })
-      .from(schema.insightsDaily)
-      .where(
-        and(
-          eq(schema.insightsDaily.level, "campaign"),
-          gte(schema.insightsDaily.date, since),
-          lte(schema.insightsDaily.date, until),
-        ),
-      )
-      .groupBy(schema.insightsDaily.entityId),
-  ]);
+  const [campaignRows, adSetRows, accountRows, clientRows, spendRows, adLinkRows] =
+    await Promise.all([
+      db
+        .select({
+          id: schema.campaigns.id,
+          accountId: schema.campaigns.accountId,
+          name: schema.campaigns.name,
+          dailyBudget: schema.campaigns.dailyBudget,
+          lifetimeBudget: schema.campaigns.lifetimeBudget,
+          effectiveStatus: schema.campaigns.effectiveStatus,
+        })
+        .from(schema.campaigns),
+      db
+        .select({ campaignId: schema.adSets.campaignId, dailyBudget: schema.adSets.dailyBudget })
+        .from(schema.adSets)
+        .where(eq(schema.adSets.effectiveStatus, "ACTIVE")),
+      db
+        .select({
+          id: schema.accounts.id,
+          currency: schema.accounts.currency,
+          status: schema.accounts.status,
+          spendCap: schema.accounts.spendCap,
+          amountSpent: schema.accounts.amountSpent,
+        })
+        .from(schema.accounts),
+      db.select().from(schema.clients).where(isNull(schema.clients.removedAt)),
+      db
+        .select({
+          entityId: schema.insightsDaily.entityId,
+          spend: sql<number>`sum(${schema.insightsDaily.spend})`,
+        })
+        .from(schema.insightsDaily)
+        .where(
+          and(
+            eq(schema.insightsDaily.level, "campaign"),
+            gte(schema.insightsDaily.date, since),
+            lte(schema.insightsDaily.date, until),
+          ),
+        )
+        .groupBy(schema.insightsDaily.entityId),
+      // ACTIVE ads only: a paused ad's destination is not a page anyone is being sent to. Meta's
+      // effective_status already folds in the parent ad set and campaign, so an ACTIVE ad is live.
+      db
+        .select({
+          campaignId: schema.adSets.campaignId,
+          spend: schema.insightsDaily.spend,
+          objectStorySpec: schema.adCreatives.objectStorySpec,
+          assetFeedSpec: schema.adCreatives.assetFeedSpec,
+        })
+        .from(schema.ads)
+        .innerJoin(schema.adSets, eq(schema.adSets.id, schema.ads.adSetId))
+        .innerJoin(schema.adCreatives, eq(schema.adCreatives.id, schema.ads.creativeId))
+        .leftJoin(
+          schema.insightsDaily,
+          and(
+            eq(schema.insightsDaily.level, "ad"),
+            eq(schema.insightsDaily.entityId, schema.ads.id),
+            gte(schema.insightsDaily.date, since),
+          ),
+        )
+        .where(eq(schema.ads.effectiveStatus, "ACTIVE")),
+    ]);
 
   const currencyOf = new Map(accountRows.map((a) => [a.id, a.currency]));
   const deliverable = new Set(accountRows.filter((a) => canDeliver(a)).map((a) => a.id));
@@ -558,6 +661,18 @@ export async function syncNotionDailyBudgets(
     const list = byAccount.get(c.accountId);
     if (list) list.push(campaign);
     else byAccount.set(c.accountId, [campaign]);
+  }
+
+  // campaign -> its live ads' click destinations, with the recent spend behind each so a row's cell
+  // leads with the page actually receiving the traffic.
+  const destSpendByCampaign = new Map<string, Map<string, number>>();
+  for (const r of adLinkRows) {
+    const urls = clickDestinations(r);
+    if (urls.length === 0) continue;
+    let byUrl = destSpendByCampaign.get(r.campaignId);
+    if (!byUrl) destSpendByCampaign.set(r.campaignId, (byUrl = new Map()));
+    // An ad rotating several destinations gives no per-URL split, so its spend counts for each.
+    for (const u of urls) byUrl.set(u, (byUrl.get(u) ?? 0) + Number(r.spend ?? 0));
   }
 
   // Total daily draw on each account by EVERY campaign spending from it, whoever owns them. A prepaid
@@ -649,6 +764,17 @@ export async function syncNotionDailyBudgets(
       opts.dryRun ?? false,
     );
     if (endCol?.error) result.warning = endCol.error;
+    const destCol = await ensureColumn(
+      notion,
+      dsId,
+      props,
+      DESTINATION_COLUMN,
+      AUTO_DESTINATION_COLUMN,
+      "rich_text",
+      result.columnsTouched,
+      opts.dryRun ?? false,
+    );
+    if (destCol?.error) result.warning = destCol.error;
 
     const pages = await notion.queryDataSource(dsId);
     const byClient = new Map<string, BoardRow[]>();
@@ -666,6 +792,7 @@ export async function syncNotionDailyBudgets(
         spendCurrent: spendCol ? numberCell(page, spendCol.column.id) : null,
         fundsCurrent: fundsCol ? numberCell(page, fundsCol.column.id) : null,
         endCurrent: endCol ? dateCell(page, endCol.column.id) : null,
+        destCurrent: destCol ? textCell(page, destCol.column.id) : "",
         // The row's own contracted budget and engagement start — never the clubbed client's, so a
         // client with several engagements projects each one from its own numbers.
         notionBudget: parsed.budget,
@@ -687,6 +814,7 @@ export async function syncNotionDailyBudgets(
 
     interface RowWork {
       row: BoardRow;
+      dest: TextPlan;
       sum: DailyBudgetSum | null;
       budget: RowPlan;
       spend: RowPlan;
@@ -703,6 +831,7 @@ export async function syncNotionDailyBudgets(
     for (const row of orphans) {
       work.push({
         row,
+        dest: { text: null, skip: noMapping },
         sum: null,
         budget: { dollars: null, skip: noMapping },
         spend: { dollars: null, skip: noMapping },
@@ -767,6 +896,7 @@ export async function syncNotionDailyBudgets(
         if (!isLive.get(row.pageId)) {
           work.push({
             row,
+            dest: { text: null, skip: "not a live engagement" },
             sum: null,
             budget: planRow({ status: row.status, current: row.budgetCurrent, sum: null }),
             spend: planSpendRow({ status: row.status, current: row.spendCurrent, spend: null }),
@@ -781,6 +911,24 @@ export async function syncNotionDailyBudgets(
           continue;
         }
         const mine = assigned.get(row.pageId) ?? [];
+        // Destinations come from the row's OWN attributed campaigns, so a shared account never leaks
+        // another engagement's landing page onto this row. Ranked by the spend behind each page.
+        const destSpend = new Map<string, number>();
+        for (const c of mine) {
+          if (!c.active) continue;
+          for (const [u, sp] of destSpendByCampaign.get(c.id) ?? [])
+            destSpend.set(u, (destSpend.get(u) ?? 0) + sp);
+        }
+        const dest = planDestinations({
+          status: row.status,
+          current: row.destCurrent,
+          // The PAGE, not the tracker string: a creative's URL carries unresolved Meta macros
+          // ({{campaign.name}}, {user_id}) substituted at click time, so the raw query is not what
+          // anyone lands on. Distinct pages still read as distinct lines.
+          urls: groupByLandingPage([...destSpend].sort((a, b) => b[1] - a[1]).map(([u]) => u)).map(
+            (g) => g.page,
+          ),
+        });
         const synced = row.accountIds.filter((a) => currencyOf.has(a));
         let sum: DailyBudgetSum | null = null;
         let spend: number | null = null;
@@ -897,6 +1045,7 @@ export async function syncNotionDailyBudgets(
           });
           work.push({
             row,
+            dest,
             sum,
             budget: planRow({ status: row.status, current: row.budgetCurrent, sum }),
             spend: planSpendRow({ status: row.status, current: row.spendCurrent, spend }),
@@ -920,6 +1069,7 @@ export async function syncNotionDailyBudgets(
           end = { ...end, clear: true };
         work.push({
           row,
+          dest,
           sum,
           budget: skip
             ? { dollars: null, skip }
@@ -943,7 +1093,7 @@ export async function syncNotionDailyBudgets(
     }
 
     for (const w of work) {
-      const { row, sum, budget, spend, funds, end } = w;
+      const { row, sum, budget, spend, funds, end, dest } = w;
       result.rows += 1;
       const detail: NotionBudgetRow = {
         pageId: row.pageId,
@@ -973,6 +1123,9 @@ export async function syncNotionDailyBudgets(
         endWritten: null,
         endCleared: false,
         endSkip: end.skip,
+        destCurrent: row.destCurrent,
+        destWritten: null,
+        destSkip: dest.skip,
       };
       for (const [plan, column, key] of [
         [budget, budgetCol.column, "budgetWritten"],
@@ -1016,6 +1169,17 @@ export async function syncNotionDailyBudgets(
         detail.endCleared = end.clear;
         result.updated += 1;
       } else if (end.skip === "unchanged") result.unchanged += 1;
+      else result.skipped += 1;
+      if (dest.text !== null && destCol) {
+        if (!opts.dryRun) {
+          await notion.setPageValue(row.pageId, destCol.column.id, {
+            rich_text: dest.text ? [{ type: "text", text: { content: dest.text } }] : [],
+          });
+          await sleep(WRITE_GAP_MS);
+        }
+        detail.destWritten = dest.text;
+        result.updated += 1;
+      } else if (dest.skip === "unchanged") result.unchanged += 1;
       else result.skipped += 1;
       result.details.push(detail);
     }

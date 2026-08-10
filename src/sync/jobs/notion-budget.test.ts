@@ -6,6 +6,9 @@ import {
   planSpendRow,
   planEndDate,
   dailyRateSkip,
+  destinationCell,
+  planDestinations,
+  AUTO_DESTINATION_COLUMN,
   canDeliver,
   avgDailySpend,
   AUTO_BUDGET_COLUMN,
@@ -283,4 +286,57 @@ test("a row with no daily rate says which case it is, never a bare blank", () =>
   expect(dailyRateSkip({ ...base, campaigns: 4 })).toBe("active campaigns carry no daily budget");
   // Precedence: a lifetime budget explains the missing rate better than a blocked account does.
   expect(dailyRateSkip({ ...base, lifetimeOnly: 1, blocked: 1 })).toContain("lifetime budget");
+});
+
+test("the destination cell lists one page per line, most-spending first", () => {
+  expect(destinationCell(["https://a.example/1", "https://b.example/2"])).toBe(
+    "https://a.example/1\nhttps://b.example/2",
+  );
+  expect(destinationCell([])).toBe("");
+});
+
+test("an over-long destination list is truncated with a count, never mid-URL", () => {
+  const many = Array.from({ length: 60 }, (_, i) => `https://example.com/${"p".repeat(40)}/${i}`);
+  const cell = destinationCell(many);
+  expect(cell.length).toBeLessThanOrEqual(2000);
+  expect(cell).toContain("more");
+  // Every line except the trailing note is a whole URL.
+  for (const line of cell.split("\n").slice(0, -1)) expect(many).toContain(line);
+});
+
+test("destinations are written for live rows and cleared when nothing is running", () => {
+  const live = { status: "Live", current: "" };
+  expect(planDestinations({ ...live, urls: ["https://a.example/x"] })).toEqual({
+    text: "https://a.example/x",
+    skip: null,
+  });
+  // Already correct: no write, so the hourly pass is idempotent.
+  expect(
+    planDestinations({
+      status: "Live",
+      current: "https://a.example/x",
+      urls: ["https://a.example/x"],
+    }),
+  ).toEqual({ text: null, skip: "unchanged" });
+  // Live row, nothing running: a stale page reads as "traffic goes here", so it is cleared.
+  expect(planDestinations({ status: "Live", current: "https://old.example/y", urls: [] })).toEqual({
+    text: "",
+    skip: null,
+  });
+  // Nothing running and nothing recorded: leave it alone.
+  expect(planDestinations({ ...live, urls: [] })).toEqual({
+    text: null,
+    skip: "no live ads with a link",
+  });
+});
+
+test("a finished engagement's destinations are never touched", () => {
+  for (const status of ["Full Budget Finished", "Paused", "Not started"])
+    expect(
+      planDestinations({ status, current: "https://a.example/x", urls: ["https://b.example/z"] }),
+    ).toEqual({ text: null, skip: "not a live engagement" });
+});
+
+test("the destination column carries the machine-written marker", () => {
+  expect(AUTO_DESTINATION_COLUMN).toBe("🤖 Destination URL");
 });

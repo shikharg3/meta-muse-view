@@ -29,6 +29,7 @@ import {
   recordServiceHealth,
 } from "./state";
 import { runOnce, type Jobs } from "./run";
+import { syncCreativeSpecs } from "./jobs/creative-specs";
 import { detectSpendDropAlerts, detectAccountAlerts, detectUnassignedSpendAlerts } from "./alerts";
 
 // First sync of an account backfills as much history as Meta retains; later cycles
@@ -371,6 +372,17 @@ export async function runCycle(opts: { full?: boolean } = {}): Promise<void> {
       if (u > 0) console.log(`[sync] alerts: ${u} new unassigned-spend alert(s)`);
     } catch (e) {
       console.error("[sync] unassigned spend alert detection failed:", e);
+    }
+    // Feeds the board's Destination URL column. Creatives are immutable, so this only ever fetches
+    // ids it has never seen — two fields, by id, for creatives behind ACTIVE ads.
+    try {
+      const cs = await syncCreativeSpecs(client);
+      if (cs.fetched || cs.failed)
+        console.log(
+          `[sync] creative specs: ${cs.fetched} fetched, ${cs.failed} unavailable (of ${cs.missing} missing)`,
+        );
+    } catch (e) {
+      console.error("[sync] creative spec sync failed:", e);
     }
     // Daily only: push the deliverable daily budget and trailing spend back onto the Notion board.
     // Runs after the refresh above so the campaign/ad-set/account rows it reads are current.
