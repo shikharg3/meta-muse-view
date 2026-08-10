@@ -15,8 +15,12 @@ import { disableReasonLabel } from "@/lib/format";
 import { brandTitles } from "@/notion/parse";
 import { currentUser, audit } from "@/server/fns/auth";
 import { isAdmin } from "@/lib/auth/users";
-import { clientCampaignScope } from "./campaign-attribution";
-import { attributeCampaign, brandVocab } from "@/lib/attribution";
+import {
+  clientCampaignScope,
+  ownedCampaignIds,
+  loadCampaignOwnership,
+  type CampaignRef,
+} from "./campaign-attribution";
 import { forecastBudgetEnd, PACE_DAYS } from "@/lib/budget-forecast";
 
 const num = (v: unknown): number => Number(v ?? 0);
@@ -50,6 +54,21 @@ export interface ClientAccountRow {
   amountSpent: number | null; // lifetime spend (account currency, minor units)
 }
 
+/**
+ * Spend on a shared account that no rule could attribute, kept out of every client's totals.
+ *
+ * Excluding it is right — counting it for all claimants was the bug — but it must stay visible, or a
+ * campaign silently belongs to nobody. Carries the enriched rows plus the candidate owners so it can
+ * be listed and assigned in place.
+ */
+export interface UnattributedCampaigns {
+  campaigns: Campaign[];
+  /** Total unassigned spend over the window. */
+  spend: number;
+  /** accountId -> the clients claiming that account, i.e. the candidate owners. */
+  candidates: Record<string, { id: string; name: string }[]>;
+}
+
 export interface ClientDetail {
   id: string;
   name: string;
@@ -60,8 +79,8 @@ export interface ClientDetail {
   /** All de-duplicated conversion/engagement events for this client over the window. */
   events: ClientEvent[];
   /** Campaigns on this client's SHARED ad accounts that no rule could assign, so they are counted for
-   *  nobody. Never silently drop spend: surface it so an override can settle the owner. */
-  unattributed: { count: number; spend: number; names: string[] };
+   *  nobody. Never silently drop spend: surface it so an operator can settle the owner. */
+  unattributed: UnattributedCampaigns;
   /** Engagement budget from Notion + spend against it (null total = not tracked), with a
    *  pace-based forecast of when the budget runs out. */
   budget: {
@@ -206,7 +225,7 @@ export async function fetchClientDetail(
       accounts: [],
       campaigns: [],
       events: [],
-      unattributed: { count: 0, spend: 0, names: [] },
+      unattributed: { campaigns: [], spend: 0, candidates: {} },
       budget: budgetOf(row, 0, 0, todayYmd()),
     };
   }
@@ -301,9 +320,17 @@ export async function fetchClientDetail(
   // Nested campaign→ad set→ad tree scoped to this client's accounts (drill-down), minus campaigns
   // on contested accounts that belong to the other client.
   const excluded = new Set(attribution.excludedCampaignIds);
-  const campaigns = (await fetchCampaigns(w, allAccountIds))
-    .filter((c) => !excluded.has(c.id))
-    .sort((a, b) => b.spend - a.spend);
+  const unowned = new Set(attribution.unattributedCampaignIds);
+  const enriched = (await fetchCampaigns(w, allAccountIds)).sort((a, b) => b.spend - a.spend);
+  const campaigns = enriched.filter((c) => !excluded.has(c.id));
+  // Same enriched rows, so the unassigned ones can be listed and assigned without a second query.
+  const unattributed: UnattributedCampaigns = {
+    campaigns: enriched.filter((c) => unowned.has(c.id)),
+    spend: 0,
+    candidates: attribution.claimantsByAccount,
+  };
+  unattributed.spend =
+    Math.round(unattributed.campaigns.reduce((n, c) => n + c.spend, 0) * 100) / 100;
   // Spend against the current engagement budget = spend since its start date, plus the recent burn
   // rate the end-date forecast is built from. Both use the same attribution-aware split: account-
   // level rows for accounts we own outright, campaign-level rows for contested ones.
@@ -341,30 +368,6 @@ export async function fetchClientDetail(
     return num(acctSpend[0]?.s) + num(campSpend[0]?.s);
   };
 
-  // Spend that belongs to nobody: campaigns on this client's shared accounts that neither names, the
-  // ACTIVE-account designation, nor an override could assign.
-  const unattributedSummary = { count: 0, spend: 0, names: [] as string[] };
-  if (attribution.unattributedCampaignIds.length) {
-    const rows = await db
-      .select({
-        name: schema.campaigns.name,
-        spend: sql<number>`coalesce(sum(${schema.insightsDaily.spend}),0)`,
-      })
-      .from(schema.campaigns)
-      .leftJoin(
-        schema.insightsDaily,
-        and(
-          eq(schema.insightsDaily.level, "campaign"),
-          eq(schema.insightsDaily.entityId, schema.campaigns.id),
-        ),
-      )
-      .where(inArray(schema.campaigns.id, attribution.unattributedCampaignIds))
-      .groupBy(schema.campaigns.id, schema.campaigns.name);
-    unattributedSummary.count = rows.length;
-    unattributedSummary.spend = rows.reduce((n, r) => n + num(r.spend), 0);
-    unattributedSummary.names = rows.map((r) => r.name);
-  }
-
   const today = todayYmd();
   const [budgetSpent, paceSpend] = await Promise.all([
     row.startDate ? spendBetween(String(row.startDate)) : Promise.resolve(0),
@@ -380,7 +383,7 @@ export async function fetchClientDetail(
     accounts,
     campaigns,
     events: canonicalEvents(insightRows),
-    unattributed: unattributedSummary,
+    unattributed,
     // Divide by the whole window, not by the days that happened to have rows: a day with no
     // insights row is a real zero-spend day and must pull the pace down.
     budget: budgetOf(row, budgetSpent, paceSpend / PACE_DAYS, today),
@@ -472,6 +475,10 @@ export async function fetchClientBudgets(clientId: string): Promise<CampaignBudg
   const row = await getClientRow(clientId);
   const ids = row ? effectiveAccountIds(row) : [];
   if (ids.length === 0) return [];
+  // Attribution-filtered like every other client-scoped figure: a shared account's other client must
+  // not appear in this client's pacing table (and an unassigned campaign belongs in neither).
+  const owned = await ownedCampaignIds(clientId, ids);
+  if (owned?.length === 0) return [];
   const camps = await db
     .select({
       id: schema.campaigns.id,
@@ -480,7 +487,7 @@ export async function fetchClientBudgets(clientId: string): Promise<CampaignBudg
       dailyBudget: schema.campaigns.dailyBudget,
     })
     .from(schema.campaigns)
-    .where(inArray(schema.campaigns.accountId, ids));
+    .where(owned ? inArray(schema.campaigns.id, owned) : inArray(schema.campaigns.accountId, ids));
   if (camps.length === 0) return [];
   const since = windowStart(7);
   const spend = await db
@@ -528,7 +535,13 @@ export async function fetchClientFilterOptions(): Promise<
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-/** A client's campaigns across its effective accounts — for the report campaign filter. */
+/**
+ * A client's campaigns across its effective accounts — for the report campaign filter.
+ *
+ * Attribution-filtered: on an account shared with another client the picker must not offer (and
+ * pre-select) the other client's campaigns, or the report builder shows names whose spend the report
+ * itself correctly refuses to count.
+ */
 export async function fetchClientCampaigns(
   clientId: string,
 ): Promise<{ id: string; name: string }[]> {
@@ -536,11 +549,17 @@ export async function fetchClientCampaigns(
   if (!row) return [];
   const accounts = effectiveAccountIds(row);
   if (accounts.length === 0) return [];
-  return db
+  const owned = await ownedCampaignIds(clientId, accounts);
+  const rows = await db
     .select({ id: schema.campaigns.id, name: schema.campaigns.name })
     .from(schema.campaigns)
-    .where(inArray(schema.campaigns.accountId, accounts))
+    .where(
+      owned
+        ? inArray(schema.campaigns.id, owned.length ? owned : [""])
+        : inArray(schema.campaigns.accountId, accounts),
+    )
     .orderBy(schema.campaigns.name);
+  return rows;
 }
 
 export interface ActiveCampaign {
@@ -622,24 +641,13 @@ export async function fetchActiveCampaigns(w: DateWindow): Promise<ActiveCampaig
   ]);
   // An account reused across clients over time is claimed by several current clients, so a campaign
   // must be attributed by NAME there — "first claimant wins" would credit it to the wrong client.
-  const liveClients = clientRows.filter((cl) => cl.removedAt == null);
-  const claimsByAccount = new Map<string, typeof liveClients>();
-  for (const cl of liveClients)
-    for (const a of effectiveAccountIds(cl)) {
-      const list = claimsByAccount.get(a);
-      if (list) list.push(cl);
-      else claimsByAccount.set(a, [cl]);
-    }
-  const clientForCampaign = (accountId: string, campaignName: string): string | null => {
-    const claimants = claimsByAccount.get(accountId) ?? [];
-    if (claimants.length === 0) return null;
-    if (claimants.length === 1) return claimants[0].name;
-    const ownerId = attributeCampaign(
-      campaignName,
-      claimants.map((cl) => brandVocab(cl.id, cl.name, brandTitles(cl.raw))),
-    );
-    // Ambiguous name -> fall back to the first claimant (previous behaviour) rather than blanking it.
-    return (ownerId ? claimants.find((cl) => cl.id === ownerId)?.name : null) ?? claimants[0].name;
+  // The one shared ownership ladder (override -> name -> sole ACTIVE claimant -> nobody). This used
+  // to fall back to the FIRST claimant of a contested account, which put another client's name on the
+  // campaign and ignored manual overrides entirely.
+  const ownership = await loadCampaignOwnership();
+  const clientForCampaign = (cp: CampaignRef): string | null => {
+    const ownerId = ownership.ownerOf(cp);
+    return ownerId ? ownership.nameOf(ownerId) : null;
   };
   const acctById = new Map(acctRows.map((a) => [a.id, a]));
   const clicksById = new Map<string, number>();
@@ -670,7 +678,7 @@ export async function fetchActiveCampaigns(w: DateWindow): Promise<ActiveCampaig
       accountStatus: status,
       accountDisableReason:
         status === "DISABLED" ? disableReasonLabel(acct?.disableReason ?? null) : null,
-      client: clientForCampaign(c.accountId, c.name),
+      client: clientForCampaign(c),
       status: c.status,
       spend: round2(c.spend),
       dailyAvgSpend: round2(c.spend / days),

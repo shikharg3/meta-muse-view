@@ -21,11 +21,14 @@ export function CampaignTable({
   campaigns,
   moveTargets,
   onMove,
+  movePlaceholder = "Move to client…",
 }: {
   campaigns: Campaign[];
   /** Clients a campaign can be re-attributed to (admin only; omit to hide the control). */
   moveTargets?: { id: string; name: string }[];
   onMove?: (campaignId: string, clientId: string | null) => void;
+  /** Prompt on the control — "Move to…" for an owned campaign, "Assign to…" for an unowned one. */
+  movePlaceholder?: string;
 }) {
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const [selected, setSelected] = useState<Selected>(null);
@@ -185,7 +188,7 @@ export function CampaignTable({
                                 title="Attribute this campaign to a different client"
                                 className="mt-1 h-6 rounded border border-border bg-background px-1.5 text-[10px] text-muted-foreground"
                               >
-                                <option value="">Move to client…</option>
+                                <option value="">{movePlaceholder}</option>
                                 <option value="__auto">Automatic (by name)</option>
                                 {(moveTargets ?? []).map((t) => (
                                   <option key={t.id} value={t.id}>

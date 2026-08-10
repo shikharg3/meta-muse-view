@@ -17,6 +17,9 @@ import { attributeCampaign, brandVocab, type BrandVocab } from "@/lib/attributio
 export interface ClientCampaignScope {
   /** This client's accounts that another current client also claims. */
   contestedAccountIds: string[];
+  /** For each contested account, every client claiming it — the candidate owners an operator picks
+   *  from when a campaign needs assigning by hand. */
+  claimantsByAccount: Record<string, { id: string; name: string }[]>;
   /** Campaigns on this client's accounts that belong to a DIFFERENT client. */
   excludedCampaignIds: string[];
   /** Accounts whose totals MUST come from campaign-level rows, because account-level rows can't be
@@ -33,12 +36,102 @@ export interface ClientCampaignScope {
 
 const EMPTY: ClientCampaignScope = {
   contestedAccountIds: [],
+  claimantsByAccount: {},
   excludedCampaignIds: [],
   splitAccountIds: [],
   extraAccountIds: [],
   unattributedCampaignIds: [],
   clean: true,
 };
+
+/** One campaign's identity, as every ownership caller has it to hand. */
+export interface CampaignRef {
+  id: string;
+  name: string;
+  accountId: string;
+}
+
+/** The ownership rule, loaded once and shared by every surface that must agree on it. */
+export interface CampaignOwnership {
+  /** Owning client id, or null when no rule could decide (a shared account nobody can claim). */
+  ownerOf: (cp: CampaignRef) => string | null;
+  /** Every current client claiming an account. Length > 1 = contested. */
+  claimantsOf: (accountId: string) => { id: string; name: string }[];
+  nameOf: (clientId: string) => string | null;
+  /** True when some override exists, so callers can skip work when nothing can move. */
+  hasOverrides: boolean;
+}
+
+/**
+ * Load the ownership ladder once.
+ *
+ * Every surface that names a campaign's client MUST go through this: totals, reports, the campaign
+ * list and the assistant's answers all have to agree, and they previously each had their own rule
+ * (one fell back to "the first claimant", which quietly attributed another client's spend).
+ *
+ * First match wins:
+ *   1. a manual override (operator correction),
+ *   2. brand-name attribution,
+ *   3. the single client that designates the account as its Notion "Active Account ID" — the others
+ *      merely list it under "Other ad accounts",
+ *   4. nobody.
+ */
+export async function loadCampaignOwnership(): Promise<CampaignOwnership> {
+  const [clients, overrideRows] = await Promise.all([
+    db.select().from(schema.clients).where(isNull(schema.clients.removedAt)),
+    db.select().from(schema.campaignClientOverrides),
+  ]);
+  return buildOwnership(clients, overrideRows);
+}
+
+type ClientRow = typeof schema.clients.$inferSelect;
+type OverrideRow = typeof schema.campaignClientOverrides.$inferSelect;
+
+function buildOwnership(clients: ClientRow[], overrideRows: OverrideRow[]): CampaignOwnership {
+  const overrideByCampaign = new Map(overrideRows.map((o) => [o.campaignId, o.clientId]));
+  const nameById = new Map(clients.map((c) => [c.id, c.name]));
+  // account -> every current client claiming it
+  const claims = new Map<string, string[]>();
+  // account -> the clients that designate it their ACTIVE account (not just an "other" account).
+  // On a contested account this is the tiebreaker names cannot provide.
+  const activeClaims = new Map<string, string[]>();
+  for (const c of clients) {
+    for (const aid of effectiveAccountIds(c)) {
+      const list = claims.get(aid);
+      if (list) list.push(c.id);
+      else claims.set(aid, [c.id]);
+    }
+    for (const aid of (c.notionActiveAccountIds as string[] | null) ?? []) {
+      const list = activeClaims.get(aid);
+      if (list) list.push(c.id);
+      else activeClaims.set(aid, [c.id]);
+    }
+  }
+  const vocabById = new Map<string, BrandVocab>(
+    clients.map((c) => [c.id, brandVocab(c.id, c.name, brandTitles(c.raw))]),
+  );
+  return {
+    hasOverrides: overrideRows.length > 0,
+    nameOf: (id) => nameById.get(id) ?? null,
+    claimantsOf: (accountId) =>
+      (claims.get(accountId) ?? []).map((id) => ({ id, name: nameById.get(id) ?? id })),
+    ownerOf: (cp) => {
+      const override = overrideByCampaign.get(cp.id);
+      if (override) return override;
+      const claimants = claims.get(cp.accountId) ?? [];
+      if (claimants.length <= 1) return claimants[0] ?? null;
+      const byName = attributeCampaign(
+        cp.name,
+        claimants.map((id) => vocabById.get(id)).filter((v): v is BrandVocab => v !== undefined),
+      );
+      if (byName) return byName;
+      // Names failed. If exactly one claimant designates this as its ACTIVE account and the rest
+      // only list it under "Other ad accounts", that is the board saying whose account it really is.
+      const active = (activeClaims.get(cp.accountId) ?? []).filter((id) => claimants.includes(id));
+      return active.length === 1 ? active[0] : null;
+    },
+  };
+}
 
 /**
  * Resolve which campaigns on (or moved into) `accountIds` belong to `clientId`.
@@ -59,33 +152,14 @@ export async function clientCampaignScope(
   clientId: string,
   accountIds: string[],
 ): Promise<ClientCampaignScope> {
-  const [clients, overrideRows] = await Promise.all([
-    db.select().from(schema.clients).where(isNull(schema.clients.removedAt)),
+  const [ownership, overrideRows] = await Promise.all([
+    loadCampaignOwnership(),
     db.select().from(schema.campaignClientOverrides),
   ]);
-  const overrideByCampaign = new Map(overrideRows.map((o) => [o.campaignId, o.clientId]));
-
-  // account -> every current client claiming it
-  const claims = new Map<string, string[]>();
-  // account -> the clients that designate it their ACTIVE account (not just an "other" account).
-  // On a contested account this is the tiebreaker names cannot provide.
-  const activeClaims = new Map<string, string[]>();
-  for (const c of clients) {
-    for (const aid of effectiveAccountIds(c)) {
-      const list = claims.get(aid);
-      if (list) list.push(c.id);
-      else claims.set(aid, [c.id]);
-    }
-    for (const aid of (c.notionActiveAccountIds as string[] | null) ?? []) {
-      const list = activeClaims.get(aid);
-      if (list) list.push(c.id);
-      else activeClaims.set(aid, [c.id]);
-    }
-  }
   const owned = new Set(accountIds);
-  const contestedAccountIds = accountIds.filter((aid) => (claims.get(aid)?.length ?? 0) > 1);
+  const contestedAccountIds = accountIds.filter((aid) => ownership.claimantsOf(aid).length > 1);
   const movedInIds = overrideRows.filter((o) => o.clientId === clientId).map((o) => o.campaignId);
-  const overriddenIds = [...overrideByCampaign.keys()];
+  const overriddenIds = overrideRows.map((o) => o.campaignId);
 
   // Nothing contested and no override touches this client -> plain account attribution is correct.
   if (contestedAccountIds.length === 0 && overrideRows.length === 0) return EMPTY;
@@ -108,24 +182,7 @@ export async function clientCampaignScope(
     .from(schema.campaigns)
     .where(candidateConds.length === 1 ? candidateConds[0] : or(...candidateConds));
 
-  const vocabById = new Map<string, BrandVocab>(
-    clients.map((c) => [c.id, brandVocab(c.id, c.name, brandTitles(c.raw))]),
-  );
-  const ownerOf = (cp: { id: string; name: string; accountId: string }): string | null => {
-    const override = overrideByCampaign.get(cp.id);
-    if (override) return override;
-    const claimants = claims.get(cp.accountId) ?? [];
-    if (claimants.length <= 1) return claimants[0] ?? null;
-    const byName = attributeCampaign(
-      cp.name,
-      claimants.map((id) => vocabById.get(id)).filter((v): v is BrandVocab => v !== undefined),
-    );
-    if (byName) return byName;
-    // Names failed. If exactly one claimant designates this as its ACTIVE account and the rest only
-    // list it under "Other ad accounts", that is the board saying whose account it really is.
-    const active = (activeClaims.get(cp.accountId) ?? []).filter((id) => claimants.includes(id));
-    return active.length === 1 ? active[0] : null;
-  };
+  const ownerOf = ownership.ownerOf;
 
   const excluded = new Set<string>();
   const unattributed = new Set<string>();
@@ -161,6 +218,9 @@ export async function clientCampaignScope(
 
   return {
     contestedAccountIds,
+    claimantsByAccount: Object.fromEntries(
+      contestedAccountIds.map((aid) => [aid, ownership.claimantsOf(aid)]),
+    ),
     excludedCampaignIds: [...excluded],
     splitAccountIds: [...splitAccounts],
     extraAccountIds: [...extraAccounts],

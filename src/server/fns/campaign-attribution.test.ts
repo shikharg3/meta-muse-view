@@ -1,7 +1,12 @@
 import { test, expect, beforeEach } from "bun:test";
 import { sql as dsql } from "drizzle-orm";
 import { db, schema } from "@/db/client";
-import { clientCampaignScope, ownedCampaignIds } from "./campaign-attribution";
+import {
+  clientCampaignScope,
+  ownedCampaignIds,
+  loadCampaignOwnership,
+} from "./campaign-attribution";
+import { fetchClientCampaigns } from "./clients";
 
 // One account claimed by TWO clients (the real "account reused for a later client" case), plus a
 // third client on its own account, used to test moving a campaign across accounts.
@@ -144,4 +149,59 @@ test("an uncontested account with no overrides needs no filtering", async () => 
   const third = await clientCampaignScope("thirdparty", ["act_other"]);
   expect(third.clean).toBe(true);
   expect(await ownedCampaignIds("thirdparty", ["act_other"])).toBeNull();
+});
+
+test("the report campaign picker offers only the campaigns a client owns", async () => {
+  // The picker used to list every campaign on the account, so it showed - and pre-selected - the
+  // other client's campaigns, while the report itself refused to count their spend.
+  const names = (await fetchClientCampaigns("sweatbet")).map((c) => c.name);
+  expect(names).toEqual(["SweatBet"]);
+  expect(names).not.toContain("ACR Bonus"); // the other client's
+  expect(names).not.toContain("Retargeting - Copy"); // nobody's
+
+  // An uncontested client keeps its full list.
+  expect((await fetchClientCampaigns("thirdparty")).map((c) => c.name)).toEqual(["Reels #3 Regs"]);
+});
+
+test("a client whose every campaign is unowned gets an empty picker, not the whole account", async () => {
+  await db.execute(dsql`delete from campaigns where id in ('c_sweat','c_acr')`);
+  expect(await fetchClientCampaigns("sweatbet")).toEqual([]);
+});
+
+test("the scope names the candidate owners of each contested account", async () => {
+  const { claimantsByAccount } = await clientCampaignScope("sweatbet", ["act_shared"]);
+  expect(claimantsByAccount["act_shared"].map((c) => c.name).sort()).toEqual([
+    "Sweatbet",
+    "acrpoker.eu",
+  ]);
+  // Only contested accounts carry candidates - an uncontested one needs no decision.
+  expect(Object.keys(claimantsByAccount)).toEqual(["act_shared"]);
+});
+
+test("the shared resolver honours overrides and never guesses a first claimant", async () => {
+  const vague = { id: "c_vague", name: "Retargeting - Copy", accountId: "act_shared" };
+  expect((await loadCampaignOwnership()).ownerOf(vague)).toBeNull();
+
+  await db
+    .insert(schema.campaignClientOverrides)
+    .values({ campaignId: "c_vague", clientId: "acrpoker-eu" });
+  const after = await loadCampaignOwnership();
+  expect(after.ownerOf(vague)).toBe("acrpoker-eu");
+  expect(after.nameOf("acrpoker-eu")).toBe("acrpoker.eu");
+});
+
+test("the ACTIVE-account column decides a contested account names cannot", async () => {
+  // Sweatbet designates the shared account as its Active Account ID; acrpoker.eu only lists it under
+  // "Other ad accounts". That is the board stating whose account it is.
+  await db.execute(
+    dsql`update clients set notion_active_account_ids = '["act_shared"]'::jsonb where id = 'sweatbet'`,
+  );
+  const own = await loadCampaignOwnership();
+  expect(own.ownerOf({ id: "c_vague", name: "Retargeting - Copy", accountId: "act_shared" })).toBe(
+    "sweatbet",
+  );
+  // ...and the campaign stops being unassigned for its owner.
+  const sweat = await clientCampaignScope("sweatbet", ["act_shared"]);
+  expect(sweat.unattributedCampaignIds).toEqual([]);
+  expect(sweat.excludedCampaignIds).toEqual(["c_acr"]);
 });

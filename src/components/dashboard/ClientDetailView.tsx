@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Plus, X } from "lucide-react";
+import { Plus, X, AlertTriangle } from "lucide-react";
 import { fmtCurrency, fmtPct, fmtCompact } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { addDays } from "@/lib/range";
@@ -71,6 +71,15 @@ export function ClientDetailView({
     () => detail.campaigns.filter((c) => status === "ALL" || c.status === status),
     [detail, status],
   );
+  // Candidate owners for the unassigned campaigns: every client claiming the shared account each one
+  // sits on — including THIS client, since it may well be the right answer.
+  const unassigned = detail.unattributed;
+  const assignTargets = useMemo(() => {
+    const by = new Map<string, string>();
+    for (const c of unassigned.campaigns)
+      for (const cand of unassigned.candidates[c.accountId] ?? []) by.set(cand.id, cand.name);
+    return [...by].map(([id, name]) => ({ id, name }));
+  }, [unassigned]);
 
   // "Expected end" is OUR forecast from recent pace; Notion's date is only what was planned, so a
   // projection landing well past it is a warning (overrun), not the headline number.
@@ -313,6 +322,35 @@ export function ClientDetailView({
           onMove={isAdmin ? onMoveCampaign : undefined}
         />
       </section>
+
+      {unassigned.campaigns.length > 0 && (
+        <section className="space-y-3">
+          <div className="rounded-xl border border-warning/40 bg-warning/5 px-5 py-4">
+            <h3 className="text-sm font-semibold flex items-center gap-2">
+              <AlertTriangle className="h-4 w-4 text-warning" />
+              Unassigned on shared accounts
+              <span className="text-muted-foreground font-normal">
+                ({unassigned.campaigns.length} · {fmtCurrency(unassigned.spend)})
+              </span>
+            </h3>
+            <p className="text-[11px] text-muted-foreground mt-1 max-w-3xl">
+              These campaigns run on ad accounts this client shares with another, and neither the
+              campaign name nor the Notion &ldquo;Active Account ID&rdquo; column says whose they
+              are. Their spend is <strong>excluded from every figure above</strong> rather than
+              counted twice&nbsp;
+              {isAdmin
+                ? "— assign each one to its real client to bring it back into the totals."
+                : "— an admin can assign them to the right client."}
+            </p>
+          </div>
+          <CampaignTable
+            campaigns={unassigned.campaigns}
+            moveTargets={isAdmin ? assignTargets : undefined}
+            onMove={isAdmin ? onMoveCampaign : undefined}
+            movePlaceholder="Assign to client…"
+          />
+        </section>
+      )}
 
       <section className="rounded-xl border border-border bg-card overflow-hidden">
         <div className="px-5 py-4 border-b border-border">
