@@ -5,7 +5,8 @@ import {
   planRow,
   planSpendRow,
   planEndDate,
-  dailyRateSkip,
+  targetDailyBudget,
+  TARGET_BUDGET_DAYS,
   destinationCell,
   planDestinations,
   AUTO_DESTINATION_COLUMN,
@@ -136,48 +137,42 @@ test("avgDailySpend averages over the window and rounds to cents", () => {
   expect(SPEND_WINDOW_DAYS).toBe(7);
 });
 
-test("planRow writes a changed figure and never rewrites an unchanged one", () => {
-  const sum = { dollars: 511.54, campaigns: 1, lifetimeOnly: 0, blocked: 0 };
-  expect(planRow({ status: "Live", current: 476, sum })).toEqual({ dollars: 511.54, skip: null });
-  expect(planRow({ status: "Live", current: 511.54, sum }).skip).toBe("unchanged");
-  expect(planRow({ status: "Live", current: 511.541, sum }).skip).toBe("unchanged");
-  expect(planRow({ status: "Live", current: null, sum }).dollars).toBe(511.54);
+test("the target daily budget is the contracted budget spread over a month", () => {
+  expect(TARGET_BUDGET_DAYS).toBe(30);
+  expect(targetDailyBudget(10800)).toBe(360);
+  expect(targetDailyBudget(6427)).toBe(214.23); // rounded to cents
+  // No contract, no target — and a zero or negative budget is not a target either.
+  expect(targetDailyBudget(null)).toBeNull();
+  expect(targetDailyBudget(0)).toBeNull();
+  expect(targetDailyBudget(-500)).toBeNull();
 });
 
-test("planRow zeroes a live row that stopped, but never touches a non-live engagement", () => {
-  const zero = { dollars: 0, campaigns: 0, lifetimeOnly: 0, blocked: 0 };
-  // Contract live, nothing able to deliver: 0 is the truth and a top-up signal.
-  expect(planRow({ status: "Live", current: 476, sum: zero }).dollars).toBe(0);
-  expect(planRow({ status: "Budget Finished - Top Up", current: 476, sum: zero }).dollars).toBe(0);
-  expect(planRow({ status: "On Boarding", current: 476, sum: zero }).dollars).toBe(0);
-  // Finished/paused/unstarted engagements keep what the team recorded: their old accounts get
-  // recycled onto the next client, so what runs there today is not this engagement's budget.
-  const running = { dollars: 7500, campaigns: 6, lifetimeOnly: 0, blocked: 0 };
+test("planRow writes a changed target and never rewrites an unchanged one", () => {
+  expect(planRow({ status: "Live", current: 476, target: 511.54 })).toEqual({
+    dollars: 511.54,
+    skip: null,
+  });
+  expect(planRow({ status: "Live", current: 511.54, target: 511.54 }).skip).toBe("unchanged");
+  expect(planRow({ status: "Live", current: 511.541, target: 511.54 }).skip).toBe("unchanged");
+  expect(planRow({ status: "Live", current: null, target: 511.54 }).dollars).toBe(511.54);
+});
+
+test("planRow says so when a live row has no contracted budget to spread", () => {
+  const plan = planRow({ status: "Live", current: 476, target: null });
+  expect(plan.dollars).toBeNull();
+  expect(plan.skip).toContain("no Budget ($)");
+});
+
+test("planRow never touches a non-live engagement", () => {
+  // A closed period's contracted budget is the only account of it; its accounts get recycled onto the
+  // next client, so nothing about today applies.
   for (const status of ["Full Budget Finished", "Paused", "Not started", null]) {
-    for (const sum of [zero, running]) {
-      const plan = planRow({ status, current: 250, sum });
+    for (const target of [null, 250, 7500]) {
+      const plan = planRow({ status, current: 250, target });
       expect(plan.dollars).toBeNull();
       expect(plan.skip).toBe("not a live engagement; keeping the recorded value");
     }
   }
-  expect(planRow({ status: "Live", current: 0, sum: zero }).skip).toBe("unchanged");
-});
-
-test("planRow refuses to write a misleading zero for lifetime-only or unmapped rows", () => {
-  expect(
-    planRow({
-      status: "Live",
-      current: 476,
-      sum: { dollars: 0, campaigns: 0, lifetimeOnly: 2, blocked: 0 },
-    }),
-  ).toEqual({
-    dollars: null,
-    skip: "2 active campaign(s) on a lifetime budget — no daily figure",
-  });
-  expect(planRow({ status: "Live", current: 476, sum: null })).toEqual({
-    dollars: null,
-    skip: "no synced ad accounts on this row",
-  });
 });
 
 test("planSpendRow follows the same live-only rule and skips unchanged values", () => {
@@ -262,11 +257,14 @@ test("the projected-end column carries the machine-written marker", () => {
   expect(AUTO_PROJECTED_END_COLUMN).toBe("🤖 Projected End Date");
 });
 
-test("the end date divides remaining funds by the daily budget in force", () => {
-  // $6,678 of funded money at a $424.56/day budget = 16 days, so 2026-08-06 + 16.
-  const f = forecastBudgetEnd({ total: 6678.01, spent: 0, dailyPace: 424.56, today: "2026-08-06" });
+test("the end date divides remaining funds by the target daily budget", () => {
+  // betonline.ag: a $10,800 contract targets $360/day, and $5,692.65 of funded money lasts 16 days.
+  const target = targetDailyBudget(10800);
+  if (target === null) throw new Error("expected a target");
+  const f = forecastBudgetEnd({ total: 5692.65, spent: 0, dailyPace: target, today: "2026-08-10" });
+  expect(target).toBe(360);
   expect(f.daysRemaining).toBe(16);
-  expect(f.projectedEndDate).toBe("2026-08-22");
+  expect(f.projectedEndDate).toBe("2026-08-26");
 
   // The old basis was trailing ACTUAL spend, which for this row was $0/day on a freshly rotated-on
   // account and produced no date at all.
@@ -274,18 +272,6 @@ test("the end date divides remaining funds by the daily budget in force", () => 
     forecastBudgetEnd({ total: 6678.01, spent: 0, dailyPace: 0, today: "2026-08-06" })
       .projectedEndDate,
   ).toBeNull();
-});
-
-test("a row with no daily rate says which case it is, never a bare blank", () => {
-  const base = { dollars: 0, campaigns: 0, lifetimeOnly: 0, blocked: 0 };
-  expect(dailyRateSkip(null)).toBe("no daily budget in force");
-  expect(dailyRateSkip(base)).toBe("no active campaigns on this row");
-  expect(dailyRateSkip({ ...base, lifetimeOnly: 2 })).toContain("lifetime budget");
-  expect(dailyRateSkip({ ...base, blocked: 3 })).toContain("cannot spend (3)");
-  // Active, deliverable campaigns that simply carry no budget figure.
-  expect(dailyRateSkip({ ...base, campaigns: 4 })).toBe("active campaigns carry no daily budget");
-  // Precedence: a lifetime budget explains the missing rate better than a blocked account does.
-  expect(dailyRateSkip({ ...base, lifetimeOnly: 1, blocked: 1 })).toContain("lifetime budget");
 });
 
 test("the destination cell lists one page per line, most-spending first", () => {

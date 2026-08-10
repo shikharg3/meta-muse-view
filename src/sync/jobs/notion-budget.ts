@@ -91,6 +91,21 @@ export function destinationCell(urls: string[]): string {
 /** Complete days averaged for the spend column. Today is excluded — it is partial until it syncs. */
 export const SPEND_WINDOW_DAYS = 7;
 
+/** Days a contracted engagement budget is spread over to get its target daily spend. */
+export const TARGET_BUDGET_DAYS = 30;
+
+/**
+ * The daily spend this engagement is TARGETING: its contracted budget spread over a month.
+ *
+ * This is a goal, not an observation. It deliberately does not consult Meta — what the campaigns are
+ * set to spend today is a separate fact, and the trailing actual sits in the spend column next to it,
+ * so the two can be compared. Null when the row records no budget to spread.
+ */
+export function targetDailyBudget(notionBudget: number | null): number | null {
+  if (notionBudget === null || !(notionBudget > 0)) return null;
+  return Math.round((notionBudget / TARGET_BUDGET_DAYS) * 100) / 100;
+}
+
 /** Remaining spend-cap headroom below which an account is treated as unable to deliver. Meta reports
  *  a 1-cent cap on blocked accounts, so a bare `> 0` test would let those through. */
 const HEADROOM_MIN_USD = 1;
@@ -154,20 +169,6 @@ export interface AttributedCampaign {
 export interface ActiveAdSet {
   campaignId: string;
   dailyBudget: number | null; // account minor units (cents)
-}
-
-/**
- * Why a row's remaining funds cannot be turned into an end date: there is no daily budget in force to
- * divide them by. Stated precisely, because "no date" on a funded, live row always looks like a bug.
- */
-export function dailyRateSkip(sum: DailyBudgetSum | null): string {
-  if (!sum) return "no daily budget in force";
-  if (sum.lifetimeOnly > 0)
-    return `${sum.lifetimeOnly} active campaign(s) run on a lifetime budget, so there is no daily rate`;
-  if (sum.blocked > 0)
-    return `every active campaign sits on an account that cannot spend (${sum.blocked})`;
-  if (sum.campaigns === 0) return "no active campaigns on this row";
-  return "active campaigns carry no daily budget";
 }
 
 export interface DailyBudgetSum {
@@ -244,29 +245,26 @@ const same = (current: number | null, value: number): boolean =>
   current !== null && Math.abs(current - value) < 0.005;
 
 /**
- * Whether to push a computed budget onto a row.
+ * Whether to push the target daily budget onto a row.
  *
- * A finished or paused engagement still lists the ad accounts it used, and those accounts get
- * recycled onto the next client — so what runs on them today is not that engagement's budget, and
- * writing it would overwrite the only record of what was contracted. A live row that stopped
- * delivering is written down to 0, which is true and worth seeing.
+ * A finished or paused engagement is left alone: its contracted budget belongs to a closed period and
+ * the recorded figure is the only account of it.
  */
 export function planRow(input: {
   status: string | null;
   current: number | null;
-  sum: DailyBudgetSum | null;
+  target: number | null;
 }): RowPlan {
-  const { status, current, sum } = input;
+  const { status, current, target } = input;
   if (notLive(status))
     return { dollars: null, skip: "not a live engagement; keeping the recorded value" };
-  if (!sum) return { dollars: null, skip: "no synced ad accounts on this row" };
-  if (sum.dollars === 0 && sum.lifetimeOnly > 0)
+  if (target === null)
     return {
       dollars: null,
-      skip: `${sum.lifetimeOnly} active campaign(s) on a lifetime budget — no daily figure`,
+      skip: `no Budget ($) on this row to spread over ${TARGET_BUDGET_DAYS} days`,
     };
-  if (same(current, sum.dollars)) return { dollars: null, skip: "unchanged" };
-  return { dollars: sum.dollars, skip: null };
+  if (same(current, target)) return { dollars: null, skip: "unchanged" };
+  return { dollars: target, skip: null };
 }
 
 /**
@@ -898,7 +896,7 @@ export async function syncNotionDailyBudgets(
             row,
             dest: { text: null, skip: "not a live engagement" },
             sum: null,
-            budget: planRow({ status: row.status, current: row.budgetCurrent, sum: null }),
+            budget: planRow({ status: row.status, current: row.budgetCurrent, target: null }),
             spend: planSpendRow({ status: row.status, current: row.spendCurrent, spend: null }),
             funds: planFundsRow({ status: row.status, current: row.fundsCurrent, funds: null }),
             end: { date: null, clear: false, skip: "not a live engagement" },
@@ -919,6 +917,9 @@ export async function syncNotionDailyBudgets(
           for (const [u, sp] of destSpendByCampaign.get(c.id) ?? [])
             destSpend.set(u, (destSpend.get(u) ?? 0) + sp);
         }
+        // Target daily spend: the row's own contracted budget spread over a month. Independent of what
+        // Meta has in force, which is what the spend column is there to compare against.
+        const target = targetDailyBudget(row.notionBudget);
         const dest = planDestinations({
           status: row.status,
           current: row.destCurrent,
@@ -1010,8 +1011,12 @@ export async function syncNotionDailyBudgets(
             clear: false,
             skip: "no account on this row can spend (disabled or unfunded)",
           };
-        } else if (!sum || sum.dollars <= 0) {
-          end = { date: null, clear: false, skip: dailyRateSkip(sum) };
+        } else if (target === null) {
+          end = {
+            date: null,
+            clear: false,
+            skip: `no Budget ($) on this row, so there is no target daily spend to divide by`,
+          };
         } else {
           // Actual spend is still measured — it feeds the Avg Daily Spend column and lets anyone
           // sanity-check the projection against reality — but it no longer sets the runway. The pace
@@ -1032,9 +1037,9 @@ export async function syncNotionDailyBudgets(
           const f = forecastBudgetEnd({
             total: fundsRemaining,
             spent: 0,
-            // The runway is what the campaigns are SET to spend per day, not what they happened to
-            // spend recently.
-            dailyPace: sum.dollars,
+            // The same figure the Daily Budget column shows, so anyone can divide the two cells on
+            // the row and land on this date.
+            dailyPace: target,
             today,
           });
           end = planEndDate({
@@ -1047,7 +1052,7 @@ export async function syncNotionDailyBudgets(
             row,
             dest,
             sum,
-            budget: planRow({ status: row.status, current: row.budgetCurrent, sum }),
+            budget: planRow({ status: row.status, current: row.budgetCurrent, target }),
             spend: planSpendRow({ status: row.status, current: row.spendCurrent, spend }),
             funds: planFundsRow({
               status: row.status,
@@ -1071,9 +1076,9 @@ export async function syncNotionDailyBudgets(
           row,
           dest,
           sum,
-          budget: skip
-            ? { dollars: null, skip }
-            : planRow({ status: row.status, current: row.budgetCurrent, sum }),
+          // Not gated on `skip`: the target comes from the row's own contracted budget, so it is
+          // writable even when the row's ad accounts are invisible to the token or absent entirely.
+          budget: planRow({ status: row.status, current: row.budgetCurrent, target }),
           spend: skip
             ? { dollars: null, skip }
             : planSpendRow({ status: row.status, current: row.spendCurrent, spend }),
@@ -1142,6 +1147,21 @@ export async function syncNotionDailyBudgets(
           await sleep(WRITE_GAP_MS);
         }
         detail[key] = plan.dollars;
+        result.updated += 1;
+      }
+      if (
+        budget.dollars === null &&
+        !notLive(row.status) &&
+        row.budgetCurrent !== null &&
+        budget.skip?.startsWith("no Budget ($)")
+      ) {
+        // The column means "contracted budget / 30". With no contract there is nothing to mean, and a
+        // leftover figure from the previous basis would read as a target nobody set.
+        if (!opts.dryRun) {
+          await notion.setPageValue(row.pageId, budgetCol.column.id, { number: null });
+          await sleep(WRITE_GAP_MS);
+        }
+        detail.budgetSkip = "cleared: no Budget ($) on this row";
         result.updated += 1;
       }
       if (
