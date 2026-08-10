@@ -14,7 +14,7 @@ import { ownedCampaignIds } from "@/server/fns/campaign-attribution";
 import { accountStatus } from "@/server/agg";
 import { addDays } from "@/lib/range";
 import { effectiveAccountIds } from "./clients";
-import { forecastBudgetEnd, paceWindow, MIN_PACE_DAYS, PACE_DAYS } from "@/lib/budget-forecast";
+import { forecastBudgetEnd, paceWindow, PACE_DAYS } from "@/lib/budget-forecast";
 
 /**
  * Maintain three auto-updated columns on the Notion campaigns board: the daily budget that can
@@ -126,6 +126,20 @@ export interface AttributedCampaign {
 export interface ActiveAdSet {
   campaignId: string;
   dailyBudget: number | null; // account minor units (cents)
+}
+
+/**
+ * Why a row's remaining funds cannot be turned into an end date: there is no daily budget in force to
+ * divide them by. Stated precisely, because "no date" on a funded, live row always looks like a bug.
+ */
+export function dailyRateSkip(sum: DailyBudgetSum | null): string {
+  if (!sum) return "no daily budget in force";
+  if (sum.lifetimeOnly > 0)
+    return `${sum.lifetimeOnly} active campaign(s) run on a lifetime budget, so there is no daily rate`;
+  if (sum.blocked > 0)
+    return `every active campaign sits on an account that cannot spend (${sum.blocked})`;
+  if (sum.campaigns === 0) return "no active campaigns on this row";
+  return "active campaigns carry no daily budget";
 }
 
 export interface DailyBudgetSum {
@@ -546,6 +560,13 @@ export async function syncNotionDailyBudgets(
     else byAccount.set(c.accountId, [campaign]);
   }
 
+  // Total daily draw on each account by EVERY campaign spending from it, whoever owns them. A prepaid
+  // balance is consumed by everything drawing on it, so an engagement's claim on that balance is its
+  // share of the draw. Two live engagements on one account then project to the same day — the day the
+  // pot actually empties — instead of both being refused a date.
+  const poolDaily = new Map<string, number>();
+  for (const [a, cs] of byAccount) poolDaily.set(a, sumDailyBudget(cs, adSetRows).dollars);
+
   // pageId -> owning client. The cross-client whitelist is resolved lazily: it costs several queries
   // per client and only matters for clients that actually have campaigns on their accounts.
   const ctxByPage = new Map<string, ClientCtx>();
@@ -663,16 +684,6 @@ export async function syncNotionDailyBudgets(
         else byClient.set(ctx.id, [row]);
       }
     }
-
-    // An account listed by two DIFFERENT live rows cannot have its balance attributed to either:
-    // campaign attribution can split delivery, but it cannot split a prepaid balance. Three accounts
-    // on this board are currently claimed twice, which would double-count the same money.
-    const liveClaims = new Map<string, number>();
-    for (const rs of byClient.values())
-      for (const r of rs)
-        if (!notLive(r.status))
-          for (const a of new Set(r.accountIds)) liveClaims.set(a, (liveClaims.get(a) ?? 0) + 1);
-    const sharedAccounts = new Set([...liveClaims].filter(([, n]) => n > 1).map(([a]) => a));
 
     interface RowWork {
       row: BoardRow;
@@ -792,9 +803,15 @@ export async function syncNotionDailyBudgets(
           }
         }
 
-        // Projection: the row's contracted budget, minus what these campaigns spent SINCE the
-        // engagement started, divided by their own recent pace. Lifetime spend would be wrong — these
-        // ad accounts carry earlier engagements too — and so would an unclamped pace window.
+        // Projection: money FUNDED into the row's ad accounts — their lifetime spend cap minus their
+        // lifetime spend — divided by the daily budget in force. Both sides are Meta ground truth
+        // synced hourly: the funds are literally what stops delivery when they reach zero, and the
+        // daily budget is what the campaigns are set to draw against them each day.
+        //
+        // The divisor used to be trailing ACTUAL spend. That made the date jump with day-to-day noise
+        // and withheld it entirely from an engagement younger than MIN_PACE_DAYS, or one whose freshly
+        // rotated-on account had no spend history of its own. A contracted daily budget needs neither
+        // a history nor a start date.
         let spentSinceStart: number | null = null;
         let dailyPace: number | null = null;
         let fundsRemaining: number | null = null;
@@ -804,21 +821,32 @@ export async function syncNotionDailyBudgets(
         // Money left is what is FUNDED into the ad accounts, not what was contracted. Notion's
         // `Budget ($)` records the contract and is not updated when an account is topped up:
         // betonline.ag showed $1,131 left against its contract while the account it had just been
-        // rotated onto held $6,678 of real, spendable funds. `spend_cap − amount_spent` is ground
-        // truth, synced hourly, and it is exactly what stops delivery when it hits zero.
-        const sharedHere = row.accountIds.filter((a) => sharedAccounts.has(a));
+        // rotated onto held $6,678 of real, spendable funds. It also goes NEGATIVE once a recycled
+        // account's history exceeds the contract (wildcasino.ag: $10,350 contracted, $12,596 spent,
+        // yet $3,720 still sitting in the accounts). `spend_cap − amount_spent` is ground truth,
+        // synced hourly, and it is exactly what stops delivery when it hits zero.
         const funded = row.accountIds.flatMap((a) => {
-          if (sharedAccounts.has(a)) return [];
           const acct = accountById.get(a);
           return acct && canDeliver(acct) ? [acct] : [];
         });
         const uncapped = funded.some((a) => (a.spendCap ?? 0) <= 0);
-        // No attributable account means the figure is unknown, NOT zero: a row whose only accounts are
-        // shared with another live engagement does have money, it just cannot be claimed here.
-        if (!uncapped && funded.length > 0)
-          fundsRemaining =
-            Math.round(funded.reduce((n, a) => n + ((a.spendCap ?? 0) - (a.amountSpent ?? 0)), 0)) /
-            100;
+        if (!uncapped && funded.length > 0) {
+          // Each account's balance counts only in proportion to what THIS row draws from it, so an
+          // account funding two live engagements is never counted twice.
+          let claim = 0;
+          for (const a of funded) {
+            const balance = (a.spendCap ?? 0) - (a.amountSpent ?? 0);
+            if (balance <= 0) continue;
+            const pool = poolDaily.get(a.id) ?? 0;
+            const own = sumDailyBudget(
+              mine.filter((c) => c.accountId === a.id),
+              adSetRows,
+            ).dollars;
+            if (pool <= 0 || own <= 0) continue; // this row draws nothing here
+            claim += (balance / 100) * Math.min(1, own / pool);
+          }
+          fundsRemaining = Math.round(claim * 100) / 100;
+        }
 
         if (skip) {
           end = { date: null, clear: false, skip };
@@ -828,29 +856,19 @@ export async function syncNotionDailyBudgets(
             clear: false,
             skip: "an account has no spend cap, so funds are unbounded",
           };
-        } else if (funded.length === 0 && sharedHere.length > 0) {
-          end = {
-            date: null,
-            clear: false,
-            skip: `funds shared with another live engagement (${sharedHere.length} account(s))`,
-          };
         } else if (funded.length === 0) {
           end = {
             date: null,
             clear: false,
             skip: "no account on this row can spend (disabled or unfunded)",
           };
-        } else if (!pw) {
-          end = {
-            date: null,
-            clear: false,
-            skip: `engagement younger than ${MIN_PACE_DAYS} complete days`,
-          };
+        } else if (!sum || sum.dollars <= 0) {
+          end = { date: null, clear: false, skip: dailyRateSkip(sum) };
         } else {
-          // Pace must come from the engagement's own recent spend, which may sit on accounts it has
-          // since been rotated OFF — a freshly funded account has no history of its own. When the
-          // client has one live row the whole effective set is safe to average over; with several,
-          // history cannot be apportioned between sibling brands.
+          // Actual spend is still measured — it feeds the Avg Daily Spend column and lets anyone
+          // sanity-check the projection against reality — but it no longer sets the runway. The pace
+          // window stays clamped to the engagement start, since recycled accounts would otherwise
+          // average in the previous client's spend.
           const paceAccounts = liveRowCount === 1 ? ctx.effective : row.accountIds;
           const ids = paceAccounts.flatMap((a) =>
             (byAccount.get(a) ?? [])
@@ -859,14 +877,16 @@ export async function syncNotionDailyBudgets(
           );
           const [spentTotal, paceTotal] = await Promise.all([
             row.startDate ? spendOf(ids, row.startDate, until) : Promise.resolve(0),
-            spendOf(ids, pw.from, until),
+            pw ? spendOf(ids, pw.from, until) : Promise.resolve(null),
           ]);
           spentSinceStart = row.startDate ? spentTotal : null;
-          dailyPace = paceTotal / pw.days;
+          dailyPace = pw && paceTotal !== null ? paceTotal / pw.days : null;
           const f = forecastBudgetEnd({
             total: fundsRemaining,
             spent: 0,
-            dailyPace,
+            // The runway is what the campaigns are SET to spend per day, not what they happened to
+            // spend recently.
+            dailyPace: sum.dollars,
             today,
           });
           end = planEndDate({

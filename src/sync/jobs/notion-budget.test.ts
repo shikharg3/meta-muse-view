@@ -1,9 +1,11 @@
 import { test, expect } from "bun:test";
+import { forecastBudgetEnd } from "@/lib/budget-forecast";
 import {
   sumDailyBudget,
   planRow,
   planSpendRow,
   planEndDate,
+  dailyRateSkip,
   canDeliver,
   avgDailySpend,
   AUTO_BUDGET_COLUMN,
@@ -255,4 +257,30 @@ test("an exhausted budget projects today, and that date is written", () => {
 
 test("the projected-end column carries the machine-written marker", () => {
   expect(AUTO_PROJECTED_END_COLUMN).toBe("🤖 Projected End Date");
+});
+
+test("the end date divides remaining funds by the daily budget in force", () => {
+  // $6,678 of funded money at a $424.56/day budget = 16 days, so 2026-08-06 + 16.
+  const f = forecastBudgetEnd({ total: 6678.01, spent: 0, dailyPace: 424.56, today: "2026-08-06" });
+  expect(f.daysRemaining).toBe(16);
+  expect(f.projectedEndDate).toBe("2026-08-22");
+
+  // The old basis was trailing ACTUAL spend, which for this row was $0/day on a freshly rotated-on
+  // account and produced no date at all.
+  expect(
+    forecastBudgetEnd({ total: 6678.01, spent: 0, dailyPace: 0, today: "2026-08-06" })
+      .projectedEndDate,
+  ).toBeNull();
+});
+
+test("a row with no daily rate says which case it is, never a bare blank", () => {
+  const base = { dollars: 0, campaigns: 0, lifetimeOnly: 0, blocked: 0 };
+  expect(dailyRateSkip(null)).toBe("no daily budget in force");
+  expect(dailyRateSkip(base)).toBe("no active campaigns on this row");
+  expect(dailyRateSkip({ ...base, lifetimeOnly: 2 })).toContain("lifetime budget");
+  expect(dailyRateSkip({ ...base, blocked: 3 })).toContain("cannot spend (3)");
+  // Active, deliverable campaigns that simply carry no budget figure.
+  expect(dailyRateSkip({ ...base, campaigns: 4 })).toBe("active campaigns carry no daily budget");
+  // Precedence: a lifetime budget explains the missing rate better than a blocked account does.
+  expect(dailyRateSkip({ ...base, lifetimeOnly: 1, blocked: 1 })).toContain("lifetime budget");
 });
