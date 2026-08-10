@@ -41,14 +41,51 @@ beforeEach(async () => {
   ]);
 });
 
-test("name attribution splits a shared account and leaves ambiguous campaigns in place", async () => {
+test("name attribution splits a shared account and drops what it cannot assign", async () => {
+  // The behaviour this replaces: an unmatched campaign used to stay with EVERY claimant, so asking
+  // for one client's totals returned the other's spend too (Allstarslots picking up Slots.lv's
+  // $4,285 "SLV Prospecting" campaign). Counting it for nobody is the only defensible default.
   const sweat = await clientCampaignScope("sweatbet", ["act_shared"]);
-  // ACR Bonus belongs to the other client; the vague name stays (no silent spend loss).
-  expect(sweat.excludedCampaignIds).toEqual(["c_acr"]);
+  expect(sweat.excludedCampaignIds.sort()).toEqual(["c_acr", "c_vague"]);
+  expect(sweat.unattributedCampaignIds).toEqual(["c_vague"]);
   expect(sweat.splitAccountIds).toEqual(["act_shared"]);
 
   const acr = await clientCampaignScope("acrpoker-eu", ["act_shared"]);
-  expect(acr.excludedCampaignIds).toEqual(["c_sweat"]);
+  expect(acr.excludedCampaignIds.sort()).toEqual(["c_sweat", "c_vague"]);
+  expect(acr.unattributedCampaignIds).toEqual(["c_vague"]);
+
+  // Neither client counts it, so the same campaign is never billed to two clients.
+  const owned = await Promise.all([
+    ownedCampaignIds("sweatbet", ["act_shared"]),
+    ownedCampaignIds("acrpoker-eu", ["act_shared"]),
+  ]);
+  expect(owned[0]).not.toContain("c_vague");
+  expect(owned[1]).not.toContain("c_vague");
+});
+
+test("the sole ACTIVE-account claimant wins what names cannot split", async () => {
+  // The board distinguishes a client's designated "Active Account ID" from accounts it merely lists
+  // under "Other ad accounts". When names fail, that designation decides ownership.
+  await db
+    .update(schema.clients)
+    .set({ notionActiveAccountIds: ["act_shared"] })
+    .where(dsql`id = 'acrpoker-eu'`);
+
+  const acr = await clientCampaignScope("acrpoker-eu", ["act_shared"]);
+  expect(acr.excludedCampaignIds).toEqual(["c_sweat"]); // c_vague now belongs to acrpoker.eu
+  expect(acr.unattributedCampaignIds).toEqual([]);
+
+  const sweat = await clientCampaignScope("sweatbet", ["act_shared"]);
+  expect(sweat.excludedCampaignIds.sort()).toEqual(["c_acr", "c_vague"]);
+  expect(sweat.unattributedCampaignIds).toEqual([]); // assigned, not unattributable
+
+  // Both designating it ACTIVE is no tiebreaker at all — back to counting for nobody.
+  await db
+    .update(schema.clients)
+    .set({ notionActiveAccountIds: ["act_shared"] })
+    .where(dsql`id = 'sweatbet'`);
+  const tie = await clientCampaignScope("sweatbet", ["act_shared"]);
+  expect(tie.unattributedCampaignIds).toEqual(["c_vague"]);
 });
 
 test("a manual override beats name attribution", async () => {
@@ -86,7 +123,21 @@ test("clearing the override restores automatic attribution", async () => {
     .values({ campaignId: "c_sweat", clientId: "acrpoker-eu" });
   await db.execute(dsql`delete from campaign_client_overrides where campaign_id = 'c_sweat'`);
   const sweat = await clientCampaignScope("sweatbet", ["act_shared"]);
+  expect(sweat.excludedCampaignIds.sort()).toEqual(["c_acr", "c_vague"]);
+});
+
+test("an override rescues an unattributable campaign for exactly one client", async () => {
+  await db
+    .insert(schema.campaignClientOverrides)
+    .values({ campaignId: "c_vague", clientId: "sweatbet" });
+
+  const sweat = await clientCampaignScope("sweatbet", ["act_shared"]);
   expect(sweat.excludedCampaignIds).toEqual(["c_acr"]);
+  expect(sweat.unattributedCampaignIds).toEqual([]);
+
+  const acr = await clientCampaignScope("acrpoker-eu", ["act_shared"]);
+  expect(acr.excludedCampaignIds.sort()).toEqual(["c_sweat", "c_vague"]);
+  expect(acr.unattributedCampaignIds).toEqual([]); // owned by sweatbet now, not unassignable
 });
 
 test("an uncontested account with no overrides needs no filtering", async () => {

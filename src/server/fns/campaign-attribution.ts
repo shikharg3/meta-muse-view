@@ -24,6 +24,9 @@ export interface ClientCampaignScope {
   splitAccountIds: string[];
   /** Accounts included ONLY because an override moved one of their campaigns to this client. */
   extraAccountIds: string[];
+  /** Campaigns on this client's accounts that no rule could assign, so they count for nobody.
+   *  Surface these: every one is spend that belongs to somebody and needs an override. */
+  unattributedCampaignIds: string[];
   /** True when nothing is excluded or added — callers can take their original fast path. */
   clean: boolean;
 }
@@ -33,13 +36,24 @@ const EMPTY: ClientCampaignScope = {
   excludedCampaignIds: [],
   splitAccountIds: [],
   extraAccountIds: [],
+  unattributedCampaignIds: [],
   clean: true,
 };
 
 /**
- * Resolve which campaigns on (or moved into) `accountIds` belong to `clientId`. A campaign whose name
- * matches no contender — and has no override — is left in place, so ambiguity degrades to plain
- * account attribution instead of silently dropping spend.
+ * Resolve which campaigns on (or moved into) `accountIds` belong to `clientId`.
+ *
+ * Ownership ladder, first match wins:
+ *   1. a manual override (operator correction),
+ *   2. brand-name attribution,
+ *   3. the single client that designates the account as its Notion "Active Account ID" — the others
+ *      merely list it under "Other ad accounts",
+ *   4. nobody: the campaign is excluded from EVERY claimant.
+ *
+ * Step 4 used to leave unmatched campaigns in place, which double-counted them into every claiming
+ * client: asking for one client's totals returned another's spend as well. Excluding them makes each
+ * client's figure defensible; `unattributedCampaignIds` carries what was dropped so it can be
+ * surfaced and resolved with an override instead of silently vanishing.
  */
 export async function clientCampaignScope(
   clientId: string,
@@ -53,11 +67,19 @@ export async function clientCampaignScope(
 
   // account -> every current client claiming it
   const claims = new Map<string, string[]>();
+  // account -> the clients that designate it their ACTIVE account (not just an "other" account).
+  // On a contested account this is the tiebreaker names cannot provide.
+  const activeClaims = new Map<string, string[]>();
   for (const c of clients) {
     for (const aid of effectiveAccountIds(c)) {
       const list = claims.get(aid);
       if (list) list.push(c.id);
       else claims.set(aid, [c.id]);
+    }
+    for (const aid of (c.notionActiveAccountIds as string[] | null) ?? []) {
+      const list = activeClaims.get(aid);
+      if (list) list.push(c.id);
+      else activeClaims.set(aid, [c.id]);
     }
   }
   const owned = new Set(accountIds);
@@ -94,13 +116,19 @@ export async function clientCampaignScope(
     if (override) return override;
     const claimants = claims.get(cp.accountId) ?? [];
     if (claimants.length <= 1) return claimants[0] ?? null;
-    return attributeCampaign(
+    const byName = attributeCampaign(
       cp.name,
       claimants.map((id) => vocabById.get(id)).filter((v): v is BrandVocab => v !== undefined),
     );
+    if (byName) return byName;
+    // Names failed. If exactly one claimant designates this as its ACTIVE account and the rest only
+    // list it under "Other ad accounts", that is the board saying whose account it really is.
+    const active = (activeClaims.get(cp.accountId) ?? []).filter((id) => claimants.includes(id));
+    return active.length === 1 ? active[0] : null;
   };
 
   const excluded = new Set<string>();
+  const unattributed = new Set<string>();
   const splitAccounts = new Set<string>();
   const extraAccounts = new Set<string>();
   const movedIn = new Set(movedInIds);
@@ -108,10 +136,12 @@ export async function clientCampaignScope(
   for (const cp of campaigns) {
     const owner = ownerOf(cp);
     if (owned.has(cp.accountId)) {
-      // A campaign on one of this client's accounts: drop it when it belongs to someone else.
-      if (owner !== null && owner !== clientId) {
+      // A campaign on one of this client's accounts: drop it unless this client owns it. An
+      // unowned campaign (owner === null) is dropped from everyone rather than counted by everyone.
+      if (owner !== clientId) {
         excluded.add(cp.id);
         splitAccounts.add(cp.accountId);
+        if (owner === null) unattributed.add(cp.id);
       }
     } else if (movedIn.has(cp.id)) {
       // Moved in from an account this client does not own: pull the account in, campaign-level only.
@@ -134,6 +164,7 @@ export async function clientCampaignScope(
     excludedCampaignIds: [...excluded],
     splitAccountIds: [...splitAccounts],
     extraAccountIds: [...extraAccounts],
+    unattributedCampaignIds: [...unattributed],
     clean: excluded.size === 0 && extraAccounts.size === 0,
   };
 }

@@ -59,6 +59,9 @@ export interface ClientDetail {
   campaigns: Campaign[];
   /** All de-duplicated conversion/engagement events for this client over the window. */
   events: ClientEvent[];
+  /** Campaigns on this client's SHARED ad accounts that no rule could assign, so they are counted for
+   *  nobody. Never silently drop spend: surface it so an override can settle the owner. */
+  unattributed: { count: number; spend: number; names: string[] };
   /** Engagement budget from Notion + spend against it (null total = not tracked), with a
    *  pace-based forecast of when the budget runs out. */
   budget: {
@@ -203,6 +206,7 @@ export async function fetchClientDetail(
       accounts: [],
       campaigns: [],
       events: [],
+      unattributed: { count: 0, spend: 0, names: [] },
       budget: budgetOf(row, 0, 0, todayYmd()),
     };
   }
@@ -337,6 +341,30 @@ export async function fetchClientDetail(
     return num(acctSpend[0]?.s) + num(campSpend[0]?.s);
   };
 
+  // Spend that belongs to nobody: campaigns on this client's shared accounts that neither names, the
+  // ACTIVE-account designation, nor an override could assign.
+  const unattributedSummary = { count: 0, spend: 0, names: [] as string[] };
+  if (attribution.unattributedCampaignIds.length) {
+    const rows = await db
+      .select({
+        name: schema.campaigns.name,
+        spend: sql<number>`coalesce(sum(${schema.insightsDaily.spend}),0)`,
+      })
+      .from(schema.campaigns)
+      .leftJoin(
+        schema.insightsDaily,
+        and(
+          eq(schema.insightsDaily.level, "campaign"),
+          eq(schema.insightsDaily.entityId, schema.campaigns.id),
+        ),
+      )
+      .where(inArray(schema.campaigns.id, attribution.unattributedCampaignIds))
+      .groupBy(schema.campaigns.id, schema.campaigns.name);
+    unattributedSummary.count = rows.length;
+    unattributedSummary.spend = rows.reduce((n, r) => n + num(r.spend), 0);
+    unattributedSummary.names = rows.map((r) => r.name);
+  }
+
   const today = todayYmd();
   const [budgetSpent, paceSpend] = await Promise.all([
     row.startDate ? spendBetween(String(row.startDate)) : Promise.resolve(0),
@@ -352,6 +380,7 @@ export async function fetchClientDetail(
     accounts,
     campaigns,
     events: canonicalEvents(insightRows),
+    unattributed: unattributedSummary,
     // Divide by the whole window, not by the days that happened to have rows: a day with no
     // insights row is a real zero-spend day and must pull the pace down.
     budget: budgetOf(row, budgetSpent, paceSpend / PACE_DAYS, today),

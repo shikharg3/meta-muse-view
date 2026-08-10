@@ -372,6 +372,15 @@ export async function runTool(name: string, input: Record<string, unknown>): Pro
         status: detail.status,
         kpis: detail.kpis,
         events: detail.events,
+        ...(detail.unattributed.count > 0
+          ? {
+              unattributedNote:
+                `${detail.unattributed.count} campaign(s) on this client's SHARED ad accounts ` +
+                `($${detail.unattributed.spend.toFixed(2)}) could not be attributed to any client and ` +
+                `are EXCLUDED from the figures above: ${detail.unattributed.names.join(", ")}. ` +
+                `Mention this and say an operator should assign them to the right client.`,
+            }
+          : {}),
         accounts: detail.accounts.map((a) => ({
           id: a.id,
           name: a.name,
