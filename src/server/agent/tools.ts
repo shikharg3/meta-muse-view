@@ -16,6 +16,7 @@ import {
 import { getClientRow, effectiveAccountIds } from "@/sync/jobs/clients";
 import { runReport, resolveRange, normalizeColumns, parseBreakdown } from "./report";
 import { ownedCampaignIds } from "@/server/fns/campaign-attribution";
+import { unassignedSpendSummary } from "@/sync/alerts";
 import type { AnthropicTool } from "./anthropic";
 import { windowFromDays, windowFromDates, isYmd, type DateWindow } from "@/lib/range";
 
@@ -339,10 +340,11 @@ export async function resolveClient(query: string): Promise<ResolvedClient | Res
 export async function runTool(name: string, input: Record<string, unknown>): Promise<unknown> {
   switch (name) {
     case "list_clients": {
-      const clients = (await fetchClientsRanked(toolWindow(input))).filter(
-        (c) => c.removedAt == null,
-      );
-      return clients.map((c) => ({
+      const [clients, unassigned] = await Promise.all([
+        fetchClientsRanked(toolWindow(input)).then((cs) => cs.filter((c) => c.removedAt == null)),
+        unassignedSpendSummary(),
+      ]);
+      const rows = clients.map((c) => ({
         name: c.name,
         status: c.status,
         accounts: c.accountCount,
@@ -350,6 +352,16 @@ export async function runTool(name: string, input: Record<string, unknown>): Pro
         results: c.results,
         resultLabel: c.resultLabel,
       }));
+      // Spend excluded from EVERY row above. Silence here would make the list look complete.
+      if (unassigned.count === 0) return rows;
+      return {
+        clients: rows,
+        unassignedNote:
+          `${unassigned.count} campaign(s) on shared ad accounts ($${unassigned.spend.toFixed(2)}) ` +
+          `are not assigned to any client, so their spend is excluded from every figure above: ` +
+          `${unassigned.items.map((i) => `${i.campaign} ($${i.spend.toFixed(2)}, claimed by ${i.claimants.map((c) => c.name).join(" and ")})`).join("; ")}. ` +
+          `Mention this when reporting totals; an admin assigns them on either client's page.`,
+      };
     }
     case "get_client_stats": {
       const resolved = await resolveClient(String(input.client ?? ""));

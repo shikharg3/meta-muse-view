@@ -4,6 +4,8 @@ import { db, schema } from "@/db/client";
 import {
   detectSpendDropAlerts,
   detectAccountAlerts,
+  detectUnassignedSpendAlerts,
+  scanUnassignedSpend,
   classifyAccount,
   ALERT_LOW_FUNDS_USD,
   type AccountAlertRow,
@@ -34,7 +36,9 @@ const spend = (id: string, off: number, amt: number) =>
     .values({ level: "account", entityId: id, date: ymd(off), accountId: id, spend: amt });
 
 beforeEach(async () => {
-  await db.execute(sql`truncate table insights_daily, alerts, accounts cascade`);
+  await db.execute(
+    sql`truncate table insights_daily, alerts, accounts, clients, campaigns, campaign_client_overrides cascade`,
+  );
 });
 
 test("flags a real collapse on the latest complete day, ignoring today's incompleteness", async () => {
@@ -142,3 +146,89 @@ test("account alerts are scoped to accounts mapped to a current client", async (
   expect(counts.account_disabled).toBe(0); // no client owns it, so nobody is paged
   expect(await db.select().from(schema.alerts)).toHaveLength(0);
 }, 20000);
+
+/** A shared account contested by two clients, with one campaign neither can claim by name. */
+const contested = async () => {
+  await acct("act_shared", "Shared BM");
+  await db.insert(schema.clients).values([
+    { id: "alpha", name: "Alpha", notionAccountIds: ["act_shared"] },
+    { id: "beta", name: "Beta", notionAccountIds: ["act_shared"] },
+  ]);
+  await db.insert(schema.campaigns).values([
+    { id: "c_alpha", accountId: "act_shared", name: "Alpha Prospecting", status: "ACTIVE" },
+    { id: "c_ghost", accountId: "act_shared", name: "TOF - Broad", status: "ACTIVE" },
+  ]);
+  const camp = (id: string, off: number, amt: number) =>
+    db.insert(schema.insightsDaily).values({
+      level: "campaign",
+      entityId: id,
+      date: ymd(off),
+      accountId: "act_shared",
+      spend: amt,
+    });
+  await camp("c_alpha", -2, 300);
+  await camp("c_ghost", -2, 250);
+};
+
+test("alerts on contested spend no rule can assign, and names both candidates", async () => {
+  await contested();
+  const found = await scanUnassignedSpend();
+  expect(found.map((f) => f.campaign)).toEqual(["TOF - Broad"]); // Alpha Prospecting attributes by name
+  expect(found[0].claimants).toEqual([
+    { id: "alpha", name: "Alpha" },
+    { id: "beta", name: "Beta" },
+  ]);
+  expect(found[0].spend).toBeCloseTo(250, 2);
+
+  expect(await detectUnassignedSpendAlerts({ silent: true })).toBe(1);
+  const rows = await db.select().from(schema.alerts);
+  expect(rows).toHaveLength(1);
+  expect(rows[0].type).toBe("unassigned_spend");
+  expect(rows[0].message).toContain("TOF - Broad");
+  expect(rows[0].message).toContain("Alpha and Beta"); // the operator must know who to choose between
+}, 30000);
+
+test("the same backlog alerts once, not once per cycle", async () => {
+  await contested();
+  expect(await detectUnassignedSpendAlerts({ silent: true })).toBe(1);
+  expect(await detectUnassignedSpendAlerts({ silent: true })).toBe(0);
+  expect(await db.select().from(schema.alerts)).toHaveLength(1);
+}, 30000);
+
+test("assigning the campaign clears its alert without a resolve step", async () => {
+  await contested();
+  await detectUnassignedSpendAlerts({ silent: true });
+  await db
+    .insert(schema.campaignClientOverrides)
+    .values({ campaignId: "c_ghost", clientId: "beta" });
+
+  expect(await detectUnassignedSpendAlerts({ silent: true })).toBe(0);
+  expect(await db.select().from(schema.alerts)).toHaveLength(0);
+  expect(await scanUnassignedSpend()).toEqual([]);
+}, 30000);
+
+test("an uncontested account is a mapping gap, not an attribution one, and stays silent", async () => {
+  await acct("act_solo", "Solo");
+  await db
+    .insert(schema.clients)
+    .values({ id: "solo", name: "Solo", notionAccountIds: ["act_solo"] });
+  await db
+    .insert(schema.campaigns)
+    .values({ id: "c_x", accountId: "act_solo", name: "Nothing Matches This", status: "ACTIVE" });
+  await db.insert(schema.insightsDaily).values({
+    level: "campaign",
+    entityId: "c_x",
+    date: ymd(-2),
+    accountId: "act_solo",
+    spend: 900,
+  });
+
+  expect(await scanUnassignedSpend()).toEqual([]);
+  expect(await detectUnassignedSpendAlerts({ silent: true })).toBe(0);
+}, 30000);
+
+test("dust below the threshold never alerts", async () => {
+  await contested();
+  await db.execute(sql`update insights_daily set spend = 0.4 where entity_id = 'c_ghost'`);
+  expect(await scanUnassignedSpend()).toEqual([]);
+}, 30000);

@@ -3,6 +3,7 @@ import { db, schema } from "@/db/client";
 import { env } from "@/lib/env";
 import { accountStatus } from "@/server/agg";
 import { addDays } from "@/lib/range";
+import { loadCampaignOwnership } from "@/server/fns/campaign-attribution";
 
 /** Spend-drop alert thresholds (tune here). */
 export const ALERT_MIN_BASELINE = 50; // ignore accounts averaging < $50/day
@@ -12,6 +13,10 @@ export const ALERT_DROP_PCT = 0.95; // flag a >= 95% drop vs the trailing-7-day 
 export const ALERT_LOW_FUNDS_USD = 100; // remaining prepaid budget that warrants a top-up warning
 export const ALERT_IN_USE_DAYS = 7; // an account counts as "in use" if it spent inside this window
 export const ALERT_NO_SPEND_REPEAT_DAYS = 7; // a persistent stoppage alerts once, not every day
+
+/** Unassigned-spend thresholds (tune here). */
+export const ALERT_UNASSIGNED_MIN_USD = 1; // ignore rounding-dust campaigns
+export const ALERT_UNASSIGNED_DAYS = 90; // only campaigns that spent recently enough to act on
 
 interface DropRow {
   account_id: string;
@@ -389,4 +394,131 @@ export function alertSettings(): AlertSettings {
 /** Send a test message to verify Telegram delivery. */
 export function sendTestAlert(): Promise<{ ok: boolean; error?: string }> {
   return sendTelegram("✅ Test alert from MetaConsole — Telegram delivery is working.");
+}
+
+/**
+ * Campaigns on a SHARED ad account that no rule could attribute, so their spend is counted for
+ * nobody.
+ *
+ * This is the one alert about money the dashboard is deliberately NOT showing. Excluding contested
+ * spend is right - counting it for every claimant was the bug - but the exclusion has to be loud, or
+ * a campaign silently belongs to no one and every report is quietly short. Visibility was previously
+ * limited to the one client page the campaign happened to sit under.
+ *
+ * Self-healing: alerts are reconciled each run, so assigning a campaign (in the UI, by override, or
+ * because the name attributor can now place it) clears its alert without a separate resolve step.
+ * Returns the number of NEW alerts raised.
+ */
+export interface UnassignedCampaign {
+  id: string;
+  campaign: string;
+  accountId: string;
+  accountName: string | null;
+  spend: number;
+  /** The clients contesting the account — the candidates an operator picks between. Ids included so
+   *  a surface can link straight to the page the assignment happens on. */
+  claimants: { id: string; name: string }[];
+}
+
+/**
+ * Every campaign whose spend is currently attributed to nobody, book-wide.
+ *
+ * One ownership load for the whole book; resolving per client would cost a scope query each. Shared
+ * by the alert and the assistant so both describe the same backlog.
+ */
+export async function scanUnassignedSpend(): Promise<UnassignedCampaign[]> {
+  const since = addDays(new Date().toISOString().slice(0, 10), -ALERT_UNASSIGNED_DAYS);
+  const rows = (await db.execute(sql`
+    SELECT c.id, c.name, c.account_id, a.name AS account_name,
+           sum(i.spend)::double precision AS spend
+    FROM campaigns c
+    JOIN insights_daily i ON i.level = 'campaign' AND i.entity_id = c.id
+    LEFT JOIN accounts a ON a.id = c.account_id
+    WHERE i.date >= ${since}::date
+    GROUP BY c.id, c.name, c.account_id, a.name
+    HAVING sum(i.spend) >= ${ALERT_UNASSIGNED_MIN_USD}
+  `)) as unknown as {
+    id: string;
+    name: string;
+    account_id: string;
+    account_name: string | null;
+    spend: number;
+  }[];
+  const ownership = await loadCampaignOwnership();
+  const out: UnassignedCampaign[] = [];
+  for (const r of rows) {
+    const claimants = ownership.claimantsOf(r.account_id);
+    // Only a CONTESTED account can leave a campaign unowned. An account no client claims at all is a
+    // mapping gap, not an attribution one, and would drown this alert.
+    if (claimants.length <= 1) continue;
+    if (ownership.ownerOf({ id: r.id, name: r.name, accountId: r.account_id }) !== null) continue;
+    out.push({
+      id: r.id,
+      campaign: r.name,
+      accountId: r.account_id,
+      accountName: r.account_name,
+      spend: r.spend,
+      claimants: [...claimants].sort((a, b) => a.name.localeCompare(b.name)),
+    });
+  }
+  return out.sort((a, b) => b.spend - a.spend);
+}
+
+/** Book-wide unassigned-spend total, for surfaces that only need the headline. */
+export async function unassignedSpendSummary(): Promise<{
+  count: number;
+  spend: number;
+  items: UnassignedCampaign[];
+}> {
+  const items = await scanUnassignedSpend();
+  return {
+    count: items.length,
+    spend: Math.round(items.reduce((n, i) => n + i.spend, 0) * 100) / 100,
+    items,
+  };
+}
+
+export async function detectUnassignedSpendAlerts(
+  opts: { silent?: boolean } = {},
+): Promise<number> {
+  const orphans = await scanUnassignedSpend();
+  const wanted = new Map(orphans.map((r) => [`unassigned:${r.id}`, r]));
+  // Drop alerts for campaigns that have since been assigned, so the list is the live backlog.
+  const existing = await db
+    .select({ id: schema.alerts.id })
+    .from(schema.alerts)
+    .where(eq(schema.alerts.type, "unassigned_spend"));
+  const stale = existing.filter((e) => !wanted.has(e.id)).map((e) => e.id);
+  if (stale.length) await db.delete(schema.alerts).where(inArray(schema.alerts.id, stale));
+
+  const today = new Date().toISOString().slice(0, 10);
+  const fresh: { name: string; message: string }[] = [];
+  let inserted = 0;
+  for (const [dedupe, r] of wanted) {
+    const message =
+      `${r.campaign} - $${r.spend.toFixed(2)} unassigned - ` +
+      `${r.claimants.map((c) => c.name).join(" and ")} both claim ${r.accountName ?? r.accountId}; ` +
+      `assign it on either client's page`;
+    const res = await db
+      .insert(schema.alerts)
+      .values({
+        id: dedupe,
+        type: "unassigned_spend",
+        accountId: r.accountId,
+        accountName: r.accountName,
+        message,
+        metric: r.spend,
+        severity: "warning",
+        status: "open",
+        date: today,
+      })
+      .onConflictDoNothing()
+      .returning({ id: schema.alerts.id });
+    if (!res.length) continue;
+    inserted++;
+    fresh.push({ name: r.campaign, message });
+  }
+  if (fresh.length && !opts.silent)
+    await notifyTelegram(fresh, "🧩 Campaign spend not assigned to any client");
+  return inserted;
 }

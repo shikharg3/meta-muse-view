@@ -29,7 +29,7 @@ import {
   recordServiceHealth,
 } from "./state";
 import { runOnce, type Jobs } from "./run";
-import { detectSpendDropAlerts, detectAccountAlerts } from "./alerts";
+import { detectSpendDropAlerts, detectAccountAlerts, detectUnassignedSpendAlerts } from "./alerts";
 
 // First sync of an account backfills as much history as Meta retains; later cycles
 // only refresh the trailing edge. Meta caps plain insights at 37 months but
@@ -363,6 +363,14 @@ export async function runCycle(opts: { full?: boolean } = {}): Promise<void> {
         );
     } catch (e) {
       console.error("[sync] account alert detection failed:", e);
+    }
+    // Contested campaigns nobody owns: their spend is excluded from every client's figures, so the
+    // exclusion has to be visible somewhere other than the one client page it sits under.
+    try {
+      const u = await detectUnassignedSpendAlerts();
+      if (u > 0) console.log(`[sync] alerts: ${u} new unassigned-spend alert(s)`);
+    } catch (e) {
+      console.error("[sync] unassigned spend alert detection failed:", e);
     }
     // Daily only: push the deliverable daily budget and trailing spend back onto the Notion board.
     // Runs after the refresh above so the campaign/ad-set/account rows it reads are current.
