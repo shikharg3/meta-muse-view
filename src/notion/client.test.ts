@@ -93,5 +93,7 @@ test("addStatusOptions throws when the property is not a status property", async
   ]);
   const client = new NotionClient("tok", impl);
 
-  await expect(client.addStatusOptions("ds1", "Account Status", ["Live"])).rejects.toThrow("status");
+  await expect(client.addStatusOptions("ds1", "Account Status", ["Live"])).rejects.toThrow(
+    "status",
+  );
 });

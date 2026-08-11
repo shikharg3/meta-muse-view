@@ -235,9 +235,9 @@ test("a live row that can no longer be projected has its stale date blanked", ()
   expect(planEndDate({ ...gone, current: null }).clear).toBe(false);
   // A non-live row is never touched, stale date or not. Paused no longer qualifies — it is a current
   // engagement whose delivery stopped, so its stale date is still cleared.
-  expect(planEndDate({ ...gone, status: "Full Budget Finished", current: "2026-09-14" }).clear).toBe(
-    false,
-  );
+  expect(
+    planEndDate({ ...gone, status: "Full Budget Finished", current: "2026-09-14" }).clear,
+  ).toBe(false);
 });
 
 test("planEndDate surfaces the forecaster's reason instead of writing a blank", () => {
@@ -375,9 +375,9 @@ test("statusForRow prefers a pinned override over the derived value", () => {
 
 test("statusForRow ignores an override that is not a machine-owned value", () => {
   // The server fn rejects these, but a row predating a rename could still hold one.
-  expect(
-    statusForRow({ ...liveRow, current: "Paused", override: "Full Budget Finished" }),
-  ).toBe("Live");
+  expect(statusForRow({ ...liveRow, current: "Paused", override: "Full Budget Finished" })).toBe(
+    "Live",
+  );
 });
 
 test("statusForRow fills an empty cell", () => {
