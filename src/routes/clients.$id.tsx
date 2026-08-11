@@ -12,6 +12,11 @@ import {
   listClients,
   moveCampaignToClient,
 } from "@/lib/api/clients";
+import {
+  getStatusOverrides,
+  pinStatusOverride,
+  unpinStatusOverride,
+} from "@/lib/api/account-status";
 import { getCurrentUser } from "@/lib/api/auth";
 import { isAdmin } from "@/lib/auth/roles";
 import { generateClientReport } from "@/lib/api/report";
@@ -30,10 +35,14 @@ export const Route = createFileRoute("/clients/$id")({
       listClients(),
     ]);
     if (!detail) throw notFound();
+    const admin = isAdmin(me?.role);
     return {
       detail,
       budgets,
-      isAdmin: isAdmin(me?.role),
+      isAdmin: admin,
+      // fetchStatusOverrides is requireAdmin-gated and THROWS, so asking as a member would 500 the
+      // whole page rather than just hiding the control.
+      overrides: admin ? await getStatusOverrides() : [],
       // Re-attribution targets: every current client except this one.
       moveTargets: clients
         .filter((c) => c.id !== params.id)
@@ -61,7 +70,7 @@ const STATUS_TONE: Record<string, string> = {
 };
 
 function ClientPage() {
-  const { detail, budgets, isAdmin, moveTargets } = Route.useLoaderData();
+  const { detail, budgets, isAdmin, moveTargets, overrides } = Route.useLoaderData();
   const search = Route.useSearch();
   const router = useRouter();
   const [showReport, setShowReport] = useState(false);
@@ -71,6 +80,15 @@ function ClientPage() {
 
   const onMutate = async (action: "add" | "remove", accountId: string) => {
     const r = await mutateClientAccounts({ data: { id: detail.id, action, accountId } });
+    await router.invalidate();
+    return r;
+  };
+
+  const onSetStatusOverride = async (pageId: string, status: string | null) => {
+    const r =
+      status === null
+        ? await unpinStatusOverride({ data: { pageId } })
+        : await pinStatusOverride({ data: { pageId, status } });
     await router.invalidate();
     return r;
   };
@@ -177,6 +195,8 @@ function ClientPage() {
             router.invalidate(),
           );
         }}
+        statusOverrides={Object.fromEntries(overrides.map((o) => [o.pageId, o.status] as const))}
+        onSetStatusOverride={isAdmin ? onSetStatusOverride : undefined}
         onMutate={onMutate}
       />
     </div>

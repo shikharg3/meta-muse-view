@@ -7,6 +7,7 @@ import {
   parseCampaignRow,
   parseClientName,
   brandTitles,
+  boardRows,
   resolvePropertyKey,
   LIVE_STATUSES,
   STATUS_PRIORITY,
@@ -45,6 +46,22 @@ test("brandTitles extracts distinct row titles from stored raw pages", () => {
   expect(brandTitles(null)).toEqual([]);
   expect(brandTitles(undefined)).toEqual([]);
   expect(brandTitles("not-an-array")).toEqual([]);
+});
+
+test("boardRows keeps page ids and each row's own status", () => {
+  expect(
+    boardRows([
+      { pageId: "p1", title: "Slots.lv", status: "Live" },
+      { pageId: "p2", title: "No status" },
+      { title: "no id" },
+      null,
+    ]),
+  ).toEqual([
+    { pageId: "p1", title: "Slots.lv", status: "Live" },
+    { pageId: "p2", title: "No status", status: null },
+  ]);
+  expect(boardRows(null)).toEqual([]);
+  expect(boardRows("not-an-array")).toEqual([]);
 });
 
 test("clientKey strips parenthetical suffixes and normalizes whitespace", () => {

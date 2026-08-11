@@ -60,6 +60,31 @@ export function brandTitles(raw: unknown): string[] {
   return [...new Set(out)];
 }
 
+/**
+ * The contributing Notion rows stored on `clients.raw`, with the page id and each row's OWN
+ * `Account Status`. The clubbed client status is a DIFFERENT thing (the winning row's) and must not be
+ * substituted for it: whether an override on a row is inert depends on that row's own value.
+ */
+export function boardRows(
+  raw: unknown,
+): { pageId: string; title: string; status: string | null }[] {
+  if (!Array.isArray(raw)) return [];
+  const rows: unknown[] = raw;
+  const out: { pageId: string; title: string; status: string | null }[] = [];
+  for (const p of rows) {
+    if (!p || typeof p !== "object") continue;
+    if (!("pageId" in p) || typeof p.pageId !== "string") continue;
+    const title = "title" in p ? p.title : undefined;
+    const status = "status" in p ? p.status : undefined;
+    out.push({
+      pageId: p.pageId,
+      title: typeof title === "string" ? title : "",
+      status: typeof status === "string" ? status : null,
+    });
+  }
+  return out;
+}
+
 export interface ParsedCampaignRow {
   pageId: string;
   title: string;
