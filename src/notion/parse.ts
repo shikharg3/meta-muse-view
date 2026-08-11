@@ -1,4 +1,5 @@
 import type { NotionPage, NotionProp } from "./client";
+import { MACHINE_STATUSES } from "@/lib/delivery-status";
 
 /**
  * Extract act_ ids from a free-text cell. Separators are commas and newlines
@@ -120,17 +121,35 @@ export function parseClientName(page: NotionPage): string {
 // Highest-priority status wins when a client has multiple board rows. Every option on the board must
 // appear here: an unlisted status scores 0 and would lose to "Not started", taking the client's
 // active-account set from the wrong row.
-const STATUS_PRIORITY: Record<string, number> = {
-  Live: 6,
-  "Budget Finished - Top Up": 5, // still running, just awaiting a top-up
-  "On Boarding": 4,
-  Paused: 3,
+//
+// The five machine-owned delivery states outrank the commercial ones: each describes an engagement
+// that is CURRENT but not delivering, which is a stronger claim to being "today's row" than a
+// finished or not-yet-started engagement.
+export const STATUS_PRIORITY: Record<string, number> = {
+  Live: 9,
+  "All ads rejected": 8,
+  "Ad Account Blocked": 7,
+  "Ad Account Disabled": 6,
+  Paused: 5,
+  "Budget Finished - Top Up": 4, // still running, just awaiting a top-up
+  "On Boarding": 3,
   "Full Budget Finished": 2,
   "Not started": 1,
 };
 
-/** Statuses meaning the engagement is (or should be) delivering right now. */
-export const LIVE_STATUSES: readonly string[] = ["Live", "Budget Finished - Top Up", "On Boarding"];
+/**
+ * Statuses meaning the engagement is CURRENT — keep maintaining this row. Note this is no longer
+ * "is delivering": a machine-written `Paused` or `Ad Account Disabled` row is still the client's
+ * live engagement, and its pacing columns are still wanted.
+ *
+ * Every machine-owned value belongs here. That is what stops a machine write from moving `isLive`,
+ * which the budget job also uses to assign a shared ad account to whichever row is current.
+ */
+export const LIVE_STATUSES: readonly string[] = [
+  ...MACHINE_STATUSES,
+  "Budget Finished - Top Up",
+  "On Boarding",
+];
 
 /**
  * Group campaigns into clients. A campaign groups by its linked Clients-board entity (the
