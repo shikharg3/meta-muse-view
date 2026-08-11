@@ -264,10 +264,14 @@ const same = (current: number | null, value: number): boolean =>
  * The `Account Status` to WRITE for one row, or null to leave the cell alone.
  *
  * Ownership is read straight off the current value, which is why the machine and human value sets
- * must stay disjoint. This gate is deliberately NOT `notLive`: that one governs the four numeric
- * columns and treats an empty cell as non-live, so reusing it here would also refuse the two
- * human-owned statuses that ARE live (`On Boarding`, `Budget Finished - Top Up`) for the wrong reason
- * — and silently permit them the day either is added to the machine set.
+ * must stay disjoint. The gate is deliberately NOT `notLive`: `On Boarding` and `Budget Finished -
+ * Top Up` are human-owned but ARE in `LIVE_STATUSES`, so a `notLive` gate would happily overwrite the
+ * team's own record on those rows. Only membership of the machine set decides ownership.
+ *
+ * The empty-cell branch below is unreachable from the job today: a row with no status is `notLive`,
+ * and non-live rows are excluded from account→row attribution upstream, so they arrive with no
+ * campaigns and derive nothing. The feature MAINTAINS a status, it does not BOOTSTRAP one — a human
+ * sets a machine value once, and the sync keeps it true from then on.
  */
 export function statusForRow(args: {
   accounts: StatusAccount[];
@@ -708,6 +712,17 @@ export async function syncNotionDailyBudgets(
   const spendByCampaign = new Map(spendRows.map((r) => [r.entityId, Number(r.spend ?? 0)]));
   // sumDailyBudget assumes every ad set it is handed is live; the status ladder needs all of them.
   const activeAdSetRows = adSetRows.filter((s) => s.effectiveStatus === "ACTIVE");
+  // Shaped once for the whole cycle: both are whole-table projections that depend on no board row, and
+  // rebuilding them per row allocated on the order of 10^5 throwaway objects for an identical result.
+  const ladderAdSets: StatusAdSet[] = adSetRows.map((s) => ({
+    id: s.id,
+    campaignId: s.campaignId,
+    active: s.effectiveStatus === "ACTIVE",
+  }));
+  const ladderAds: StatusAd[] = allAdRows.map((a) => ({
+    adSetId: a.adSetId,
+    disapproved: a.effectiveStatus === "DISAPPROVED",
+  }));
 
   const byAccount = new Map<string, AttributedCampaign[]>();
   for (const c of campaignRows) {
@@ -842,10 +857,20 @@ export async function syncNotionDailyBudgets(
     // hand-edit", which is false for a column humans still set commercial values in. Options are
     // appended first so a write can never fail on a status the board does not offer yet.
     const statusKey = resolvePropertyKey(Object.keys(props), ACCOUNT_STATUS_COLUMN);
-    const statusCol = statusKey ? props[statusKey] : undefined;
+    let statusCol = statusKey ? props[statusKey] : undefined;
     if (statusKey && statusCol && !opts.dryRun) {
-      const added = await notion.addStatusOptions(dsId, statusKey, [...MACHINE_STATUSES]);
-      if (added.length > 0) result.columnsTouched.push(`added options: ${added.join(", ")}`);
+      // A schema-bootstrap failure must degrade the status feature only. Left unguarded this `await`
+      // sits before every write in the loop, so one Notion hiccup would cost the whole board its
+      // budget, spend, funds, date and destination values for the day.
+      try {
+        const added = await notion.addStatusOptions(dsId, statusKey, [...MACHINE_STATUSES]);
+        if (added.length > 0) result.columnsTouched.push(`added options: ${added.join(", ")}`);
+      } catch (e) {
+        result.warning = `Account Status options could not be ensured (${e instanceof Error ? e.message : String(e)}); status left untouched`;
+        statusCol = undefined;
+      }
+    } else if (!statusKey) {
+      result.warning = `no "${ACCOUNT_STATUS_COLUMN}" column on this board; status left untouched`;
     }
 
     // Pinned statuses, loaded once per data source rather than per row.
@@ -1009,15 +1034,8 @@ export async function syncNotionDailyBudgets(
               : [];
           }),
           campaigns: mine.map((c) => ({ id: c.id, active: c.active })),
-          adSets: adSetRows.map((s) => ({
-            id: s.id,
-            campaignId: s.campaignId,
-            active: s.effectiveStatus === "ACTIVE",
-          })),
-          ads: allAdRows.map((a) => ({
-            adSetId: a.adSetId,
-            disapproved: a.effectiveStatus === "DISAPPROVED",
-          })),
+          adSets: ladderAdSets,
+          ads: ladderAds,
           current: row.status,
           override: overrideByPage.get(row.pageId) ?? null,
         });

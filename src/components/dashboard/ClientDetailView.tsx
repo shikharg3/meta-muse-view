@@ -6,7 +6,7 @@ import { addDays } from "@/lib/range";
 import { useSort, SortHeader } from "@/components/dashboard/SortableTable";
 import { CampaignTable } from "@/components/dashboard/CampaignTable";
 import { StatusPill } from "@/components/dashboard/StatusPill";
-import { MACHINE_STATUSES, HUMAN_STATUSES } from "@/lib/delivery-status";
+import { MACHINE_STATUSES, isMachineStatus } from "@/lib/delivery-status";
 import type { ClientDetail, CampaignBudget } from "@/server/fns/clients";
 
 interface Props {
@@ -305,9 +305,9 @@ export function ClientDetailView({
           <div className="px-5 py-4 border-b border-border">
             <h3 className="text-sm font-semibold">Account Status overrides</h3>
             <p className="text-[11px] text-muted-foreground mt-0.5 max-w-3xl">
-              The sync derives this column from Meta each hour. Pin a row to hold a value; clear it
+              The sync derives this column from Meta once a day. Pin a row to hold a value; clear it
               to hand the row back. Rows sitting on a commercial status are never touched by the
-              sync.
+              sync, and a pin on one of those rows is stored but not applied.
             </p>
           </div>
           <div className="divide-y divide-border">
@@ -483,8 +483,9 @@ function StatusOverrideRow({
   const [error, setError] = useState<string | null>(null);
   // A human-owned value on the board beats everything, including an override, so a pin on such a row
   // is stored but not applied — say so rather than letting it look effective.
-  const shadowed =
-    boardStatus !== null && (HUMAN_STATUSES as readonly string[]).includes(boardStatus);
+  // Mirrors the sync's own gate exactly (`!isMachineStatus(current)`), so a legacy or mistyped board
+  // option is shown as inert too rather than only the four known commercial values.
+  const shadowed = boardStatus !== null && !isMachineStatus(boardStatus);
 
   async function change(value: string) {
     setBusy(true);

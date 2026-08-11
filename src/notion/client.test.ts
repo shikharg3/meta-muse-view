@@ -97,3 +97,52 @@ test("addStatusOptions throws when the property is not a status property", async
     "status",
   );
 });
+
+test("addStatusOptions refuses to PATCH when the schema carries no options array", async () => {
+  // The destructive branch. An options-less `status` object used to fall back to [], which would send
+  // ONLY the requested names — and since the array REPLACES the option list, every existing option
+  // (and every row's value in it) would be deleted from a board the whole team uses. A read that does
+  // not show the current options is not a licence to replace them.
+  const { calls, impl } = recorder([
+    { properties: { "Account Status": { id: "x", name: "Account Status", type: "status" } } },
+  ]);
+  const client = new NotionClient("tok", impl);
+
+  await expect(client.addStatusOptions("ds1", "Account Status", ["Live"])).rejects.toThrow(
+    "options",
+  );
+  expect(calls).toHaveLength(1); // read only — no PATCH may be issued
+});
+
+test("addStatusOptions refuses to PATCH when status.options is not an array", async () => {
+  const { calls, impl } = recorder([
+    {
+      properties: {
+        "Account Status": {
+          id: "x",
+          name: "Account Status",
+          type: "status",
+          status: { options: {} },
+        },
+      },
+    },
+  ]);
+  const client = new NotionClient("tok", impl);
+
+  await expect(client.addStatusOptions("ds1", "Account Status", ["Live"])).rejects.toThrow(
+    "options",
+  );
+  expect(calls).toHaveLength(1);
+});
+
+test("addStatusOptions rejects duplicate requested names instead of letting Notion 400", async () => {
+  // Names are unique case-insensitively in Notion. Deduping only against EXISTING options let two
+  // case-equal requested names through, and the PATCH would fail opaquely.
+  const { calls, impl } = recorder([schemaWith(["Live"])]);
+  const client = new NotionClient("tok", impl);
+
+  await expect(
+    client.addStatusOptions("ds1", "Account Status", ["Paused", "paused"]),
+  ).rejects.toThrow("duplicate");
+  expect(calls).toHaveLength(0); // rejected pre-flight, before the schema is even read
+});

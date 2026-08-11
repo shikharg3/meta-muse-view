@@ -222,7 +222,7 @@ export async function runNotionSync(): Promise<{
     const b = await syncNotionDailyBudgets();
     await audit(
       "sync.notion",
-      `synced ${n} clients from Notion; wrote ${b?.updated ?? 0} daily budget(s)`,
+      `synced ${n} clients from Notion; wrote ${b?.updated ?? 0} board cell(s)`,
     );
     return { ok: true, clients: n, budgets: b?.updated ?? 0 };
   } catch (e) {

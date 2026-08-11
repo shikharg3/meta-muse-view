@@ -238,6 +238,8 @@ test("a live row that can no longer be projected has its stale date blanked", ()
   expect(
     planEndDate({ ...gone, status: "Full Budget Finished", current: "2026-09-14" }).clear,
   ).toBe(false);
+  // The claim in that comment, actually asserted rather than only stated.
+  expect(planEndDate({ ...gone, status: "Paused", current: "2026-09-14" }).clear).toBe(true);
 });
 
 test("planEndDate surfaces the forecaster's reason instead of writing a blank", () => {
@@ -380,6 +382,9 @@ test("statusForRow ignores an override that is not a machine-owned value", () =>
   );
 });
 
+// Pins the function's contract, but note the job cannot reach this input: an empty status is `notLive`,
+// and non-live rows are excluded from account→row attribution, so they arrive with no campaigns. The
+// sync maintains a status, it does not bootstrap one.
 test("statusForRow fills an empty cell", () => {
   expect(statusForRow({ ...liveRow, current: null, override: null })).toBe("Live");
 });
