@@ -146,3 +146,45 @@ test("addStatusOptions rejects duplicate requested names instead of letting Noti
   ).rejects.toThrow("duplicate");
   expect(calls).toHaveLength(0); // rejected pre-flight, before the schema is even read
 });
+
+test("addStatusOptions resends existing options by id, not name alone", async () => {
+  // A name-only entry leaves it to Notion whether to match the existing option or mint a same-named
+  // twin under a fresh id. The second would orphan every row's stored value just as surely as
+  // dropping the option would. The id came from the read, so pinning it is unambiguous.
+  const { calls, impl } = recorder([schemaWith(["Live", "Paused"]), {}]);
+  const client = new NotionClient("tok", impl);
+
+  await client.addStatusOptions("ds1", "Account Status", ["All ads rejected"]);
+
+  const sent = calls[1].body as {
+    properties: { "Account Status": { status: { options: { id?: string; name: string }[] } } };
+  };
+  expect(sent.properties["Account Status"].status.options).toEqual([
+    { id: "id0", name: "Live" },
+    { id: "id1", name: "Paused" },
+    { name: "All ads rejected" }, // no id yet — it does not exist on the board
+  ]);
+});
+
+test("addStatusOptions refuses to PATCH when an option lacks a usable name", async () => {
+  // Array.isArray is not enough: a malformed element would otherwise blow up mid-map with a raw
+  // TypeError rather than the descriptive refusal.
+  const { calls, impl } = recorder([
+    {
+      properties: {
+        "Account Status": {
+          id: "x",
+          name: "Account Status",
+          type: "status",
+          status: { options: [{ id: "id0", name: "Live" }, { id: "id1" }] },
+        },
+      },
+    },
+  ]);
+  const client = new NotionClient("tok", impl);
+
+  await expect(client.addStatusOptions("ds1", "Account Status", ["Paused"])).rejects.toThrow(
+    "refusing to PATCH",
+  );
+  expect(calls).toHaveLength(1);
+});

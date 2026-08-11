@@ -162,12 +162,22 @@ export class NotionClient {
       throw new Error(`"${propName}" is a ${String(prop.type)} property, not a status property`);
     }
     const listed = (prop.status as { options?: unknown } | undefined)?.options;
-    if (!Array.isArray(listed)) {
+    // Rebuilt element by element rather than cast wholesale: a malformed entry must produce the
+    // descriptive refusal below, not a TypeError from the middle of a map.
+    const current: { id: string | null; name: string }[] = [];
+    if (Array.isArray(listed)) {
+      for (const entry of listed) {
+        if (entry === null || typeof entry !== "object") break;
+        const rec: Record<string, unknown> = entry;
+        if (typeof rec.name !== "string") break;
+        current.push({ id: typeof rec.id === "string" ? rec.id : null, name: rec.name });
+      }
+    }
+    if (!Array.isArray(listed) || current.length !== listed.length) {
       throw new Error(
-        `"${propName}" returned no status.options array; refusing to PATCH, which would replace the board's option list`,
+        `"${propName}" returned no usable status.options array; refusing to PATCH, which would replace the board's option list`,
       );
     }
-    const current = listed as { name: string }[];
     const have = new Set(current.map((o) => o.name.toLowerCase()));
     const missing = names.filter((n) => !have.has(n.toLowerCase()));
     if (missing.length === 0) return [];
@@ -178,7 +188,12 @@ export class NotionClient {
           [propName]: {
             status: {
               options: [
-                ...current.map((o) => ({ name: o.name })),
+                // `id` pins each entry to the option that already exists. Name alone would leave it to
+                // Notion whether to match it or mint a same-named twin under a new id, which would
+                // orphan every row's stored value exactly as deleting the option would.
+                ...current.map((o) =>
+                  o.id === null ? { name: o.name } : { id: o.id, name: o.name },
+                ),
                 ...missing.map((name) => ({ name })),
               ],
             },

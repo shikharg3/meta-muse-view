@@ -481,11 +481,11 @@ function StatusOverrideRow({
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // A human-owned value on the board beats everything, including an override, so a pin on such a row
-  // is stored but not applied — say so rather than letting it look effective.
-  // Mirrors the sync's own gate exactly (`!isMachineStatus(current)`), so a legacy or mistyped board
-  // option is shown as inert too rather than only the four known commercial values.
-  const shadowed = boardStatus !== null && !isMachineStatus(boardStatus);
+  // Anything the sync does not own is inert: a pin on it is stored and never applied. That covers the
+  // four commercial values, any legacy or mistyped option, AND an empty cell — an empty status makes
+  // the row non-live, which excludes it from attribution upstream, so the sync never derives for it.
+  // `isMachineStatus(null)` is already false, so no null guard is wanted here.
+  const shadowed = !isMachineStatus(boardStatus);
 
   async function change(value: string) {
     setBusy(true);
