@@ -1,4 +1,5 @@
 import type { NotionPage, NotionProp } from "./client";
+import { MACHINE_STATUSES } from "@/lib/delivery-status";
 
 /**
  * Extract act_ ids from a free-text cell. Separators are commas and newlines
@@ -57,6 +58,31 @@ export function brandTitles(raw: unknown): string[] {
     if (typeof t === "string" && t.trim()) out.push(t.trim());
   }
   return [...new Set(out)];
+}
+
+/**
+ * The contributing Notion rows stored on `clients.raw`, with the page id and each row's OWN
+ * `Account Status`. The clubbed client status is a DIFFERENT thing (the winning row's) and must not be
+ * substituted for it: whether an override on a row is inert depends on that row's own value.
+ */
+export function boardRows(
+  raw: unknown,
+): { pageId: string; title: string; status: string | null }[] {
+  if (!Array.isArray(raw)) return [];
+  const rows: unknown[] = raw;
+  const out: { pageId: string; title: string; status: string | null }[] = [];
+  for (const p of rows) {
+    if (!p || typeof p !== "object") continue;
+    if (!("pageId" in p) || typeof p.pageId !== "string") continue;
+    const title = "title" in p ? p.title : undefined;
+    const status = "status" in p ? p.status : undefined;
+    out.push({
+      pageId: p.pageId,
+      title: typeof title === "string" ? title : "",
+      status: typeof status === "string" ? status : null,
+    });
+  }
+  return out;
 }
 
 export interface ParsedCampaignRow {
@@ -120,17 +146,35 @@ export function parseClientName(page: NotionPage): string {
 // Highest-priority status wins when a client has multiple board rows. Every option on the board must
 // appear here: an unlisted status scores 0 and would lose to "Not started", taking the client's
 // active-account set from the wrong row.
-const STATUS_PRIORITY: Record<string, number> = {
-  Live: 6,
-  "Budget Finished - Top Up": 5, // still running, just awaiting a top-up
-  "On Boarding": 4,
-  Paused: 3,
+//
+// The five machine-owned delivery states outrank the commercial ones: each describes an engagement
+// that is CURRENT but not delivering, which is a stronger claim to being "today's row" than a
+// finished or not-yet-started engagement.
+export const STATUS_PRIORITY: Record<string, number> = {
+  Live: 9,
+  "All ads rejected": 8,
+  "Ad Account Blocked": 7,
+  "Ad Account Disabled": 6,
+  Paused: 5,
+  "Budget Finished - Top Up": 4, // still running, just awaiting a top-up
+  "On Boarding": 3,
   "Full Budget Finished": 2,
   "Not started": 1,
 };
 
-/** Statuses meaning the engagement is (or should be) delivering right now. */
-export const LIVE_STATUSES: readonly string[] = ["Live", "Budget Finished - Top Up", "On Boarding"];
+/**
+ * Statuses meaning the engagement is CURRENT — keep maintaining this row. Note this is no longer
+ * "is delivering": a machine-written `Paused` or `Ad Account Disabled` row is still the client's
+ * live engagement, and its pacing columns are still wanted.
+ *
+ * Every machine-owned value belongs here. That is what stops a machine write from moving `isLive`,
+ * which the budget job also uses to assign a shared ad account to whichever row is current.
+ */
+export const LIVE_STATUSES: readonly string[] = [
+  ...MACHINE_STATUSES,
+  "Budget Finished - Top Up",
+  "On Boarding",
+];
 
 /**
  * Group campaigns into clients. A campaign groups by its linked Clients-board entity (the

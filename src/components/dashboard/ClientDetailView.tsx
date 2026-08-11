@@ -6,6 +6,7 @@ import { addDays } from "@/lib/range";
 import { useSort, SortHeader } from "@/components/dashboard/SortableTable";
 import { CampaignTable } from "@/components/dashboard/CampaignTable";
 import { StatusPill } from "@/components/dashboard/StatusPill";
+import { MACHINE_STATUSES, isMachineStatus } from "@/lib/delivery-status";
 import type { ClientDetail, CampaignBudget } from "@/server/fns/clients";
 
 interface Props {
@@ -15,6 +16,12 @@ interface Props {
   /** Clients a campaign can be re-attributed to, and the handler (admin only). */
   moveTargets?: { id: string; name: string }[];
   onMoveCampaign?: (campaignId: string, clientId: string | null) => void;
+  /** Page id -> pinned status, admin only. */
+  statusOverrides?: Record<string, string>;
+  onSetStatusOverride?: (
+    pageId: string,
+    status: string | null,
+  ) => Promise<{ ok: boolean; error?: string }>;
   onMutate: (
     action: "add" | "remove",
     accountId: string,
@@ -30,6 +37,8 @@ export function ClientDetailView({
   isAdmin,
   moveTargets,
   onMoveCampaign,
+  statusOverrides,
+  onSetStatusOverride,
   onMutate,
 }: Props) {
   const [newAccount, setNewAccount] = useState("");
@@ -291,6 +300,31 @@ export function ClientDetailView({
         </div>
       </section>
 
+      {isAdmin && onSetStatusOverride && detail.notionRows.length > 0 && (
+        <section className="rounded-xl border border-border bg-card overflow-hidden">
+          <div className="px-5 py-4 border-b border-border">
+            <h3 className="text-sm font-semibold">Account Status overrides</h3>
+            <p className="text-[11px] text-muted-foreground mt-0.5 max-w-3xl">
+              The sync derives this column from Meta once a day. Pin a row to hold a value; clear it
+              to hand the row back. Rows sitting on a commercial status are never touched by the
+              sync, and a pin on one of those rows is stored but not applied.
+            </p>
+          </div>
+          <div className="divide-y divide-border">
+            {detail.notionRows.map((r) => (
+              <StatusOverrideRow
+                key={r.pageId}
+                pageId={r.pageId}
+                title={r.title}
+                boardStatus={r.status}
+                override={statusOverrides?.[r.pageId]}
+                onSet={onSetStatusOverride}
+              />
+            ))}
+          </div>
+        </section>
+      )}
+
       <section className="space-y-3">
         <div className="flex flex-wrap items-center gap-2">
           <h3 className="text-sm font-semibold flex-1">
@@ -431,6 +465,69 @@ const OVERRUN_GRACE_DAYS = 7;
 
 const sentence = (s: string | null): string | null =>
   s ? s.charAt(0).toUpperCase() + s.slice(1) : null;
+
+function StatusOverrideRow({
+  pageId,
+  title,
+  boardStatus,
+  override,
+  onSet,
+}: {
+  pageId: string;
+  title: string;
+  boardStatus: string | null;
+  override: string | undefined;
+  onSet: (pageId: string, status: string | null) => Promise<{ ok: boolean; error?: string }>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // Anything the sync does not own is inert: a pin on it is stored and never applied. That covers the
+  // four commercial values, any legacy or mistyped option, AND an empty cell — an empty status makes
+  // the row non-live, which excludes it from attribution upstream, so the sync never derives for it.
+  // `isMachineStatus(null)` is already false, so no null guard is wanted here.
+  const shadowed = !isMachineStatus(boardStatus);
+
+  async function change(value: string) {
+    setBusy(true);
+    setError(null);
+    const res = await onSet(pageId, value === "" ? null : value);
+    if (!res.ok) setError(res.error ?? "Failed");
+    setBusy(false);
+  }
+
+  return (
+    <div className="flex items-center gap-3 px-5 py-2.5 text-xs">
+      <span className="min-w-0 flex-1 truncate font-medium">{title || pageId}</span>
+      <span className="font-mono text-[10px] uppercase text-muted-foreground">
+        {boardStatus ?? "—"}
+      </span>
+      <select
+        value={override ?? ""}
+        disabled={busy}
+        onChange={(e) => void change(e.target.value)}
+        title="Pin this row's Account Status, or hand it back to the sync"
+        className="h-7 rounded border border-border bg-background px-1.5 text-[10px]"
+      >
+        <option value="">No override</option>
+        {MACHINE_STATUSES.map((s) => (
+          <option key={s} value={s}>
+            {s}
+          </option>
+        ))}
+      </select>
+      {shadowed && override && (
+        <span
+          className="flex items-center gap-1 text-warning"
+          title="A human-owned status on the board takes precedence; this override will not be applied until the board value is a machine-owned one."
+        >
+          <AlertTriangle className="size-3.5" />
+          inert
+        </span>
+      )}
+      {error && <span className="text-destructive">{error}</span>}
+    </div>
+  );
+}
 
 function Kpi({
   label,

@@ -18,6 +18,7 @@ import {
   SPEND_WINDOW_DAYS,
   type AttributedCampaign,
   type ActiveAdSet,
+  statusForRow,
 } from "./notion-budget";
 
 const camp = (id: string, over: Partial<AttributedCampaign> = {}): AttributedCampaign => ({
@@ -166,7 +167,7 @@ test("planRow says so when a live row has no contracted budget to spread", () =>
 test("planRow never touches a non-live engagement", () => {
   // A closed period's contracted budget is the only account of it; its accounts get recycled onto the
   // next client, so nothing about today applies.
-  for (const status of ["Full Budget Finished", "Paused", "Not started", null]) {
+  for (const status of ["Full Budget Finished", "Not started", null]) {
     for (const target of [null, 250, 7500]) {
       const plan = planRow({ status, current: 250, target });
       expect(plan.dollars).toBeNull();
@@ -175,12 +176,19 @@ test("planRow never touches a non-live engagement", () => {
   }
 });
 
+test("planRow DOES maintain a paused engagement", () => {
+  // Paused became machine-owned when the sync started deriving Account Status: it means "current
+  // engagement, delivery stopped", not "closed". Its pacing columns are still wanted, because it is
+  // the row that is about to restart.
+  expect(planRow({ status: "Paused", current: 250, target: 7500 }).dollars).toBe(7500);
+});
+
 test("planSpendRow follows the same live-only rule and skips unchanged values", () => {
   expect(planSpendRow({ status: "Live", current: null, spend: 715.04 }).dollars).toBe(715.04);
   expect(planSpendRow({ status: "Live", current: 715.04, spend: 715.04 }).skip).toBe("unchanged");
   // Zero spend on a live row IS written — it says delivery stopped.
   expect(planSpendRow({ status: "Live", current: 500, spend: 0 }).dollars).toBe(0);
-  expect(planSpendRow({ status: "Paused", current: 500, spend: 900 }).skip).toBe(
+  expect(planSpendRow({ status: "Full Budget Finished", current: 500, spend: 900 }).skip).toBe(
     "not a live engagement; keeping the recorded value",
   );
   expect(planSpendRow({ status: "Live", current: 500, spend: null }).skip).toBe(
@@ -205,7 +213,7 @@ test("planEndDate writes a projection only for live rows, and never rewrites the
     skip: "unchanged",
   });
   // A finished engagement's accounts get recycled, so its dates are none of our business.
-  for (const status of ["Full Budget Finished", "Paused", "Not started", null]) {
+  for (const status of ["Full Budget Finished", "Not started", null]) {
     expect(planEndDate({ ...live, status })).toEqual({
       date: null,
       clear: false,
@@ -225,8 +233,13 @@ test("a live row that can no longer be projected has its stale date blanked", ()
   });
   // Nothing there to clear, so nothing is written.
   expect(planEndDate({ ...gone, current: null }).clear).toBe(false);
-  // A non-live row is never touched, stale date or not.
-  expect(planEndDate({ ...gone, status: "Paused", current: "2026-09-14" }).clear).toBe(false);
+  // A non-live row is never touched, stale date or not. Paused no longer qualifies — it is a current
+  // engagement whose delivery stopped, so its stale date is still cleared.
+  expect(
+    planEndDate({ ...gone, status: "Full Budget Finished", current: "2026-09-14" }).clear,
+  ).toBe(false);
+  // The claim in that comment, actually asserted rather than only stated.
+  expect(planEndDate({ ...gone, status: "Paused", current: "2026-09-14" }).clear).toBe(true);
 });
 
 test("planEndDate surfaces the forecaster's reason instead of writing a blank", () => {
@@ -317,7 +330,7 @@ test("destinations are written for live rows and cleared when nothing is running
 });
 
 test("a finished engagement's destinations are never touched", () => {
-  for (const status of ["Full Budget Finished", "Paused", "Not started"])
+  for (const status of ["Full Budget Finished", "Not started"])
     expect(
       planDestinations({ status, current: "https://a.example/x", urls: ["https://b.example/z"] }),
     ).toEqual({ text: null, skip: "not a live engagement" });
@@ -325,4 +338,58 @@ test("a finished engagement's destinations are never touched", () => {
 
 test("the destination column carries the machine-written marker", () => {
   expect(AUTO_DESTINATION_COLUMN).toBe("🤖 Destination URL");
+});
+
+// One healthy row's worth of ladder input: a live account, an active campaign, an active ad set and a
+// running ad. Each test perturbs one piece.
+const liveRow = {
+  accounts: [{ disabled: false, deliverable: true }],
+  campaigns: [{ id: "c1", active: true }],
+  adSets: [{ id: "s1", campaignId: "c1", active: true }],
+  ads: [{ adSetId: "s1", disapproved: false }],
+};
+
+test("statusForRow writes nothing when the row supports no verdict", () => {
+  expect(
+    statusForRow({ ...liveRow, accounts: [], campaigns: [], current: "Live", override: null }),
+  ).toBeNull();
+});
+
+test("statusForRow never overwrites a human-owned value, even with an override set", () => {
+  // The one rule with no exceptions: a commercial status is the team's record, and Meta cannot know
+  // whether an exhausted budget means "contract over" or "awaiting a top-up".
+  expect(
+    statusForRow({ ...liveRow, current: "Full Budget Finished", override: "Paused" }),
+  ).toBeNull();
+  expect(statusForRow({ ...liveRow, current: "On Boarding", override: null })).toBeNull();
+});
+
+test("statusForRow prefers a pinned override over the derived value", () => {
+  expect(
+    statusForRow({
+      ...liveRow,
+      ads: [{ adSetId: "s1", disapproved: true }],
+      current: "All ads rejected",
+      override: "Live",
+    }),
+  ).toBe("Live");
+});
+
+test("statusForRow ignores an override that is not a machine-owned value", () => {
+  // The server fn rejects these, but a row predating a rename could still hold one.
+  expect(statusForRow({ ...liveRow, current: "Paused", override: "Full Budget Finished" })).toBe(
+    "Live",
+  );
+});
+
+// Pins the function's contract, but note the job cannot reach this input: an empty status is `notLive`,
+// and non-live rows are excluded from account→row attribution, so they arrive with no campaigns. The
+// sync maintains a status, it does not bootstrap one.
+test("statusForRow fills an empty cell", () => {
+  expect(statusForRow({ ...liveRow, current: null, override: null })).toBe("Live");
+});
+
+test("statusForRow returns null when the derived value already matches the cell", () => {
+  // An unchanged cell is never rewritten, so `Last edited time` keeps meaning "a human edited this".
+  expect(statusForRow({ ...liveRow, current: "Live", override: null })).toBeNull();
 });

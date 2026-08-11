@@ -412,3 +412,21 @@ export const campaignClientOverrides = pgTable("campaign_client_overrides", {
   setBy: text("set_by"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+/**
+ * Admin-forced `Account Status` for one Notion board row, overriding the derived value.
+ *
+ * Deliberately NOT foreign-keyed, for the same reason as `campaignClientOverrides`: a cascade would
+ * silently erase an operator's correction, and a row pointing at a page that no longer exists is
+ * simply ignored. Keyed by page id rather than client id because the Notion sync re-keys client ids.
+ *
+ * `status` must be one of `MACHINE_STATUSES` (`src/lib/delivery-status.ts`). Pinning a human-owned
+ * value is just editing Notion, and permitting it here would break the disjoint-set invariant the
+ * whole feature rests on. The check lives in the server fn, not the column type.
+ */
+export const notionStatusOverrides = pgTable("notion_status_overrides", {
+  pageId: text("page_id").primaryKey(),
+  status: text("status").notNull(),
+  setBy: text("set_by"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});

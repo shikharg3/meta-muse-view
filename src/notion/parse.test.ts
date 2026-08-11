@@ -7,9 +7,12 @@ import {
   parseCampaignRow,
   parseClientName,
   brandTitles,
+  boardRows,
   resolvePropertyKey,
   LIVE_STATUSES,
+  STATUS_PRIORITY,
 } from "./parse";
+import { MACHINE_STATUSES, HUMAN_STATUSES } from "@/lib/delivery-status";
 import { parseNotionDbId } from "./client";
 import type { NotionPage } from "./client";
 
@@ -43,6 +46,22 @@ test("brandTitles extracts distinct row titles from stored raw pages", () => {
   expect(brandTitles(null)).toEqual([]);
   expect(brandTitles(undefined)).toEqual([]);
   expect(brandTitles("not-an-array")).toEqual([]);
+});
+
+test("boardRows keeps page ids and each row's own status", () => {
+  expect(
+    boardRows([
+      { pageId: "p1", title: "Slots.lv", status: "Live" },
+      { pageId: "p2", title: "No status" },
+      { title: "no id" },
+      null,
+    ]),
+  ).toEqual([
+    { pageId: "p1", title: "Slots.lv", status: "Live" },
+    { pageId: "p2", title: "No status", status: null },
+  ]);
+  expect(boardRows(null)).toEqual([]);
+  expect(boardRows("not-an-array")).toEqual([]);
 });
 
 test("clientKey strips parenthetical suffixes and normalizes whitespace", () => {
@@ -260,4 +279,45 @@ test("parseNotionDbId accepts urls and raw ids", () => {
     "a9db4fac-5877-839f-bcba-01f33f9674ef",
   );
   expect(parseNotionDbId("not an id")).toBeNull();
+});
+
+test("STATUS_PRIORITY ranks every board option, machine states above commercial ones", () => {
+  // The map answers "which of a client's rows is the CURRENT engagement". Every machine value
+  // describes a current engagement that happens to be broken, so all of them outrank the
+  // commercial states.
+  const order = Object.entries(STATUS_PRIORITY)
+    .sort((a, b) => b[1] - a[1])
+    .map(([name]) => name);
+  expect(order).toEqual([
+    "Live",
+    "All ads rejected",
+    "Ad Account Blocked",
+    "Ad Account Disabled",
+    "Paused",
+    "Budget Finished - Top Up",
+    "On Boarding",
+    "Full Budget Finished",
+    "Not started",
+  ]);
+});
+
+test("every machine and human status is scored", () => {
+  for (const s of [...MACHINE_STATUSES, ...HUMAN_STATUSES]) {
+    expect(STATUS_PRIORITY[s]).toBeGreaterThan(0);
+  }
+});
+
+test("LIVE_STATUSES means 'engagement is current', so it holds every machine value", () => {
+  for (const s of MACHINE_STATUSES) expect(LIVE_STATUSES).toContain(s);
+});
+
+test("LIVE_STATUSES keeps the two human values it already had", () => {
+  // Dropping these would silently stop budget maintenance for onboarding and top-up rows.
+  expect(LIVE_STATUSES).toContain("On Boarding");
+  expect(LIVE_STATUSES).toContain("Budget Finished - Top Up");
+});
+
+test("finished and not-started engagements stay outside LIVE_STATUSES", () => {
+  expect(LIVE_STATUSES).not.toContain("Full Budget Finished");
+  expect(LIVE_STATUSES).not.toContain("Not started");
 });

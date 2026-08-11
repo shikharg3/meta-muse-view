@@ -9,6 +9,16 @@ import {
   type NotionPropSchema,
 } from "@/notion/client";
 import { LIVE_STATUSES, parseCampaignRow, resolvePropertyKey } from "@/notion/parse";
+import {
+  deriveStatus,
+  isMachineStatus,
+  MACHINE_STATUSES,
+  type MachineStatus,
+  type StatusAccount,
+  type StatusAd,
+  type StatusAdSet,
+  type StatusCampaign,
+} from "@/lib/delivery-status";
 import { attributeCampaign, brandVocab, type BrandVocab } from "@/lib/attribution";
 import { ownedCampaignIds } from "@/server/fns/campaign-attribution";
 import { accountStatus } from "@/server/agg";
@@ -55,6 +65,12 @@ export const SPEND_COLUMN = "Avg Daily Spend 7d ($)";
 export const FUNDS_COLUMN = "Funds Remaining ($)";
 export const PROJECTED_END_COLUMN = "Projected End Date";
 export const DESTINATION_COLUMN = "Destination URL";
+/**
+ * Shared with the team rather than owned outright: the machine writes the five delivery states and
+ * humans keep the commercial ones, so this column never carries the `🤖` marker below. See
+ * `src/lib/delivery-status.ts` for the ownership split.
+ */
+export const ACCOUNT_STATUS_COLUMN = "Account Status";
 /** Stamped onto every column name so the team can see the values are machine-written. */
 export const AUTO_MARKER = "🤖";
 export const AUTO_BUDGET_COLUMN = `${AUTO_MARKER} ${BUDGET_COLUMN}`;
@@ -245,6 +261,40 @@ const same = (current: number | null, value: number): boolean =>
   current !== null && Math.abs(current - value) < 0.005;
 
 /**
+ * The `Account Status` to WRITE for one row, or null to leave the cell alone.
+ *
+ * Ownership is read straight off the current value, which is why the machine and human value sets
+ * must stay disjoint. The gate is deliberately NOT `notLive`: `On Boarding` and `Budget Finished -
+ * Top Up` are human-owned but ARE in `LIVE_STATUSES`, so a `notLive` gate would happily overwrite the
+ * team's own record on those rows. Only membership of the machine set decides ownership.
+ *
+ * The empty-cell branch below is unreachable from the job today: a row with no status is `notLive`,
+ * and non-live rows are excluded from account→row attribution upstream, so they arrive with no
+ * campaigns and derive nothing. The feature MAINTAINS a status, it does not BOOTSTRAP one — a human
+ * sets a machine value once, and the sync keeps it true from then on.
+ */
+export function statusForRow(args: {
+  accounts: StatusAccount[];
+  campaigns: StatusCampaign[];
+  adSets: StatusAdSet[];
+  ads: StatusAd[];
+  current: string | null;
+  override: string | null;
+}): MachineStatus | null {
+  // A human-owned value is the team's record and beats everything, including a pinned override.
+  if (args.current !== null && !isMachineStatus(args.current)) return null;
+  const next = isMachineStatus(args.override)
+    ? args.override
+    : deriveStatus({
+        accounts: args.accounts,
+        campaigns: args.campaigns,
+        adSets: args.adSets,
+        ads: args.ads,
+      });
+  return next === null || next === args.current ? null : next;
+}
+
+/**
  * Whether to push the target daily budget onto a row.
  *
  * A finished or paused engagement is left alone: its contracted budget belongs to a closed period and
@@ -349,6 +399,8 @@ export interface NotionBudgetRow {
   destCurrent: string;
   destWritten: string | null;
   destSkip: string | null;
+  /** Derived delivery status written to `Account Status`, or null when the cell was left alone. */
+  statusWritten: MachineStatus | null;
   /** True when a stale date was blanked because the row can no longer be projected. */
   endCleared: boolean;
   endSkip: string | null;
@@ -577,7 +629,7 @@ export async function syncNotionDailyBudgets(
     return Number(r?.s ?? 0);
   };
 
-  const [campaignRows, adSetRows, accountRows, clientRows, spendRows, adLinkRows] =
+  const [campaignRows, adSetRows, accountRows, clientRows, spendRows, adLinkRows, allAdRows] =
     await Promise.all([
       db
         .select({
@@ -589,10 +641,16 @@ export async function syncNotionDailyBudgets(
           effectiveStatus: schema.campaigns.effectiveStatus,
         })
         .from(schema.campaigns),
+      // NOT filtered to ACTIVE: the status ladder has to tell "no ad set is active" apart from "no ad
+      // set has synced", and only the unfiltered set can. Budget summing filters in memory instead.
       db
-        .select({ campaignId: schema.adSets.campaignId, dailyBudget: schema.adSets.dailyBudget })
-        .from(schema.adSets)
-        .where(eq(schema.adSets.effectiveStatus, "ACTIVE")),
+        .select({
+          id: schema.adSets.id,
+          campaignId: schema.adSets.campaignId,
+          dailyBudget: schema.adSets.dailyBudget,
+          effectiveStatus: schema.adSets.effectiveStatus,
+        })
+        .from(schema.adSets),
       db
         .select({
           id: schema.accounts.id,
@@ -638,12 +696,33 @@ export async function syncNotionDailyBudgets(
           ),
         )
         .where(eq(schema.ads.effectiveStatus, "ACTIVE")),
+      // Every ad, status included: "all ads rejected" needs the complement of the ACTIVE set above,
+      // and an empty result has to stay distinguishable from "all disapproved".
+      db
+        .select({
+          adSetId: schema.ads.adSetId,
+          effectiveStatus: schema.ads.effectiveStatus,
+        })
+        .from(schema.ads),
     ]);
 
   const currencyOf = new Map(accountRows.map((a) => [a.id, a.currency]));
   const deliverable = new Set(accountRows.filter((a) => canDeliver(a)).map((a) => a.id));
   const accountById = new Map(accountRows.map((a) => [a.id, a]));
   const spendByCampaign = new Map(spendRows.map((r) => [r.entityId, Number(r.spend ?? 0)]));
+  // sumDailyBudget assumes every ad set it is handed is live; the status ladder needs all of them.
+  const activeAdSetRows = adSetRows.filter((s) => s.effectiveStatus === "ACTIVE");
+  // Shaped once for the whole cycle: both are whole-table projections that depend on no board row, and
+  // rebuilding them per row allocated on the order of 10^5 throwaway objects for an identical result.
+  const ladderAdSets: StatusAdSet[] = adSetRows.map((s) => ({
+    id: s.id,
+    campaignId: s.campaignId,
+    active: s.effectiveStatus === "ACTIVE",
+  }));
+  const ladderAds: StatusAd[] = allAdRows.map((a) => ({
+    adSetId: a.adSetId,
+    disapproved: a.effectiveStatus === "DISAPPROVED",
+  }));
 
   const byAccount = new Map<string, AttributedCampaign[]>();
   for (const c of campaignRows) {
@@ -678,7 +757,7 @@ export async function syncNotionDailyBudgets(
   // share of the draw. Two live engagements on one account then project to the same day — the day the
   // pot actually empties — instead of both being refused a date.
   const poolDaily = new Map<string, number>();
-  for (const [a, cs] of byAccount) poolDaily.set(a, sumDailyBudget(cs, adSetRows).dollars);
+  for (const [a, cs] of byAccount) poolDaily.set(a, sumDailyBudget(cs, activeAdSetRows).dollars);
 
   // pageId -> owning client. The cross-client whitelist is resolved lazily: it costs several queries
   // per client and only matters for clients that actually have campaigns on their accounts.
@@ -774,6 +853,30 @@ export async function syncNotionDailyBudgets(
     );
     if (destCol?.error) result.warning = destCol.error;
 
+    // Resolved by name, never through ensureColumn: the 🤖 marker means "machine-written, do not
+    // hand-edit", which is false for a column humans still set commercial values in. Options are
+    // appended first so a write can never fail on a status the board does not offer yet.
+    const statusKey = resolvePropertyKey(Object.keys(props), ACCOUNT_STATUS_COLUMN);
+    let statusCol = statusKey ? props[statusKey] : undefined;
+    if (statusKey && statusCol && !opts.dryRun) {
+      // A schema-bootstrap failure must degrade the status feature only. Left unguarded this `await`
+      // sits before every write in the loop, so one Notion hiccup would cost the whole board its
+      // budget, spend, funds, date and destination values for the day.
+      try {
+        const added = await notion.addStatusOptions(dsId, statusKey, [...MACHINE_STATUSES]);
+        if (added.length > 0) result.columnsTouched.push(`added options: ${added.join(", ")}`);
+      } catch (e) {
+        result.warning = `Account Status options could not be ensured (${e instanceof Error ? e.message : String(e)}); status left untouched`;
+        statusCol = undefined;
+      }
+    } else if (!statusKey) {
+      result.warning = `no "${ACCOUNT_STATUS_COLUMN}" column on this board; status left untouched`;
+    }
+
+    // Pinned statuses, loaded once per data source rather than per row.
+    const overrideByPage = new Map(
+      (await db.select().from(schema.notionStatusOverrides)).map((o) => [o.pageId, o.status]),
+    );
     const pages = await notion.queryDataSource(dsId);
     const byClient = new Map<string, BoardRow[]>();
     const orphans: BoardRow[] = [];
@@ -814,6 +917,7 @@ export async function syncNotionDailyBudgets(
       row: BoardRow;
       dest: TextPlan;
       sum: DailyBudgetSum | null;
+      status: MachineStatus | null;
       budget: RowPlan;
       spend: RowPlan;
       funds: RowPlan;
@@ -829,6 +933,8 @@ export async function syncNotionDailyBudgets(
     for (const row of orphans) {
       work.push({
         row,
+        // Unmapped rows have no attributed campaigns, so the ladder has nothing to reason from.
+        status: null,
         dest: { text: null, skip: noMapping },
         sum: null,
         budget: { dollars: null, skip: noMapping },
@@ -894,6 +1000,10 @@ export async function syncNotionDailyBudgets(
         if (!isLive.get(row.pageId)) {
           work.push({
             row,
+            // A non-live row is excluded from account→row attribution upstream, so it has no
+            // campaigns to derive from — and a human-owned or empty status is not the machine's to
+            // write anyway.
+            status: null,
             dest: { text: null, skip: "not a live engagement" },
             sum: null,
             budget: planRow({ status: row.status, current: row.budgetCurrent, target: null }),
@@ -909,6 +1019,26 @@ export async function syncNotionDailyBudgets(
           continue;
         }
         const mine = assigned.get(row.pageId) ?? [];
+        // Derived for every live row, independent of whether any numeric column can be computed: a
+        // row whose budget is unresolvable still has a delivery state worth reporting.
+        const statusNext = statusForRow({
+          accounts: row.accountIds.flatMap((a) => {
+            const acct = accountById.get(a);
+            return acct
+              ? [
+                  {
+                    disabled: accountStatus(acct.status) === "DISABLED",
+                    deliverable: canDeliver(acct),
+                  },
+                ]
+              : [];
+          }),
+          campaigns: mine.map((c) => ({ id: c.id, active: c.active })),
+          adSets: ladderAdSets,
+          ads: ladderAds,
+          current: row.status,
+          override: overrideByPage.get(row.pageId) ?? null,
+        });
         // Destinations come from the row's OWN attributed campaigns, so a shared account never leaks
         // another engagement's landing page onto this row. Ranked by the spend behind each page.
         const destSpend = new Map<string, number>();
@@ -947,7 +1077,7 @@ export async function syncNotionDailyBudgets(
           if (foreign.length > 0)
             skip = `account currency ${foreign.join("/")} cannot be summed into a ${COLUMN_CURRENCY} column`;
           else {
-            sum = sumDailyBudget(mine, adSetRows);
+            sum = sumDailyBudget(mine, activeAdSetRows);
             spend = avgDailySpend(mine.reduce((n, c) => n + (spendByCampaign.get(c.id) ?? 0), 0));
           }
         }
@@ -989,7 +1119,7 @@ export async function syncNotionDailyBudgets(
             const pool = poolDaily.get(a.id) ?? 0;
             const own = sumDailyBudget(
               mine.filter((c) => c.accountId === a.id),
-              adSetRows,
+              activeAdSetRows,
             ).dollars;
             if (pool <= 0 || own <= 0) continue; // this row draws nothing here
             claim += (balance / 100) * Math.min(1, own / pool);
@@ -1052,6 +1182,7 @@ export async function syncNotionDailyBudgets(
             row,
             dest,
             sum,
+            status: statusNext,
             budget: planRow({ status: row.status, current: row.budgetCurrent, target }),
             spend: planSpendRow({ status: row.status, current: row.spendCurrent, spend }),
             funds: planFundsRow({
@@ -1076,6 +1207,7 @@ export async function syncNotionDailyBudgets(
           row,
           dest,
           sum,
+          status: statusNext,
           // Not gated on `skip`: the target comes from the row's own contracted budget, so it is
           // writable even when the row's ad accounts are invisible to the token or absent entirely.
           budget: planRow({ status: row.status, current: row.budgetCurrent, target }),
@@ -1098,7 +1230,7 @@ export async function syncNotionDailyBudgets(
     }
 
     for (const w of work) {
-      const { row, sum, budget, spend, funds, end, dest } = w;
+      const { row, sum, budget, spend, funds, end, dest, status } = w;
       result.rows += 1;
       const detail: NotionBudgetRow = {
         pageId: row.pageId,
@@ -1131,6 +1263,7 @@ export async function syncNotionDailyBudgets(
         destCurrent: row.destCurrent,
         destWritten: null,
         destSkip: dest.skip,
+        statusWritten: null,
       };
       for (const [plan, column, key] of [
         [budget, budgetCol.column, "budgetWritten"],
@@ -1201,6 +1334,16 @@ export async function syncNotionDailyBudgets(
         result.updated += 1;
       } else if (dest.skip === "unchanged") result.unchanged += 1;
       else result.skipped += 1;
+      // Deliberately outside the `isLive` gate the numeric columns use: ownership was already decided
+      // by `statusForRow` from the cell's own value, and a null here means "leave it alone".
+      if (status !== null && statusCol) {
+        if (!opts.dryRun) {
+          await notion.setPageValue(row.pageId, statusCol.id, { status: { name: status } });
+          await sleep(WRITE_GAP_MS);
+        }
+        detail.statusWritten = status;
+        result.updated += 1;
+      }
       result.details.push(detail);
     }
   }

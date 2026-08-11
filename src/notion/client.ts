@@ -133,6 +133,78 @@ export class NotionClient {
   }
 
   /**
+   * Append missing options to an existing `status` property, returning the names actually added.
+   *
+   * Writable from API version 2025-09-03 onward, which this client pins. Only names are sent:
+   * `group` is omitted so existing options keep their current group and new ones inherit the
+   * default, and colours are not settable this way. Existing options are always resent unchanged —
+   * the array replaces the property's option list, so dropping one would delete it from the board,
+   * along with every row's value in it. Hence: if the read does not show the current options, this
+   * throws rather than PATCHing. A response we cannot interpret is not a licence to replace the list.
+   */
+  async addStatusOptions(
+    dataSourceId: string,
+    propName: string,
+    names: string[],
+  ): Promise<string[]> {
+    const seen = new Set<string>();
+    for (const n of names) {
+      if (n.includes(",")) throw new Error(`Notion status option "${n}" cannot contain a comma`);
+      // Notion names are unique case-insensitively, so a case-equal pair would 400 the whole PATCH.
+      if (seen.has(n.toLowerCase())) throw new Error(`duplicate status option requested: "${n}"`);
+      seen.add(n.toLowerCase());
+    }
+    const res = await this.req(`/data_sources/${dataSourceId}`);
+    const props = (res.properties ?? {}) as Record<string, Record<string, unknown>>;
+    const prop = props[propName];
+    if (!prop) throw new Error(`No "${propName}" property on data source ${dataSourceId}`);
+    if (prop.type !== "status") {
+      throw new Error(`"${propName}" is a ${String(prop.type)} property, not a status property`);
+    }
+    const listed = (prop.status as { options?: unknown } | undefined)?.options;
+    // Rebuilt element by element rather than cast wholesale: a malformed entry must produce the
+    // descriptive refusal below, not a TypeError from the middle of a map.
+    const current: { id: string | null; name: string }[] = [];
+    if (Array.isArray(listed)) {
+      for (const entry of listed) {
+        if (entry === null || typeof entry !== "object") break;
+        const rec: Record<string, unknown> = entry;
+        if (typeof rec.name !== "string") break;
+        current.push({ id: typeof rec.id === "string" ? rec.id : null, name: rec.name });
+      }
+    }
+    if (!Array.isArray(listed) || current.length !== listed.length) {
+      throw new Error(
+        `"${propName}" returned no usable status.options array; refusing to PATCH, which would replace the board's option list`,
+      );
+    }
+    const have = new Set(current.map((o) => o.name.toLowerCase()));
+    const missing = names.filter((n) => !have.has(n.toLowerCase()));
+    if (missing.length === 0) return [];
+    await this.req(`/data_sources/${dataSourceId}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        properties: {
+          [propName]: {
+            status: {
+              options: [
+                // `id` pins each entry to the option that already exists. Name alone would leave it to
+                // Notion whether to match it or mint a same-named twin under a new id, which would
+                // orphan every row's stored value exactly as deleting the option would.
+                ...current.map((o) =>
+                  o.id === null ? { name: o.name } : { id: o.id, name: o.name },
+                ),
+                ...missing.map((name) => ({ name })),
+              ],
+            },
+          },
+        },
+      }),
+    });
+    return missing;
+  }
+
+  /**
    * Write one cell. Addressed by property ID, not name, so renaming the column (or someone else
    * adding a similarly-named one) can never redirect the write. `value` is the Notion property value
    * object, e.g. `{ number: 12 }` or `{ date: { start: "2026-08-20" } }`.

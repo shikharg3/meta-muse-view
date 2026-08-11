@@ -12,7 +12,7 @@ import { fetchCampaigns, objectiveResults, disabledSinceMap } from "./dashboard"
 import { effectiveAccountIds, getClientRow } from "@/sync/jobs/clients";
 import type { Campaign, Kpis, AccountStatus } from "@/lib/types";
 import { disableReasonLabel } from "@/lib/format";
-import { brandTitles } from "@/notion/parse";
+import { brandTitles, boardRows } from "@/notion/parse";
 import { currentUser, audit } from "@/server/fns/auth";
 import { isAdmin } from "@/lib/auth/users";
 import {
@@ -81,6 +81,8 @@ export interface ClientDetail {
   /** Campaigns on this client's SHARED ad accounts that no rule could assign, so they are counted for
    *  nobody. Never silently drop spend: surface it so an operator can settle the owner. */
   unattributed: UnattributedCampaigns;
+  /** The Notion board rows behind this client, for admin status overrides. */
+  notionRows: { pageId: string; title: string; status: string | null }[];
   /** Engagement budget from Notion + spend against it (null total = not tracked), with a
    *  pace-based forecast of when the budget runs out. */
   budget: {
@@ -226,6 +228,7 @@ export async function fetchClientDetail(
       campaigns: [],
       events: [],
       unattributed: { campaigns: [], spend: 0, candidates: {} },
+      notionRows: boardRows(row.raw),
       budget: budgetOf(row, 0, 0, todayYmd()),
     };
   }
@@ -384,6 +387,7 @@ export async function fetchClientDetail(
     campaigns,
     events: canonicalEvents(insightRows),
     unattributed,
+    notionRows: boardRows(row.raw),
     // Divide by the whole window, not by the days that happened to have rows: a day with no
     // insights row is a real zero-spend day and must pull the pace down.
     budget: budgetOf(row, budgetSpent, paceSpend / PACE_DAYS, today),

@@ -97,7 +97,13 @@ shifting spend attribution, which changes the derived status again.
 
 **Resolution:** all five machine values join `LIVE_STATUSES`, whose meaning changes from "delivering"
 to **"engagement is current, keep maintaining this row"**. Machine transitions then never move
-`isLive`, and the loop is closed by construction.
+`isLive`, closing that loop by construction. Note the narrower claim: it is closed for `isLive`, not
+for the column's *other* load-bearing use. `STATUS_PRIORITY` still decides which of a client's rows
+wins, so a machine transition moving one row from `Live` (9) to `Paused` (5) while a sibling row stays
+on `Live` does change which row contributes `activeAccountIds`. The reorder bounds the damage — every
+machine value outranks every commercial one, so a machine write can never hand the winning row to a
+finished engagement — but machine-vs-machine divergence within one client remains a real path, and it
+requires an account claimed by two clients with brand attribution failing on it to bite.
 
 `LIVE_STATUSES` becomes:
 
@@ -181,9 +187,16 @@ page — no I/O, unit-testable in the style of the existing `canDeliver` tests, 
   `{ date }`.
 - **No-rewrite guard:** mirror `same()` — skip when the cell already holds the derived value. Keeps
   `Last edited time` meaning "a human edited this" (`:214`), and steady-state write volume near zero.
-- **Its own gate, not `isLive`.** `notLive(null)` is true, so an empty `Account Status` behind the
-  existing gate would never be populated. The four numeric columns keep the `isLive` gate; the status
-  write gets its own: **write only if the current cell is empty or holds a machine-owned value.**
+- **Its own gate, not `isLive`.** The four numeric columns keep the `isLive` gate; the status write
+  gets its own: **write only if the current cell holds a machine-owned value.** The gate cannot be
+  `notLive` because `On Boarding` and `Budget Finished - Top Up` are human-owned yet *are* in
+  `LIVE_STATUSES`, so a `notLive` gate would overwrite the team's own record on those rows.
+- **The feature maintains, it does not bootstrap — and cannot.** An empty `Account Status` is
+  `notLive`, and non-live rows are excluded from account→row attribution upstream (`pagesByAccount`
+  skips them), so such a row arrives with no attributed campaigns and derives nothing. Populating
+  blank rows would mean attributing shared accounts to rows nobody has marked live, which is exactly
+  what the feedback-loop section above exists to prevent. A human sets a machine value once; the sync
+  keeps it true from then on.
 - **Pacing:** at most one extra `setPageValue` per *changed* row, at the existing `WRITE_GAP_MS = 350`
   for Notion's ~3 requests/second.
 - **Reporting:** extend the job result with per-row derived status and counts. The `/sync` route
@@ -220,7 +233,7 @@ is ignored.
 |---|---|
 | Board option missing → write 400s | Bootstrap plus dry-run-first sequencing |
 | Unsynced accounts/ads → false `Live` or vacuous truth | Rung 0 and the two non-empty guards |
-| Status lags reality | The worker is an hourly loop (`src/sync/worker.ts:24`) with a daily full refresh, so the column can trail a pause by up to an hour. Stated, not fixed |
+| Status lags reality | The push runs only on the worker's daily `full` cycle (`cycle.ts` gates it on `opts.full`; `worker.ts:28` flips `full` once per calendar day), so the column can trail a pause by up to 24 hours. Stated, not fixed |
 | Attribution churn changes a row's accounts | Derived status changes with it. Expected, not a bug |
 | Notion rate limit | One write per changed row, paced at `WRITE_GAP_MS` |
 
