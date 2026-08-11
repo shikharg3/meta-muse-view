@@ -133,6 +133,52 @@ export class NotionClient {
   }
 
   /**
+   * Append missing options to an existing `status` property, returning the names actually added.
+   *
+   * Writable from API version 2025-09-03 onward, which this client pins. Only names are sent:
+   * `group` is omitted so existing options keep their current group and new ones inherit the
+   * default, and colours are not settable this way. Existing options are always resent unchanged —
+   * the array replaces the property's option list, so dropping one would delete it from the board.
+   */
+  async addStatusOptions(
+    dataSourceId: string,
+    propName: string,
+    names: string[],
+  ): Promise<string[]> {
+    for (const n of names) {
+      if (n.includes(",")) throw new Error(`Notion status option "${n}" cannot contain a comma`);
+    }
+    const res = await this.req(`/data_sources/${dataSourceId}`);
+    const props = (res.properties ?? {}) as Record<string, Record<string, unknown>>;
+    const prop = props[propName];
+    if (!prop) throw new Error(`No "${propName}" property on data source ${dataSourceId}`);
+    if (prop.type !== "status") {
+      throw new Error(`"${propName}" is a ${String(prop.type)} property, not a status property`);
+    }
+    const current = ((prop.status as { options?: { name: string }[] } | undefined)?.options ??
+      []) as { name: string }[];
+    const have = new Set(current.map((o) => o.name.toLowerCase()));
+    const missing = names.filter((n) => !have.has(n.toLowerCase()));
+    if (missing.length === 0) return [];
+    await this.req(`/data_sources/${dataSourceId}`, {
+      method: "PATCH",
+      body: JSON.stringify({
+        properties: {
+          [propName]: {
+            status: {
+              options: [
+                ...current.map((o) => ({ name: o.name })),
+                ...missing.map((name) => ({ name })),
+              ],
+            },
+          },
+        },
+      }),
+    });
+    return missing;
+  }
+
+  /**
    * Write one cell. Addressed by property ID, not name, so renaming the column (or someone else
    * adding a similarly-named one) can never redirect the write. `value` is the Notion property value
    * object, e.g. `{ number: 12 }` or `{ date: { start: "2026-08-20" } }`.
