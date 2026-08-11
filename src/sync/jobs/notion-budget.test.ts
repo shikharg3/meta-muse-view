@@ -19,7 +19,9 @@ import {
   type AttributedCampaign,
   type ActiveAdSet,
   statusForRow,
+  AUTO_ACCOUNT_STATUS_COLUMN,
 } from "./notion-budget";
+import { ACCOUNT_STATUS_COLUMN, resolvePropertyKey } from "@/notion/parse";
 
 const camp = (id: string, over: Partial<AttributedCampaign> = {}): AttributedCampaign => ({
   id,
@@ -392,4 +394,12 @@ test("statusForRow fills an empty cell", () => {
 test("statusForRow returns null when the derived value already matches the cell", () => {
   // An unchanged cell is never rewritten, so `Last edited time` keeps meaning "a human edited this".
   expect(statusForRow({ ...liveRow, current: "Live", override: null })).toBeNull();
+});
+
+test("the Account Status column carries the machine-written marker too", () => {
+  expect(AUTO_ACCOUNT_STATUS_COLUMN).toBe("🤖 Account Status");
+  // And the read side must still find it under that name, or every row reads as non-live.
+  expect(resolvePropertyKey([AUTO_ACCOUNT_STATUS_COLUMN], ACCOUNT_STATUS_COLUMN)).toBe(
+    AUTO_ACCOUNT_STATUS_COLUMN,
+  );
 });

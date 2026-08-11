@@ -321,3 +321,32 @@ test("finished and not-started engagements stay outside LIVE_STATUSES", () => {
   expect(LIVE_STATUSES).not.toContain("Full Budget Finished");
   expect(LIVE_STATUSES).not.toContain("Not started");
 });
+
+test("parseCampaignRow still finds Account Status once the marker is stamped on it", () => {
+  // The write side resolves this column fuzzily and renames it to carry 🤖. An exact-name read would
+  // then miss, yielding status: null for EVERY row — which makes all of them non-live, stops all five
+  // numeric columns, nulls clients.status and leaves STATUS_PRIORITY scoring every row 0.
+  const marked = {
+    id: "p1",
+    properties: {
+      Campaign: { type: "title", title: [{ plain_text: "Slots.lv" }] },
+      "🤖 Account Status": { type: "status", status: { name: "Live" } },
+    },
+  } as unknown as NotionPage;
+  expect(parseCampaignRow(marked)!.status).toBe("Live");
+
+  const plainName = {
+    id: "p2",
+    properties: {
+      Campaign: { type: "title", title: [{ plain_text: "Slots.lv" }] },
+      "Account Status": { type: "status", status: { name: "Paused" } },
+    },
+  } as unknown as NotionPage;
+  expect(parseCampaignRow(plainName)!.status).toBe("Paused");
+
+  const absent = {
+    id: "p3",
+    properties: { Campaign: { type: "title", title: [{ plain_text: "Slots.lv" }] } },
+  } as unknown as NotionPage;
+  expect(parseCampaignRow(absent)!.status).toBeNull();
+});

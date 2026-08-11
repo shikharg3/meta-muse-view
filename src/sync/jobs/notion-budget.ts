@@ -8,7 +8,12 @@ import {
   type NotionProp,
   type NotionPropSchema,
 } from "@/notion/client";
-import { LIVE_STATUSES, parseCampaignRow, resolvePropertyKey } from "@/notion/parse";
+import {
+  ACCOUNT_STATUS_COLUMN,
+  LIVE_STATUSES,
+  parseCampaignRow,
+  resolvePropertyKey,
+} from "@/notion/parse";
 import {
   deriveStatus,
   isMachineStatus,
@@ -65,12 +70,6 @@ export const SPEND_COLUMN = "Avg Daily Spend 7d ($)";
 export const FUNDS_COLUMN = "Funds Remaining ($)";
 export const PROJECTED_END_COLUMN = "Projected End Date";
 export const DESTINATION_COLUMN = "Destination URL";
-/**
- * Shared with the team rather than owned outright: the machine writes the five delivery states and
- * humans keep the commercial ones, so this column never carries the `🤖` marker below. See
- * `src/lib/delivery-status.ts` for the ownership split.
- */
-export const ACCOUNT_STATUS_COLUMN = "Account Status";
 /** Stamped onto every column name so the team can see the values are machine-written. */
 export const AUTO_MARKER = "🤖";
 export const AUTO_BUDGET_COLUMN = `${AUTO_MARKER} ${BUDGET_COLUMN}`;
@@ -78,6 +77,12 @@ export const AUTO_SPEND_COLUMN = `${AUTO_MARKER} ${SPEND_COLUMN}`;
 export const AUTO_FUNDS_COLUMN = `${AUTO_MARKER} ${FUNDS_COLUMN}`;
 export const AUTO_PROJECTED_END_COLUMN = `${AUTO_MARKER} ${PROJECTED_END_COLUMN}`;
 export const AUTO_DESTINATION_COLUMN = `${AUTO_MARKER} ${DESTINATION_COLUMN}`;
+/**
+ * Marked like the rest, because the machine does write it — but unlike the rest it is SHARED: the
+ * machine owns the five delivery states and the team keeps the four commercial ones, so the marker
+ * here means "machine-maintained", not "hands off". See `src/lib/delivery-status.ts` for the split.
+ */
+export const AUTO_ACCOUNT_STATUS_COLUMN = `${AUTO_MARKER} ${ACCOUNT_STATUS_COLUMN}`;
 
 /** Notion rejects a rich_text value over 2000 characters. */
 const TEXT_CELL_LIMIT = 2000;
@@ -853,22 +858,30 @@ export async function syncNotionDailyBudgets(
     );
     if (destCol?.error) result.warning = destCol.error;
 
-    // Resolved by name, never through ensureColumn: the 🤖 marker means "machine-written, do not
-    // hand-edit", which is false for a column humans still set commercial values in. Options are
-    // appended first so a write can never fail on a status the board does not offer yet.
+    // Resolved by name rather than through ensureColumn, which would CREATE the column when absent —
+    // wrong for a status property, whose options and groups the API cannot fully configure. Options
+    // are appended before the rename so `statusKey` still names the column Notion knows.
     const statusKey = resolvePropertyKey(Object.keys(props), ACCOUNT_STATUS_COLUMN);
     let statusCol = statusKey ? props[statusKey] : undefined;
     if (statusKey && statusCol && !opts.dryRun) {
-      // A schema-bootstrap failure must degrade the status feature only. Left unguarded this `await`
-      // sits before every write in the loop, so one Notion hiccup would cost the whole board its
+      // A schema-bootstrap failure must degrade the status feature only. Left unguarded these awaits
+      // sit before every write in the loop, so one Notion hiccup would cost the whole board its
       // budget, spend, funds, date and destination values for the day.
       try {
         const added = await notion.addStatusOptions(dsId, statusKey, [...MACHINE_STATUSES]);
         if (added.length > 0) result.columnsTouched.push(`added options: ${added.join(", ")}`);
+        if (!statusKey.startsWith(AUTO_MARKER)) {
+          // Safe because Notion references properties by id everywhere that matters, and the read
+          // side resolves this column by shape rather than by exact name.
+          await notion.renameProperty(dsId, statusKey, AUTO_ACCOUNT_STATUS_COLUMN);
+          result.columnsTouched.push(`renamed "${statusKey}" → "${AUTO_ACCOUNT_STATUS_COLUMN}"`);
+        }
       } catch (e) {
-        result.warning = `Account Status options could not be ensured (${e instanceof Error ? e.message : String(e)}); status left untouched`;
+        result.warning = `Account Status could not be prepared (${e instanceof Error ? e.message : String(e)}); status left untouched`;
         statusCol = undefined;
       }
+    } else if (statusKey && statusCol && opts.dryRun && !statusKey.startsWith(AUTO_MARKER)) {
+      result.columnsTouched.push(`would rename "${statusKey}" → "${AUTO_ACCOUNT_STATUS_COLUMN}"`);
     } else if (!statusKey) {
       result.warning = `no "${ACCOUNT_STATUS_COLUMN}" column on this board; status left untouched`;
     }

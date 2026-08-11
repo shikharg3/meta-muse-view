@@ -117,6 +117,18 @@ const plain = (p: NotionProp | undefined): string =>
 const relationIds = (p: NotionProp | undefined): string[] =>
   ((p?.relation as { id: string }[] | undefined) ?? []).map((r) => r.id);
 
+/**
+ * The board column holding the delivery/lifecycle status. Named here because the READ side owns the
+ * canonical spelling — the write side resolves it fuzzily and may stamp the 🤖 marker onto it.
+ */
+export const ACCOUNT_STATUS_COLUMN = "Account Status";
+
+/** The board's `Account Status` cell, found whether or not the 🤖 marker has been stamped on it. */
+function statusOf(page: NotionPage): string | null {
+  const key = resolvePropertyKey(Object.keys(page.properties ?? {}), ACCOUNT_STATUS_COLUMN);
+  return key ? (page.properties?.[key]?.status?.name ?? null) : null;
+}
+
 /** Pull the columns we care about out of a campaign page; null when it has no Campaign title. */
 export function parseCampaignRow(page: NotionPage): ParsedCampaignRow | null {
   const title = plain(page.properties?.["Campaign"]).trim();
@@ -127,7 +139,10 @@ export function parseCampaignRow(page: NotionPage): ParsedCampaignRow | null {
     clientRelationIds: relationIds(page.properties?.["Client Account"]),
     activeIds: parseAccountIds(plain(page.properties?.["Active Account ID"])),
     otherIds: parseAccountIds(plain(page.properties?.["Other ad accounts"])),
-    status: page.properties?.["Account Status"]?.status?.name ?? null,
+    // Resolved rather than read by exact name: the write side stamps 🤖 onto this column, and an
+    // exact-name miss here would return null for every row — making them all non-live, which stops
+    // every other column, nulls `clients.status` and leaves STATUS_PRIORITY scoring every row 0.
+    status: statusOf(page),
     budget: (page.properties?.["Budget ($)"]?.number as number | null) ?? null,
     startDate:
       (page.properties?.["Actual Start Date"]?.date as { start?: string } | null)?.start ??
