@@ -6,6 +6,9 @@ import {
   planSpendRow,
   planEndDate,
   targetDailyBudget,
+  budgetRemaining,
+  planBudgetRemainingRow,
+  AUTO_BUDGET_REMAINING_COLUMN,
   TARGET_BUDGET_DAYS,
   destinationCell,
   planDestinations,
@@ -402,4 +405,45 @@ test("the Account Status column carries the machine-written marker too", () => {
   expect(resolvePropertyKey([AUTO_ACCOUNT_STATUS_COLUMN], ACCOUNT_STATUS_COLUMN)).toBe(
     AUTO_ACCOUNT_STATUS_COLUMN,
   );
+});
+
+test("budget remaining is the contract minus spend since the engagement started", () => {
+  expect(budgetRemaining(10800, 5145.86)).toBe(5654.14);
+  // Overspent contracts are reported as negative, not clamped: betonline.ag has delivered $10,891.78
+  // against a $10,800 contract, and that overrun is the whole point of the column.
+  expect(budgetRemaining(10800, 10891.78)).toBe(-91.78);
+  // Either side missing makes the figure unknowable, which is not the same as zero.
+  expect(budgetRemaining(null, 500)).toBeNull();
+  expect(budgetRemaining(10800, null)).toBeNull();
+});
+
+test("planBudgetRemainingRow writes live rows, skips unchanged, and never touches finished ones", () => {
+  expect(planBudgetRemainingRow({ status: "Live", current: null, remaining: 5654.14 })).toEqual({
+    dollars: 5654.14,
+    skip: null,
+  });
+  expect(
+    planBudgetRemainingRow({ status: "Live", current: 5654.14, remaining: 5654.14 }).skip,
+  ).toBe("unchanged");
+  // A negative figure is still written.
+  expect(planBudgetRemainingRow({ status: "Live", current: 0, remaining: -2246.24 }).dollars).toBe(
+    -2246.24,
+  );
+  expect(planBudgetRemainingRow({ status: "Live", current: 100, remaining: null })).toEqual({
+    dollars: null,
+    skip: "budget remaining not determinable",
+  });
+  // A machine-written `Paused` row is still the client's current engagement, so it keeps its pacing
+  // columns; only a closed or unstarted period is left alone.
+  for (const status of ["Full Budget Finished", "Not started", null])
+    expect(planBudgetRemainingRow({ status, current: 100, remaining: 5654.14 }).skip).toBe(
+      "not a live engagement; keeping the recorded value",
+    );
+  expect(
+    planBudgetRemainingRow({ status: "Paused", current: 100, remaining: 5654.14 }).dollars,
+  ).toBe(5654.14);
+});
+
+test("the budget-remaining column carries the machine-written marker", () => {
+  expect(AUTO_BUDGET_REMAINING_COLUMN).toBe("🤖 Budget Remaining ($)");
 });

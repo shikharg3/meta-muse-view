@@ -70,6 +70,7 @@ export const SPEND_COLUMN = "Avg Daily Spend 7d ($)";
 export const FUNDS_COLUMN = "Funds Remaining ($)";
 export const PROJECTED_END_COLUMN = "Projected End Date";
 export const DESTINATION_COLUMN = "Destination URL";
+export const BUDGET_REMAINING_COLUMN = "Budget Remaining ($)";
 /** Stamped onto every column name so the team can see the values are machine-written. */
 export const AUTO_MARKER = "🤖";
 export const AUTO_BUDGET_COLUMN = `${AUTO_MARKER} ${BUDGET_COLUMN}`;
@@ -77,6 +78,7 @@ export const AUTO_SPEND_COLUMN = `${AUTO_MARKER} ${SPEND_COLUMN}`;
 export const AUTO_FUNDS_COLUMN = `${AUTO_MARKER} ${FUNDS_COLUMN}`;
 export const AUTO_PROJECTED_END_COLUMN = `${AUTO_MARKER} ${PROJECTED_END_COLUMN}`;
 export const AUTO_DESTINATION_COLUMN = `${AUTO_MARKER} ${DESTINATION_COLUMN}`;
+export const AUTO_BUDGET_REMAINING_COLUMN = `${AUTO_MARKER} ${BUDGET_REMAINING_COLUMN}`;
 /**
  * Marked like the rest, because the machine does write it — but unlike the rest it is SHARED: the
  * machine owns the five delivery states and the team keeps the four commercial ones, so the marker
@@ -175,6 +177,46 @@ export function planFundsRow(input: {
   if (same(current, funds)) return { dollars: null, skip: "unchanged" };
   return { dollars: funds, skip: null };
 }
+/**
+ * Whether to push the contract's remaining budget onto a row: `Budget ($)` minus what this engagement
+ * has spent since its start date.
+ *
+ * A different question from `Funds Remaining ($)`, and both are worth having. This is commercial — how
+ * much of what the client agreed to is left — while funds are operational: money actually sitting in
+ * the ad accounts, which is what stops delivery. They diverge whenever an account is topped up beyond
+ * the contract or recycled from an earlier engagement.
+ *
+ * Spend is counted from the engagement's OWN start date, never lifetime: these ad accounts carry
+ * previous clients, and lifetime spend would report almost every engagement as exhausted.
+ *
+ * A negative result is written as-is. Overspending the contract is exactly what this column exists to
+ * make visible, and clamping it to zero would hide the overrun.
+ */
+export function planBudgetRemainingRow(input: {
+  status: string | null;
+  current: number | null;
+  remaining: number | null;
+}): RowPlan {
+  const { status, current, remaining } = input;
+  if (notLive(status))
+    return { dollars: null, skip: "not a live engagement; keeping the recorded value" };
+  if (remaining === null) return { dollars: null, skip: "budget remaining not determinable" };
+  if (same(current, remaining)) return { dollars: null, skip: "unchanged" };
+  return { dollars: remaining, skip: null };
+}
+
+/**
+ * Contracted budget minus spend since the engagement started, or null when either side is unknown.
+ * Rounded to cents so the cell matches a hand calculation.
+ */
+export function budgetRemaining(
+  notionBudget: number | null,
+  spentSinceStart: number | null,
+): number | null {
+  if (notionBudget === null || spentSinceStart === null) return null;
+  return Math.round((notionBudget - spentSinceStart) * 100) / 100;
+}
+
 export interface AttributedCampaign {
   id: string;
   accountId: string;
@@ -386,6 +428,11 @@ export interface NotionBudgetRow {
   fundsCurrent: number | null;
   fundsWritten: number | null;
   fundsSkip: string | null;
+  remainingCurrent: number | null;
+  remainingWritten: number | null;
+  remainingSkip: string | null;
+  /** `Budget ($)` minus spend since the engagement's start date; negative when overspent. */
+  budgetRemaining: number | null;
   /** spend_cap - amount_spent across the accounts this row can actually spend from. */
   fundsRemaining: number | null;
   /** Campaigns attributed to this row, whatever their status — the pool spend is summed over. */
@@ -532,6 +579,7 @@ interface BoardRow {
   budgetCurrent: number | null;
   spendCurrent: number | null;
   fundsCurrent: number | null;
+  remainingCurrent: number | null;
   endCurrent: string | null;
   destCurrent: string;
   accountIds: string[];
@@ -835,6 +883,17 @@ export async function syncNotionDailyBudgets(
       opts.dryRun ?? false,
     );
     if (fundsCol?.error) result.warning = fundsCol.error;
+    const remainingCol = await ensureColumn(
+      notion,
+      dsId,
+      props,
+      BUDGET_REMAINING_COLUMN,
+      AUTO_BUDGET_REMAINING_COLUMN,
+      "number",
+      result.columnsTouched,
+      opts.dryRun ?? false,
+    );
+    if (remainingCol?.error) result.warning = remainingCol.error;
     const endCol = await ensureColumn(
       notion,
       dsId,
@@ -905,6 +964,7 @@ export async function syncNotionDailyBudgets(
         budgetCurrent: numberCell(page, budgetCol.column.id),
         spendCurrent: spendCol ? numberCell(page, spendCol.column.id) : null,
         fundsCurrent: fundsCol ? numberCell(page, fundsCol.column.id) : null,
+        remainingCurrent: remainingCol ? numberCell(page, remainingCol.column.id) : null,
         endCurrent: endCol ? dateCell(page, endCol.column.id) : null,
         destCurrent: destCol ? textCell(page, destCol.column.id) : "",
         // The row's own contracted budget and engagement start — never the clubbed client's, so a
@@ -928,6 +988,8 @@ export async function syncNotionDailyBudgets(
 
     interface RowWork {
       row: BoardRow;
+      remainingPlan: RowPlan;
+      budgetRemaining: number | null;
       dest: TextPlan;
       sum: DailyBudgetSum | null;
       status: MachineStatus | null;
@@ -953,6 +1015,8 @@ export async function syncNotionDailyBudgets(
         budget: { dollars: null, skip: noMapping },
         spend: { dollars: null, skip: noMapping },
         funds: { dollars: null, skip: noMapping },
+        remainingPlan: { dollars: null, skip: noMapping },
+        budgetRemaining: null,
         end: { date: null, clear: false, skip: noMapping },
         assigned: 0,
         spentSinceStart: null,
@@ -1022,6 +1086,12 @@ export async function syncNotionDailyBudgets(
             budget: planRow({ status: row.status, current: row.budgetCurrent, target: null }),
             spend: planSpendRow({ status: row.status, current: row.spendCurrent, spend: null }),
             funds: planFundsRow({ status: row.status, current: row.fundsCurrent, funds: null }),
+            remainingPlan: planBudgetRemainingRow({
+              status: row.status,
+              current: row.remainingCurrent,
+              remaining: null,
+            }),
+            budgetRemaining: null,
             end: { date: null, clear: false, skip: "not a live engagement" },
             assigned: 0,
             spentSinceStart: null,
@@ -1104,11 +1174,31 @@ export async function syncNotionDailyBudgets(
         // and withheld it entirely from an engagement younger than MIN_PACE_DAYS, or one whose freshly
         // rotated-on account had no spend history of its own. A contracted daily budget needs neither
         // a history nor a start date.
-        let spentSinceStart: number | null = null;
         let dailyPace: number | null = null;
         let fundsRemaining: number | null = null;
         let end: DatePlan;
         const pw = paceWindow({ startDate: row.startDate, until });
+
+        // Spend measured once, for the row's own campaigns, from its own start date. Needed by the
+        // contract column whether or not a projection is possible, so it is not computed inside the
+        // projection's branches. The pace window stays clamped to the start date, since recycled
+        // accounts would otherwise average in the previous client's spend.
+        let spentSinceStart: number | null = null;
+        if (!skip) {
+          const paceAccounts = liveRowCount === 1 ? ctx.effective : row.accountIds;
+          const ids = paceAccounts.flatMap((a) =>
+            (byAccount.get(a) ?? [])
+              .filter((c) => !ctx.owned || ctx.owned.has(c.id))
+              .map((c) => c.id),
+          );
+          const [spentTotal, paceTotal] = await Promise.all([
+            row.startDate ? spendOf(ids, row.startDate, until) : Promise.resolve(null),
+            pw ? spendOf(ids, pw.from, until) : Promise.resolve(null),
+          ]);
+          spentSinceStart = spentTotal;
+          dailyPace = pw && paceTotal !== null ? paceTotal / pw.days : null;
+        }
+        const remaining = budgetRemaining(row.notionBudget, spentSinceStart);
 
         // Money left is what is FUNDED into the ad accounts, not what was contracted. Notion's
         // `Budget ($)` records the contract and is not updated when an account is topped up:
@@ -1161,22 +1251,8 @@ export async function syncNotionDailyBudgets(
             skip: `no Budget ($) on this row, so there is no target daily spend to divide by`,
           };
         } else {
-          // Actual spend is still measured — it feeds the Avg Daily Spend column and lets anyone
-          // sanity-check the projection against reality — but it no longer sets the runway. The pace
-          // window stays clamped to the engagement start, since recycled accounts would otherwise
-          // average in the previous client's spend.
-          const paceAccounts = liveRowCount === 1 ? ctx.effective : row.accountIds;
-          const ids = paceAccounts.flatMap((a) =>
-            (byAccount.get(a) ?? [])
-              .filter((c) => !ctx.owned || ctx.owned.has(c.id))
-              .map((c) => c.id),
-          );
-          const [spentTotal, paceTotal] = await Promise.all([
-            row.startDate ? spendOf(ids, row.startDate, until) : Promise.resolve(0),
-            pw ? spendOf(ids, pw.from, until) : Promise.resolve(null),
-          ]);
-          spentSinceStart = row.startDate ? spentTotal : null;
-          dailyPace = pw && paceTotal !== null ? paceTotal / pw.days : null;
+          // Actual spend is measured above and still feeds the Avg Daily Spend column, letting anyone
+          // sanity-check this projection against reality — but it does not set the runway.
           const f = forecastBudgetEnd({
             total: fundsRemaining,
             spent: 0,
@@ -1203,6 +1279,12 @@ export async function syncNotionDailyBudgets(
               current: row.fundsCurrent,
               funds: fundsRemaining,
             }),
+            remainingPlan: planBudgetRemainingRow({
+              status: row.status,
+              current: row.remainingCurrent,
+              remaining,
+            }),
+            budgetRemaining: remaining,
             end,
             assigned: mine.length,
             spentSinceStart,
@@ -1232,6 +1314,12 @@ export async function syncNotionDailyBudgets(
             current: row.fundsCurrent,
             funds: fundsRemaining,
           }),
+          remainingPlan: planBudgetRemainingRow({
+            status: row.status,
+            current: row.remainingCurrent,
+            remaining,
+          }),
+          budgetRemaining: remaining,
           end,
           assigned: mine.length,
           spentSinceStart,
@@ -1243,7 +1331,7 @@ export async function syncNotionDailyBudgets(
     }
 
     for (const w of work) {
-      const { row, sum, budget, spend, funds, end, dest, status } = w;
+      const { row, sum, budget, spend, funds, end, dest, status, remainingPlan } = w;
       result.rows += 1;
       const detail: NotionBudgetRow = {
         pageId: row.pageId,
@@ -1260,6 +1348,10 @@ export async function syncNotionDailyBudgets(
         spendSkip: spend.skip,
         fundsCurrent: row.fundsCurrent,
         fundsWritten: null,
+        remainingCurrent: row.remainingCurrent,
+        remainingWritten: null,
+        remainingSkip: remainingPlan.skip,
+        budgetRemaining: w.budgetRemaining,
         fundsSkip: funds.skip,
         fundsRemaining: w.fundsRemaining,
         assignedCampaigns: w.assigned,
@@ -1282,6 +1374,7 @@ export async function syncNotionDailyBudgets(
         [budget, budgetCol.column, "budgetWritten"],
         [spend, spendCol?.column, "spendWritten"],
         [funds, fundsCol?.column, "fundsWritten"],
+        [remainingPlan, remainingCol?.column, "remainingWritten"],
       ] as const) {
         if (plan.dollars === null || !column) {
           if (plan.skip === "unchanged") result.unchanged += 1;
@@ -1308,6 +1401,22 @@ export async function syncNotionDailyBudgets(
           await sleep(WRITE_GAP_MS);
         }
         detail.budgetSkip = "cleared: no Budget ($) on this row";
+        result.updated += 1;
+      }
+      if (
+        remainingPlan.dollars === null &&
+        remainingCol &&
+        !notLive(row.status) &&
+        row.remainingCurrent !== null &&
+        remainingPlan.skip === "budget remaining not determinable"
+      ) {
+        // A live row that can no longer be computed must not keep a figure from when it could: the
+        // contract may have been cleared, or the start date removed.
+        if (!opts.dryRun) {
+          await notion.setPageValue(row.pageId, remainingCol.column.id, { number: null });
+          await sleep(WRITE_GAP_MS);
+        }
+        detail.remainingSkip = "cleared: budget remaining not determinable";
         result.updated += 1;
       }
       if (
