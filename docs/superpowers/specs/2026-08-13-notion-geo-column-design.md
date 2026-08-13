@@ -120,8 +120,9 @@ SA 23% · MX 23% · US 16% · AE 11% · KR 10% · QA 9% · KW 8%
 ```
 
 Multi-line `rich_text` follows `destinationCell` (`:99-112`), which already writes one URL per line.
-The same `TEXT_CELL_LIMIT = 2000` guard applies (`:90`), though the trimming rule keeps real cells
-two orders of magnitude below it.
+No `TEXT_CELL_LIMIT` backstop is needed here: two lines of at most 8 entries is bounded by
+construction well under Notion's 2000-character ceiling, and a truncation branch that can never run
+is dead code. `destinationCell` needs its own because a URL list has no such bound.
 
 **Drill trigger: exactly one country with delivered spend, `unknown` excluded.** Meta returns
 `unknown` as a country bucket for undeterminable geo; it is real spend, so it stays in the
@@ -143,8 +144,12 @@ attribution, column lookup, `dryRun` and write pacing.
   `planDestinations` (`:549`). Keeps `Last edited time` meaning "a human edited this".
 - **Pacing:** at most one extra `setPageValue` per _changed_ row at `WRITE_GAP_MS = 350`. Percentages
   shift as spend lands, so expect roughly one write per live row per day — 16 writes, ~6 seconds.
-- **Reporting:** three fields on `NotionBudgetRow` (`:413-459`) — current cell, proposed cell, skip
-  reason — surfaced by the `/sync` route like every other column.
+- **Reporting:** four fields on `NotionBudgetRow` (`:413-459`) — current cell, derived cell, written
+  cell, skip reason. Derived and written are separate for the reason `endProposed` already is: on a
+  dry run the column does not exist yet, so there is no id to write against and the written field
+  stays null while the derived one still carries the plan. They are returned in
+  `NotionBudgetResult.details` and read from the dry run; the `/sync` route renders only per-job
+  OK/failing tiles and `warning` (`routes/sync.tsx:99-117`), not per-row detail.
 
 ### Skip and clear behaviour
 
@@ -170,20 +175,26 @@ The asymmetry matters more than the lag. If the breakdown job stalls, `country` 
 while the campaign keeps spending, the window empties, and a naive "no rows → clear" rule would blank
 the cell on a row that is delivering perfectly well — reporting a sync fault as a geo fact.
 
-The guard costs nothing: `paceTotal` is **already computed** over exactly this window at
-`notion-budget.ts:1196`. Spend over `pw` with no `country` rows for it is a data gap, so the cell is
-left alone; zero spend over `pw` is genuine non-delivery, so the cell clears.
+The guard is one extra query: `spendOf(mineIds, pw.from, until)` over `insights_daily`, which is
+hourly-fresh. Spend over `pw` with no `country` rows for it is a data gap, so the cell is left alone;
+zero spend over `pw` is genuine non-delivery, so the cell clears.
+
+The nearby `paceTotal` (`notion-budget.ts:1196`) looks like a free substitute and is **not** one: it
+is computed inside `if (!skip)`, and `skip` includes the foreign-currency refusal
+(`:1157-1161`) — the one case this design deliberately still writes a geo cell for. It is also summed
+over a broader account-derived id set than `mine`. Reusing it would silently skip exactly the rows
+the currency carve-out exists to serve.
 
 ## Failure modes
 
 | Failure                                                 | Handling                                                                                                                                           |
 | ------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `ensureColumn` matches the human `Geo's` and renames it | Prevented by the name choice; a test asserts `keyShape(AUTO_GEO_COLUMN) !== keyShape("Geo's")` so a future rename cannot reintroduce the collision |
-| Breakdown sync stalls or lags                           | Distinguished from "not delivering" by the free `paceTotal` guard above, so a lagging breakdown job never blanks a running row's cell              |
+| Breakdown sync stalls or lags                           | Distinguished from "not delivering" by the `spendOf` guard above, so a lagging breakdown job never blanks a running row's cell                     |
 | A row's attribution changes                             | Its geo changes with it. Expected, not a bug                                                                                                       |
 | Region breakdown missing for a single-country row       | Line 2 is omitted; line 1 still writes                                                                                                             |
 | Notion rate limit                                       | One write per changed row, paced at `WRITE_GAP_MS`                                                                                                 |
-| Cell exceeds 2000 chars                                 | Trimming rule caps both lines at 8 entries; `TEXT_CELL_LIMIT` remains the backstop                                                                 |
+| Cell length                                             | Bounded by construction: 2 lines × ≤8 entries. No truncation branch                                                                                |
 
 Out of scope, deliberately: writing or parsing the human `Geo's` brief, a structured brief-vs-actual
 divergence feed (roadmap idea 11, deferred), geo compliance checks (Track E, on hold), and per-geo
