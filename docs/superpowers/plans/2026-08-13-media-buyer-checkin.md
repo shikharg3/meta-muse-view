@@ -22,9 +22,22 @@
 - **Keep `meta_test` in step with `meta`.** It carries all 11 `infra_*` tables the other session
   shipped, so that is the established convention. Apply new DDL to BOTH databases, by executing
   drizzle's generated statements directly — never via `db:push` (see the schema note below).
-- Default to pure-unit tests: pure functions or an injected `fetchImpl`. Reach for a DB-backed test
-  only when the thing under test IS a database guarantee — the unique index that makes the 17:00 job
-  idempotent is the one case in this plan that qualifies.
+- **Write pure-unit tests only. Do NOT add a DB-backed test in this plan.** `meta_test` is a *shared
+  mutable* database, not a private fixture: measured 2026-08-13 during this build, it had **34 live
+  connections** from another session (querying `infra_business_managers`, `users`, `sync_state`) and
+  that session's own smoke fixtures (`DOT-SMOKE-TEST-1`, `Amber Media-SMOKE-9`) being inserted
+  *while our suite ran*. A test that `truncate`s shared tables there is not merely flaky in both
+  directions — **it deletes the other session's fixtures**, which ours did once before being reverted.
+  The pre-existing `src/db/schema.test.ts` gets away with it only because nothing else was running
+  when it was written.
+- Consequence for the `checkin_prompts` unique index, which IS the idempotency guarantee of the 17:00
+  job: it was verified **empirically** rather than by a committed test. Inserting a duplicate
+  (`prompt_date`, `notion_page_id`, `buyer_person_id`) produced
+  `PostgresError 23505: duplicate key value violates unique constraint
+  "checkin_prompts_day_page_buyer_idx"` with `detail: Key (prompt_date, notion_page_id,
+  buyer_person_id)=(2026-08-13, page-1, buyer-a) already exists`, and `.onConflictDoNothing()` against
+  it was confirmed a silent no-op. If this project ever gets a private, per-run test database, that is
+  the test to add first.
 - **`bun test` is NOT a clean gate on this repo.** Measured 2026-08-13: some pre-existing tests hit
   the real Postgres and are flaky. Known members of that set, all verified pre-existing by restoring
   the `HEAD` version of the file and re-running:
@@ -2373,6 +2386,24 @@ git commit -m "feat(telegram): dispatch taps and replies without ever guessing a
 
 **Files:**
 - Modify: `src/sync/jobs/checkin.ts`
+- Modify: `src/sync/alerts.test.ts` (two items carried over from Task 6's review — see below)
+
+> **Carried over from Task 6.** This task consumes `sendAlertChannelMessage`, so it owns closing two
+> gaps the refactor exposed:
+> 1. **`sendAlertChannelMessage` has no direct test.** `alerts.test.ts` never calls it, so the
+>    unconfigured guard is a surviving mutant (`if (false)` leaves the suite green). Add unit coverage
+>    for all three returns: the unconfigured guard with its exact string
+>    (`"Telegram not configured — set TELEGRAM_BOT_TOKEN + TELEGRAM_ALERT_CHAT_ID."`, which the
+>    Settings UI surfaces), the `{ ok: true }` success mapping, and a failure returning
+>    `{ ok: false, error }` without throwing. The escalation is the only thing that surfaces an
+>    unanswered check-in, so a silently broken send means nobody ever learns.
+> 2. **A latent trap in the existing stub.** `alerts.test.ts:19` stubs
+>    `new Response("{}", { status: 200 })`, which modelled a successful send under the old inline
+>    `fetch` but models a FAILURE under `TelegramClient`'s stricter rule that `body.ok` must be
+>    `true`. It is inert today only because no `TELEGRAM_BOT_TOKEN` is set in the test environment, so
+>    the unconfigured guard fires first and the stub never intercepts a Telegram POST. On any machine
+>    where those vars are set it silently becomes a failure simulation. Change the stub body to a real
+>    `{"ok":true,"result":{"message_id":1}}` envelope.
 
 - [ ] **Step 1: Add the poll loop body, the comment flush and the escalation**
 

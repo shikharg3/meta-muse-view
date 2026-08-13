@@ -13,6 +13,8 @@ import {
   serial,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import type { CheckinStatus, PromptState } from "@/lib/checkin";
 
 export const accounts = pgTable("accounts", {
   id: text("id").primaryKey(),
@@ -632,14 +634,25 @@ export const telegramChats = pgTable("telegram_chats", {
 // Membership here is what makes someone a media buyer: the daily check-in prompts exactly these
 // people, matched against the Notion `Owners` people property by PERSON ID (display names drift).
 // A third buyer is therefore a Settings action, not a deploy.
-export const mediaBuyers = pgTable("media_buyers", {
-  notionPersonId: text("notion_person_id").primaryKey(),
-  displayName: text("display_name").notNull(),
-  telegramChatId: text("telegram_chat_id"), // null = unroutable; prompts are still recorded
-  active: boolean("active").notNull().default(true),
-  boundBy: text("bound_by"),
-  boundAt: timestamp("bound_at", { withTimezone: true }),
-});
+export const mediaBuyers = pgTable(
+  "media_buyers",
+  {
+    notionPersonId: text("notion_person_id").primaryKey(),
+    displayName: text("display_name").notNull(),
+    telegramChatId: text("telegram_chat_id"), // null = unroutable; prompts are still recorded
+    active: boolean("active").notNull().default(true),
+    boundBy: text("bound_by"),
+    boundAt: timestamp("bound_at", { withTimezone: true }),
+  },
+  (t) => [
+    // One chat belongs to at most one buyer. Without this an admin can bind the same discovered
+    // chat to two buyers, and that chat then gets two daily lists and two force-reply threads;
+    // binding should fail loudly in Settings instead. Partial: null means unbound, not a duplicate.
+    uniqueIndex("media_buyers_chat_idx")
+      .on(t.telegramChatId)
+      .where(sql`${t.telegramChatId} is not null`),
+  ],
+);
 
 // One row per (local date, board page, buyer). The unique index is what makes the 17:00 job
 // idempotent: a worker restart inside the same minute cannot double-prompt.
@@ -650,13 +663,13 @@ export const checkinPrompts = pgTable(
     promptDate: date("prompt_date").notNull(),
     notionPageId: text("notion_page_id").notNull(),
     campaignTitle: text("campaign_title").notNull(),
-    status: text("status").notNull(), // snapshotted: the status at prompt time
+    status: text("status").$type<CheckinStatus>().notNull(), // CheckinStatus; snapshotted at prompt time
     buyerPersonId: text("buyer_person_id").notNull(),
     chatId: text("chat_id"),
     question: text("question").notNull(), // snapshotted, so re-wording never rewrites history
     listMessageId: text("list_message_id"), // the buyer's daily list, for re-rendering
     replyMessageId: text("reply_message_id"), // the force_reply message an answer replies to
-    state: text("state").notNull().default("pending"),
+    state: text("state").$type<PromptState>().notNull().default("pending"), // PromptState
     answerText: text("answer_text"), // stored BEFORE the Notion write, so an answer is never lost
     notionCommentId: text("notion_comment_id"), // null while state=answered means a retry is owed
     note: text("note"), // last error (send failure, comment failure)
