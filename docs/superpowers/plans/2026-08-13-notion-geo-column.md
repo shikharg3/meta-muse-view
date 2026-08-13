@@ -231,6 +231,27 @@ git add src/lib/geo-cell.ts src/lib/geo-cell.test.ts
 git commit -m "feat(notion): pure formatter for the delivered-geo cell"
 ```
 
+**Executed 2026-08-13 as `6d9a369`. The shipped code differs from the listing above** — three rounds
+of code review found real defects in it, and the fixes are deliberate. Do not "restore" this task's
+original code.
+
+| Change                                                                                       | Why                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| -------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Region line suppressed when nothing but Meta's `unknown` bucket would be **named on it**     | Measured: 123 campaigns carry a positive `unknown` **region** bucket over 60 days (535 rows, $116), against 38 country rows at $0. Without this, `[US 1000, region unknown 1000]` rendered `US 100%` / `unknown 100%` — a second line repeating the first and naming no place. `unknown` deliberately stays in the region _denominator_: removing it would make the placed shares sum to 100% and hide the unplaced spend                    |
+| Selection extracted into a private `keptEntries`, which both `shareLine` and that guard call | Round 2 caught the first version of the guard testing the RAW rows while the rendered line is filtered by `MIN_SHARE` — so `[US 1000, California 5, unknown 995]` still produced `unknown 100% · +1 more`, the exact output the guard existed to prevent. A share-threshold guard would instead have suppressed the legitimate leader-exception case. Asking "what will the line actually name" is the only formulation that gets both right |
+| Ties broken on `value`, not left to input order                                              | `sort` is stable, and the upstream SQL has no `ORDER BY`, so equal-spend buckets could reorder between syncs on unchanged data. Writes are gated on the cell text having changed, so a tie flip would fire a write and reset `Last edited time` — the signal that gating exists to protect                                                                                                                                                   |
+| Leader kept when every share is under `MIN_SHARE`                                            | Spend spread across 100+ buckets rendered a bare `+101 more`: a cell with no content, worse than the `""` the module returns elsewhere                                                                                                                                                                                                                                                                                                       |
+| `GeoSpend` doc states the pre-aggregation precondition                                       | `insights_breakdown_daily` is keyed per day, so an unaggregated window query repeats each value once per date. Task 5's `geoOf` does `GROUP BY`, so this is a contract to state, not a bug to defend against                                                                                                                                                                                                                                 |
+| 7 tests became 14                                                                            | Added the exactly-`MAX_ENTRIES` boundary (`+0 more` was otherwise untested), negative spend, the exactly-`MIN_SHARE` boundary, and one per new behaviour above                                                                                                                                                                                                                                                                               |
+
+Two consequences worth knowing before touching this file again:
+
+- The tie-break changed one existing expectation: `ZA`/`GE` both at spend 20 now render `GE` first.
+  The fixture was not touched.
+- **Four separate doc comments in this file were caught asserting behaviour the code did not have**,
+  each time after a fix changed the code and not the comment. If you edit `geo-cell.ts`, re-read
+  every comment in it before committing.
+
 ---
 
 ### Task 2: Column constants and the collision guard
