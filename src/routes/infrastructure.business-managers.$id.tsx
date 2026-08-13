@@ -62,7 +62,11 @@ function AccessChain({ profiles }: { profiles: BmDetail["profiles"] }) {
                 <span className={cn("text-sm", !p.usable && "opacity-60 line-through")}>
                   {p.name}
                 </span>
-                <StatusPill status={p.status} />
+                <div className="flex flex-wrap gap-1">
+                  {p.statuses.map((s) => (
+                    <StatusPill key={s} status={s} />
+                  ))}
+                </div>
               </li>
             ))}
           </ul>
@@ -175,6 +179,7 @@ function BmDetailPage() {
 
       <PageHeader title={detail.bm.name} description={`BM ${detail.bm.bmId}`}>
         <StatusPill status={detail.bm.status} />
+        <StatusPill status={detail.bm.type} />
         <RiskBadge risk={redundancy(usableProfiles)} />
       </PageHeader>
 

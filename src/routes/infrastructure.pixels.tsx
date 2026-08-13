@@ -268,7 +268,7 @@ function PixelsPage() {
               {sorted.map((r) => {
                 const rootBm = bmById.get(r.rootBmId);
                 const rootRaw = rootBm?.status;
-                const rootStatus: BmStatus = isBmStatus(rootRaw) ? rootRaw : "banned";
+                const rootStatus: BmStatus = isBmStatus(rootRaw) ? rootRaw : "suspended";
                 const rootUsable = usableBm(rootStatus);
                 return (
                   <tr key={r.id} className="hover:bg-accent/40 transition-colors">

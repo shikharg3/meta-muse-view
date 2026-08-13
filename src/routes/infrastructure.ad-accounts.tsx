@@ -19,7 +19,7 @@ import { getCurrentUser } from "@/lib/api/auth";
 import { isAdmin } from "@/lib/auth/roles";
 import { fmtCurrency, disableReasonLabel } from "@/lib/format";
 import { usableBm } from "@/lib/infra-risk";
-import { AD_ACCOUNT_USAGE, isBmStatus } from "@/lib/infra-status";
+import { AD_ACCOUNT_USAGE, INFRA_STATUS_LABEL, isBmStatus } from "@/lib/infra-status";
 import { cn } from "@/lib/utils";
 import type { AdAccountView } from "@/server/fns/infra/ad-accounts";
 
@@ -70,9 +70,32 @@ const ACCOUNT_STATUS_LABEL: Record<string, string> = {
 
 const USAGE_FILTERS = ["ALL", ...AD_ACCOUNT_USAGE] as const;
 
+/**
+ * How many synced matches the picker paints at once. The synced book runs to a few hundred accounts,
+ * so an uncapped list is both slow to render and useless to read.
+ */
+const PICK_LIMIT = 50;
+
+/** A synced-but-unregistered account, as `listUnregisteredAccounts` hands it over. */
+interface SyncedAccount {
+  id: string;
+  name: string;
+}
+
+/**
+ * Case-insensitive match of a synced account against an already-lowercased needle, on the name OR the
+ * id. The id is tried both as stored and with its `act_` prefix removed, so a bare `555000111`, an
+ * `act_555` and a slice of the name all land on `act_555000111`.
+ */
+function matchesSynced(account: SyncedAccount, needle: string) {
+  if (account.name.toLowerCase().includes(needle)) return true;
+  const id = account.id.toLowerCase();
+  if (id.includes(needle)) return true;
+  return id.startsWith("act_") && id.slice(4).includes(needle);
+}
+
 interface FormState {
-  /** Id chosen from the unregistered pick list; empty means the operator is typing one. */
-  pick: string;
+  /** Picked from the synced book or typed by hand — the picker and the free-text field share it. */
   id: string;
   label: string;
   usageState: string;
@@ -80,7 +103,6 @@ interface FormState {
 }
 
 const EMPTY_FORM: FormState = {
-  pick: "",
   id: "",
   label: "",
   usageState: AD_ACCOUNT_USAGE[0],
@@ -141,6 +163,7 @@ function InfraAdAccountsPage() {
   const [editing, setEditing] = useState<AdAccountView | null>(null);
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
+  const [pickQ, setPickQ] = useState("");
 
   // Lowercased once per render, not once per row×BM, because search hops through BM names.
   const bmNameById = new Map(bms.map((bm) => [bm.id, bm.name.toLowerCase()]));
@@ -160,6 +183,17 @@ function InfraAdAccountsPage() {
     if (own.some((v) => v != null && v.toLowerCase().includes(needle))) return true;
     return r.bmIds.some((id) => bmNameById.get(id)?.includes(needle) ?? false);
   });
+
+  /**
+   * The pick is derived from `form.id` rather than mirrored into its own state: the picker and the
+   * free-text field name the same account, so a second copy could only ever disagree with it.
+   */
+  const picked = unregistered.find((a) => a.id === form.id) ?? null;
+  const pickNeedle = pickQ.trim().toLowerCase();
+  const pickMatches: SyncedAccount[] =
+    pickNeedle === "" ? [] : unregistered.filter((a) => matchesSynced(a, pickNeedle));
+  /** Collapsed once an account is chosen, and back open as soon as the operator types to swap it. */
+  const showPicker = picked === null || pickNeedle !== "";
 
   const { sorted, key, dir, toggle } = useSort(
     filtered,
@@ -216,7 +250,6 @@ function InfraAdAccountsPage() {
   const openEdit = (row: AdAccountView) => {
     setEditing(row);
     setForm({
-      pick: "",
       id: row.id,
       label: row.label ?? "",
       usageState: row.usageState,
@@ -226,14 +259,19 @@ function InfraAdAccountsPage() {
     setOpen(true);
   };
 
+  const closeDialog = () => {
+    setOpen(false);
+    setPickQ("");
+  };
+
   const submit = async () => {
-    const id = editing ? editing.id : form.pick || form.id;
+    const id = editing ? editing.id : form.id;
     const ok = await settle(
       await saveInfraAdAccount({
         data: { id, label: form.label, usageState: form.usageState, notes: form.notes },
       }),
     );
-    if (ok) setOpen(false);
+    if (ok) closeDialog();
   };
 
   return (
@@ -272,7 +310,7 @@ function InfraAdAccountsPage() {
                   : "text-muted-foreground hover:bg-accent",
               )}
             >
-              {u.replace("_", " ")}
+              {INFRA_STATUS_LABEL[u] ?? u}
             </button>
           ))}
         </div>
@@ -328,7 +366,7 @@ function InfraAdAccountsPage() {
                       >
                         {AD_ACCOUNT_USAGE.map((u) => (
                           <option key={u} value={u}>
-                            {u.replace("_", " ")}
+                            {INFRA_STATUS_LABEL[u] ?? u}
                           </option>
                         ))}
                       </select>
@@ -385,29 +423,82 @@ function InfraAdAccountsPage() {
         </div>
       </div>
 
-      <Dialog open={open} onOpenChange={setOpen}>
+      <Dialog
+        open={open}
+        onOpenChange={(next) => {
+          if (next) setOpen(true);
+          else closeDialog();
+        }}
+      >
         <DialogContent className="max-w-md" aria-describedby={undefined}>
           <DialogTitle>{editing ? "Edit ad account" : "Register ad account"}</DialogTitle>
           <div className="space-y-3">
             {editing === null && (
               <>
-                <label className="block space-y-1">
-                  <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
-                    Pick from sync
-                  </span>
-                  <select
-                    value={form.pick}
-                    onChange={(e) => setForm({ ...form, pick: e.target.value })}
-                    className="w-full h-9 rounded-md border border-border bg-card px-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
-                  >
-                    <option value="">— type an ID instead —</option>
-                    {unregistered.map((a) => (
-                      <option key={a.id} value={a.id}>
-                        {a.name} ({a.id})
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                <div className="space-y-1.5">
+                  {picked && (
+                    <div className="flex items-center justify-between gap-2 rounded-lg border border-border bg-card px-2 py-1.5">
+                      <div className="min-w-0">
+                        <div className="truncate text-xs font-medium">{picked.name}</div>
+                        <div className="font-mono text-[10px] text-muted-foreground">
+                          {picked.id}
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => setForm({ ...form, id: "" })}
+                        className="text-[11px] font-medium text-muted-foreground hover:text-foreground"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  )}
+                  <label className="block space-y-1">
+                    <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
+                      Search synced accounts
+                    </span>
+                    <input
+                      value={pickQ}
+                      onChange={(e) => setPickQ(e.target.value)}
+                      placeholder="name or act_1234…"
+                      className="w-full h-9 rounded-md border border-border bg-card px-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
+                    />
+                  </label>
+                  {showPicker && (
+                    <div className="max-h-56 overflow-y-auto rounded-lg border border-border bg-popover p-1">
+                      {pickNeedle === "" && (
+                        <p className="px-2 py-6 text-center text-[11px] text-muted-foreground">
+                          Type to search {unregistered.length} synced accounts
+                        </p>
+                      )}
+                      {pickNeedle !== "" && pickMatches.length === 0 && (
+                        <p className="px-2 py-6 text-center text-[11px] text-muted-foreground">
+                          No synced account matches “{pickQ.trim()}”.
+                        </p>
+                      )}
+                      {pickMatches.slice(0, PICK_LIMIT).map((a) => (
+                        <button
+                          key={a.id}
+                          onClick={() => {
+                            setForm({ ...form, id: a.id });
+                            setPickQ("");
+                          }}
+                          className="block w-full rounded px-2 py-1 text-left hover:bg-accent"
+                        >
+                          <span className="block truncate text-xs">{a.name}</span>
+                          <span className="block font-mono text-[10px] text-muted-foreground">
+                            {a.id}
+                          </span>
+                        </button>
+                      ))}
+                      {pickMatches.length > PICK_LIMIT && (
+                        <p className="px-2 py-1.5 text-[10px] text-muted-foreground">
+                          Showing the first {PICK_LIMIT} of {pickMatches.length} matches — narrow
+                          the search.
+                        </p>
+                      )}
+                    </div>
+                  )}
+                </div>
                 <label className="block space-y-1">
                   <span className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
                     Account ID
@@ -415,9 +506,8 @@ function InfraAdAccountsPage() {
                   <input
                     value={form.id}
                     onChange={(e) => setForm({ ...form, id: e.target.value })}
-                    disabled={form.pick !== ""}
                     placeholder="act_1234567890"
-                    className="w-full h-9 rounded-md border border-border bg-card px-2 font-mono text-xs focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
+                    className="w-full h-9 rounded-md border border-border bg-card px-2 font-mono text-xs focus:outline-none focus:ring-1 focus:ring-ring"
                   />
                   <span className="block text-[10px] text-muted-foreground">
                     For an account not in the synced book yet. It will read “not in sync” until the
@@ -456,7 +546,7 @@ function InfraAdAccountsPage() {
               >
                 {AD_ACCOUNT_USAGE.map((u) => (
                   <option key={u} value={u}>
-                    {u.replace("_", " ")}
+                    {INFRA_STATUS_LABEL[u] ?? u}
                   </option>
                 ))}
               </select>
@@ -475,7 +565,7 @@ function InfraAdAccountsPage() {
             {msg && <div className="text-xs text-destructive">{msg}</div>}
             <div className="flex justify-end gap-2 pt-1">
               <button
-                onClick={() => setOpen(false)}
+                onClick={closeDialog}
                 className="h-9 px-3 rounded-md border border-border bg-card text-xs font-medium hover:bg-accent"
               >
                 Cancel

@@ -13,7 +13,13 @@
  * `bmRisk()` / `adAccountRisk()` aliases, because the caller's count is the only difference and
  * `redundancy(usableProfiles)` says what the rule is where an alias would hide it.
  */
-import type { BmStatus, PageStatus, PixelStatus, ProfileStatus } from "./infra-status";
+import {
+  PROFILE_BLOCKING_STATUSES,
+  type BmStatus,
+  type PageStatus,
+  type PixelStatus,
+  type ProfileStatus,
+} from "./infra-status";
 
 export type RiskLevel = "critical" | "warning" | "safe";
 export interface Risk {
@@ -37,17 +43,21 @@ export function redundancy(paths: number): Risk {
   return { level: "safe", label: "Redundant" };
 }
 
-/** A profile is an access path only while it can actually log in. */
-export function usableProfile(status: ProfileStatus): boolean {
-  return status === "active" || status === "new";
+/**
+ * A profile is an access path only while it is active AND nothing has taken its access away.
+ *
+ * The set matters: Meta commonly leaves a profile flagged `active` while stripping a capability, so
+ * "active" alone is not evidence of access. `video_selfie` is not blocking — see
+ * PROFILE_BLOCKING_STATUSES for why.
+ */
+export function usableProfile(statuses: readonly ProfileStatus[]): boolean {
+  if (!statuses.includes("active")) return false;
+  return !statuses.some((s) => (PROFILE_BLOCKING_STATUSES as readonly string[]).includes(s));
 }
 
-/**
- * A BM is an access path only while it is usable. `pending_verification` still works; `in_review`,
- * `restricted` and `banned` are not paths you can rely on as a backup.
- */
+/** A BM is an access path only while active; `in_review` and `suspended` cannot be relied on. */
 export function usableBm(status: BmStatus): boolean {
-  return status === "active" || status === "pending_verification";
+  return status === "active";
 }
 
 /** Ordered; first match wins. */
@@ -66,11 +76,11 @@ export function pixelRisk(input: {
 /** Ordered; first match wins. */
 export function pageRisk(input: {
   status: PageStatus;
-  ownerStatus: ProfileStatus;
+  ownerStatuses: readonly ProfileStatus[];
   bmCount: number;
   profileCount: number;
 }): Risk {
-  if (!usableProfile(input.ownerStatus)) return { level: "critical", label: "No active owner" };
+  if (!usableProfile(input.ownerStatuses)) return { level: "critical", label: "No active owner" };
   if (input.status === "banned") return { level: "critical", label: "Banned" };
   if (input.status === "restricted") return { level: "warning", label: "Restricted" };
   if (input.status === "in_review") return { level: "warning", label: "In review" };

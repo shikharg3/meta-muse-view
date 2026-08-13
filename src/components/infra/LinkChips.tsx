@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Plus, X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 
 export interface LinkOption {
   id: string;
@@ -75,35 +76,40 @@ export function LinkChips({
           );
         })}
         {available.length > 0 && (
-          <div className="relative">
-            <button
-              type="button"
-              disabled={busy}
-              onClick={() => setOpen((v) => !v)}
-              className="inline-flex items-center rounded-md border border-dashed border-border px-1.5 py-0.5 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-40"
-              aria-label="Add link"
-            >
-              <Plus className="size-3" />
-            </button>
-            {open && (
-              <div className="absolute z-20 mt-1 max-h-64 w-56 overflow-y-auto rounded-lg border border-border bg-popover p-1 shadow-lg">
-                {available.map((option) => (
-                  <button
-                    key={option.id}
-                    type="button"
-                    disabled={busy}
-                    onClick={() => apply(option.id, "add")}
-                    className="block w-full truncate rounded px-2 py-1 text-left text-xs hover:bg-accent disabled:opacity-40"
-                  >
-                    {option.label}
-                    {option.unusable && (
-                      <span className="ml-1 text-muted-foreground">(unusable)</span>
-                    )}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
+          <Popover open={open} onOpenChange={setOpen}>
+            <PopoverTrigger asChild>
+              <button
+                type="button"
+                disabled={busy}
+                className="inline-flex items-center rounded-md border border-dashed border-border px-1.5 py-0.5 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-40"
+                aria-label="Add link"
+              >
+                <Plus className="size-3" />
+              </button>
+            </PopoverTrigger>
+            {/*
+             * Portaled, not `absolute`: these chips live inside a table whose wrapper is
+             * `overflow-x-auto`, and per spec a non-visible overflow on one axis forces the other to
+             * `auto` too — so an absolutely-positioned panel gets clipped by the scroll box and
+             * painted under the table footer. Radix's portal escapes the container entirely.
+             */}
+            <PopoverContent align="start" className="max-h-64 w-56 overflow-y-auto p-1">
+              {available.map((option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  disabled={busy}
+                  onClick={() => apply(option.id, "add")}
+                  className="block w-full truncate rounded px-2 py-1 text-left text-xs hover:bg-accent disabled:opacity-40"
+                >
+                  {option.label}
+                  {option.unusable && (
+                    <span className="ml-1 text-muted-foreground">(unusable)</span>
+                  )}
+                </button>
+              ))}
+            </PopoverContent>
+          </Popover>
         )}
       </div>
       {error && <p className="text-[11px] text-destructive">{error}</p>}
