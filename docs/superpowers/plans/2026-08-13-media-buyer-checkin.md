@@ -14,8 +14,17 @@
 
 ## Conventions in this codebase — read before Task 1
 
-- **Every test THIS PLAN adds is pure-unit:** pure functions, or an injected `fetchImpl`. Never write
-  a new test that imports `@/db/client` — there is no test database provisioned for this feature.
+- **There IS a test database — this plan originally said otherwise and was wrong.** `bunfig.toml` has
+  `[test] preload = ["./test-setup.ts"]`, and `test-setup.ts` rewrites `DATABASE_URL` to
+  `TEST_DATABASE_URL` (`.../meta_test`) for EVERY `bun test` run. `src/db/client.ts` builds its client
+  from `env().DATABASE_URL` at import time, so any test importing it hits `meta_test`.
+  `src/db/schema.test.ts` already truncates and round-trips a real row there.
+- **Keep `meta_test` in step with `meta`.** It carries all 11 `infra_*` tables the other session
+  shipped, so that is the established convention. Apply new DDL to BOTH databases, by executing
+  drizzle's generated statements directly — never via `db:push` (see the schema note below).
+- Default to pure-unit tests: pure functions or an injected `fetchImpl`. Reach for a DB-backed test
+  only when the thing under test IS a database guarantee — the unique index that makes the 17:00 job
+  idempotent is the one case in this plan that qualifies.
 - **`bun test` is NOT a clean gate on this repo.** Measured 2026-08-13: some pre-existing tests hit
   the real Postgres and are flaky. Known members of that set, all verified pre-existing by restoring
   the `HEAD` version of the file and re-running:
@@ -1586,7 +1595,7 @@ In `src/notion/client.ts`, add this method to `NotionClient` immediately after `
    * `chunks` are pre-split by the caller because Notion rejects a rich_text item over 2000 chars.
    */
   async createComment(pageId: string, chunks: string[]): Promise<string> {
-    if (chunks.length === 0) throw new Error("refusing to post an empty comment");
+    if (chunks.length === 0) throw new Error(`refusing to post an empty comment on ${pageId}`);
     const body = await this.req(`/comments`, {
       method: "POST",
       body: JSON.stringify({
@@ -1594,7 +1603,14 @@ In `src/notion/client.ts`, add this method to `NotionClient` immediately after `
         rich_text: chunks.map((content) => ({ type: "text", text: { content } })),
       }),
     });
-    return typeof body.id === "string" ? body.id : "";
+    // Throwing, not returning "": Task 11 treats a non-null `notion_comment_id` as durable success,
+    // so an empty string would mark the prompt commented with an unusable id and it would never be
+    // retried or flagged. `req()` already throws on failure; this keeps the contract consistent.
+    const id = body.id;
+    if (typeof id !== "string" || !id) {
+      throw new Error(`Notion accepted the comment on ${pageId} but returned no id`);
+    }
+    return id;
   }
 ```
 
@@ -1602,7 +1618,12 @@ In `src/notion/client.ts`, add this method to `NotionClient` immediately after `
 
 Run: `bun test src/notion/client.test.ts`
 
-Expected: PASS, existing tests plus the 2 new ones.
+Expected: PASS, 14 — the 10 pre-existing plus 4 new. Beyond the two shown above (request shape, empty
+body) you need one test per arm of the id guard, because each is separately mutable: a response with
+**no** `id`, and a response whose `id` is the **empty string**. Dropping `!id` from the guard leaves
+the suite green otherwise, which would let Notion's `id: ""` be stored as a real comment id. Match the
+empty-comment error on `/empty comment on page-1/` rather than bare `/empty/`, or dropping the page id
+from the message also goes undetected.
 
 - [ ] **Step 5: Commit**
 
@@ -1790,8 +1811,9 @@ git commit -m "feat(notion): capture Owners person ids on board rows"
 **Files:**
 - Create: `src/sync/jobs/checkin.ts`
 
-This task is DB/IO orchestration. Its decisions were already tested in Tasks 1–3, so there is no new
-unit test here — there is no test database in this project. Verification is the smoke test in Task 14.
+This task is DB/IO orchestration; its decisions were already unit-tested in Tasks 1–3, so there is no
+new pure-unit test here. Verification is the smoke test in Task 14, plus the DB-backed idempotency
+test on the `checkin_prompts` unique index added in Task 4.
 
 - [ ] **Step 1: Write the job**
 
