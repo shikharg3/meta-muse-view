@@ -10,6 +10,14 @@
 
 **Design spec:** `docs/superpowers/specs/2026-08-13-notion-geo-column-design.md`
 
+**Status: SHIPPED 2026-08-13**, merged to trunk as `0eae2aa` and deployed. `🤖 Geo Delivered 14d`
+exists on the board with 12 cells; `Geo's` still holds all 79 of its briefs. Task 1's shipped code
+differs from this plan after three review rounds — see the deviation table in that task before
+editing `src/lib/geo-cell.ts`. Task 5 also absorbed a fix the plan did not anticipate: the board's
+`Funds Remaining ($)` column had been renamed, so the job had silently stopped resolving it and the
+first real write would have created a duplicate. Caught by the Task 6 dry run, which is the reason
+that step exists.
+
 ---
 
 ## Before you start
