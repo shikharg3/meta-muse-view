@@ -453,3 +453,11 @@ test("boardRows keeps only string owner ids out of jsonb", () => {
     ownerIds: [],
   });
 });
+
+test("boardRows drops empty-string owner ids, exactly as peopleIds does on the way in", () => {
+  // The two sides must apply the SAME id test. jsonb is the less trusted input of the pair, so it
+  // must not be the more permissive one: an "" id is a recipient nobody can ever be matched to.
+  expect(
+    boardRows([{ pageId: "p", title: "t", status: "Live", ownerIds: ["", SHIKHAR] }])[0],
+  ).toEqual({ pageId: "p", title: "t", status: "Live", ownerIds: [SHIKHAR] });
+});

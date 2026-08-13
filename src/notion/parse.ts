@@ -81,9 +81,11 @@ export function boardRows(
       pageId: p.pageId,
       title: typeof title === "string" ? title : "",
       status: typeof status === "string" ? status : null,
-      // Rows stored before owners were captured have none; the next Notion sync fills them in.
+      // Rows stored before owners were captured have none; the next Notion sync fills them in. The
+      // id test is the same one `peopleIds` applies on the way in: jsonb is the LESS trusted side, so
+      // it must not be the more permissive one.
       ownerIds: Array.isArray(owners)
-        ? owners.filter((x): x is string => typeof x === "string")
+        ? owners.filter((x): x is string => typeof x === "string" && x.length > 0)
         : [],
     });
   }
