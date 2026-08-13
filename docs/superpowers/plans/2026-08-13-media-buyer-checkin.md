@@ -2929,9 +2929,16 @@ git commit -m "feat(checkin): admin panel to bind media buyers to Telegram chats
 
 - [ ] **Step 1: Run the full suite and the linter locally**
 
-Run: `bun test && bun run lint`
+Run: `bun test` and then `bunx eslint $(git diff --name-only d735120..HEAD -- '*.ts' '*.tsx')`
 
-Expected: all tests pass; lint clean. Fix anything that fails before deploying.
+Expected: all tests pass; eslint clean on the files this feature touched.
+
+**Do NOT gate on repo-wide `bun run lint`.** Measured 2026-08-13 on a clean checkout: it already
+reports 20 errors / 7 warnings, all prettier formatting in files this feature never touches
+(`src/lib/env.test.ts`, `src/lib/crypto.ts`, `src/server/fns/settings.test.ts`,
+`src/db/schema.test.ts`, several components). `src/lib/env.test.ts` was last modified by `ccc0b64`,
+long before this feature. Reformatting them here would bury the feature diff in unrelated churn; if
+the team wants them fixed, that is its own commit.
 
 - [ ] **Step 2: Commit and push to all three remotes**
 
