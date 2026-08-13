@@ -135,8 +135,8 @@ Delete the test comment and the throwaway page. Delete `/tmp/verify_comment.ts`.
 
 ## Task 1: Time helpers, the question catalogue and the prompt vocabulary
 
-> **Revised 2026-08-13** after code review of the first attempt. Three changes from the original
-> task, all evidence-driven — do not "restore" the older shapes:
+> **Revised twice on 2026-08-13**, after two rounds of mutation-tested code review. Every change
+> below was verified by measurement — do not "restore" the older shapes:
 > 1. The Berlin/label helpers moved to their own module. They are generic calendar plumbing that
 >    would read identically in a module about invoices, and every other module in `src/lib` is one
 >    concept plus one test file (`delivery-status.ts` 101 lines, `range.ts` 131, `creative-links.ts`
@@ -150,6 +150,19 @@ Delete the test comment and the throwaway page. Delete `/tmp/verify_comment.ts`.
 >    Under a forced `h24` cycle Berlin midnight really does format as hour `"24"` with the date
 >    already rolled over, so the hazard is real — it is now prevented at the formatter instead of
 >    patched after it.
+> 4. `dayLabel` is **not in this task at all** — it moved to `checkin-render.ts` (Task 3). It uses
+>    neither Berlin nor a clock: it is a `YYYY-MM-DD` → display-string formatter for the top of the
+>    buyer's Telegram message, i.e. presentation. It also gained a malformed-input guard, because
+>    without one `dayLabel("garbage")` returns the literal string `"undefined NaN undefined"`
+>    (measured) — `DAYS[NaN]` types as `string` while evaluating to `undefined` since this project
+>    does not enable `noUncheckedIndexedAccess`.
+> 5. The formatter is built **per call inside `berlinNow`**, not hoisted to a module const. An
+>    import-time formatter cannot observe a `process.env.TZ` change, which made the hostile-timezone
+>    test inert: mutation-testing showed the dropped-`timeZone` mutant surviving 7 of 7.
+> 6. `withTZ` in the test file restores a **concrete zone name**. `process.env.TZ` is unset under
+>    `bun test`, and assigning `undefined` to a `process.env` key stores the string `"undefined"`,
+>    leaving ICU pinned to the hostile zone for the rest of the process — measured leaking across
+>    test files.
 
 **Files:**
 - Create: `src/lib/berlin-time.ts`
@@ -163,11 +176,21 @@ Create `src/lib/berlin-time.test.ts`:
 
 ```typescript
 import { test, expect } from "bun:test";
-import { berlinNow, dayLabel } from "./berlin-time";
+import { berlinNow } from "./berlin-time";
 
-/** Run `fn` as if the process were in `tz`, then restore. Bun applies a mid-run TZ change at once. */
+/**
+ * Run `fn` as if the process were in `tz`, then restore.
+ *
+ * Restores a CONCRETE zone name. `process.env.TZ` is unset by default under `bun test`, and
+ * assigning `undefined` to a `process.env` key stores the literal string `"undefined"` instead of
+ * deleting it, which leaves ICU pinned to the hostile zone for the rest of the process — measured
+ * leaking across test files. `delete process.env.TZ` clears the key but also leaves ICU hostile.
+ *
+ * Only objects constructed AFTER the flip observe it, so the function under test must build its own
+ * `Date`/`Intl` internally for a probe like this to mean anything.
+ */
 function withTZ<T>(tz: string, fn: () => T): T {
-  const prev = process.env.TZ;
+  const prev = process.env.TZ ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
   process.env.TZ = tz;
   try {
     return fn();
@@ -199,23 +222,12 @@ test("does not reach the prompt hour one minute early", () => {
 });
 
 test("berlinNow ignores the process timezone", () => {
-  // Fails if the formatter's `timeZone: "Europe/Berlin"` is ever dropped — the sync worker's host
-  // timezone must not decide when the prompt fires.
+  // Bites only because berlinNow builds its formatter per call: an import-time formatter cannot
+  // observe this flip, and a dropped `timeZone: "Europe/Berlin"` would survive the mutation.
   const hostile = withTZ("Pacific/Kiritimati", () => berlinNow(new Date("2026-08-13T15:30:00Z")));
   expect(hostile).toEqual({ date: "2026-08-13", hour: 17 });
 });
 
-test("dayLabel formats a date as 'Thu 13 Aug'", () => {
-  expect(dayLabel("2026-08-13")).toBe("Thu 13 Aug");
-  expect(dayLabel("2026-08-03")).toBe("Mon 03 Aug");
-  expect(dayLabel("2026-01-01")).toBe("Thu 01 Jan");
-});
-
-test("dayLabel ignores the process timezone", () => {
-  // A UTC+14 runner must not shift the label onto the next day.
-  expect(withTZ("Pacific/Kiritimati", () => dayLabel("2026-08-13"))).toBe("Thu 13 Aug");
-  expect(withTZ("Pacific/Midway", () => dayLabel("2026-08-13"))).toBe("Thu 13 Aug");
-});
 ```
 
 - [ ] **Step 2: Run the tests and watch them fail**
@@ -244,23 +256,24 @@ export interface LocalNow {
 }
 
 /**
- * `hourCycle: "h23"` asks ICU for the 0-23 cycle explicitly.
+ * Formatter options. The formatter itself is constructed per call inside `berlinNow`, NOT hoisted:
+ * an import-time formatter cannot observe a `process.env.TZ` change, which makes the hostile-timezone
+ * test inert (mutation-proven: the dropped-`timeZone` mutant survived 7 of 7). This runs about twice
+ * a minute, so the construction cost is irrelevant, and `format.ts` already builds `Intl` per call.
  *
- * Do NOT swap it for `hour12: false`: ECMA-402 lets `hour12` override `hourCycle`, and an `h24`
- * cycle renders Berlin midnight as hour "24" (measured) with the date already rolled forward, which
- * would leave an `hour >= CHECKIN_HOUR` gate true all night.
+ * `hourCycle: "h23"` asks ICU for the 0-23 cycle explicitly. Do NOT swap it for `hour12: false`:
+ * ECMA-402 lets `hour12` override `hourCycle`, and an `h24` cycle renders Berlin midnight as hour
+ * "24" (measured) with the date already rolled forward, which would leave an
+ * `hour >= CHECKIN_HOUR` gate true all night.
  */
-const BERLIN = new Intl.DateTimeFormat("en-CA", {
+const BERLIN_OPTIONS: Intl.DateTimeFormatOptions = {
   timeZone: "Europe/Berlin",
   year: "numeric",
   month: "2-digit",
   day: "2-digit",
   hour: "2-digit",
   hourCycle: "h23",
-});
-
-const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+};
 
 /**
  * Berlin wall-clock date and hour for an instant. "17:00 CET" means 17:00 local, so this follows
@@ -275,7 +288,7 @@ export function berlinNow(at: Date): LocalNow {
   let month: string | undefined;
   let day: string | undefined;
   let hour: string | undefined;
-  for (const p of BERLIN.formatToParts(at)) {
+  for (const p of new Intl.DateTimeFormat("en-CA", BERLIN_OPTIONS).formatToParts(at)) {
     if (p.type === "year") year = p.value;
     else if (p.type === "month") month = p.value;
     else if (p.type === "day") day = p.value;
@@ -286,26 +299,14 @@ export function berlinNow(at: Date): LocalNow {
   }
   return { date: `${year}-${month}-${day}`, hour: Number(hour) };
 }
-
-/**
- * "Thu 13 Aug" from a YYYY-MM-DD date, for the top of the buyer's daily Telegram message.
- *
- * Table lookup on UTC fields rather than a locale format: `en-GB` returns "Thu, 13 Aug" and would
- * need its comma stripped, which buys a dependency on ICU never reordering the fields. Same approach
- * as `shortDay` in `src/portal/mock.ts`.
- */
-export function dayLabel(date: string): string {
-  const d = new Date(`${date}T00:00:00Z`);
-  const day = String(d.getUTCDate()).padStart(2, "0");
-  return `${DAYS[d.getUTCDay()]} ${day} ${MONTHS[d.getUTCMonth()]}`;
-}
 ```
 
 - [ ] **Step 4: Run the time-helper tests**
 
 Run: `bun test src/lib/berlin-time.test.ts`
 
-Expected: PASS, 7 tests.
+Expected: PASS, 5 tests. (`dayLabel` is not here — it is presentation, uses neither Berlin nor a
+clock, and belongs with the other renderers in Task 3.)
 
 - [ ] **Step 5: Write the failing decision-core tests**
 
@@ -348,8 +349,8 @@ test("inherited Object members are not mistaken for statuses", () => {
 });
 
 test("isCheckinStatus recognises exactly the six in-scope statuses", () => {
-  expect(Object.keys(CHECKIN_QUESTIONS).every(isCheckinStatus)).toBe(true);
-  expect(Object.keys(CHECKIN_QUESTIONS)).toHaveLength(6);
+  // `Object.keys(X).every(isCheckinStatus)` would be tautological — isCheckinStatus IS hasOwn over
+  // that same object — and the six-value assertion lives in the next test.
   expect(isCheckinStatus("Live")).toBe(true);
   expect(isCheckinStatus("Not started")).toBe(false);
   expect(isCheckinStatus(null)).toBe(false);
@@ -406,7 +407,7 @@ export const ESCALATION_HOUR = 9;
  *
  * `as const satisfies Record<MachineStatus | "On Boarding", string>` earns three things a
  * `Record<string, string>` annotation cannot: the compiler rejects a missing machine status, the
- * catalogue cannot be mutated by a consumer (this is imported into a long-lived sync worker), and
+ * compiler rejects mutating it (`as const` is compile-time only; nothing is frozen at runtime), and
  * `CheckinStatus` below becomes a usable union instead of bare `string`.
  *
  * A status absent from this map is NOT prompted (see `questionFor`) — a default question would ask a
@@ -448,7 +449,7 @@ export function questionFor(status: string | null | undefined): string | null {
 
 Run: `bun test src/lib/checkin.test.ts src/lib/berlin-time.test.ts && bunx tsc --noEmit`
 
-Expected: PASS, 14 tests total (7 + 7); typecheck clean.
+Expected: PASS, 12 tests total (5 berlin-time + 7 checkin); typecheck clean.
 
 - [ ] **Step 9: Commit**
 
@@ -664,7 +665,46 @@ import {
   escalationText,
   NOTION_TEXT_LIMIT,
   type ListItem,
+  dayLabel,
 } from "./checkin-render";
+
+/**
+ * Run `fn` as if the process were in `tz`, then restore.
+ *
+ * Restores a CONCRETE zone name: `process.env.TZ` is unset under `bun test`, and assigning
+ * `undefined` to a `process.env` key stores the literal string `"undefined"`, which leaves ICU
+ * pinned to the hostile zone for the rest of the process.
+ */
+function withTZ<T>(tz: string, fn: () => T): T {
+  const prev = process.env.TZ ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+  process.env.TZ = tz;
+  try {
+    return fn();
+  } finally {
+    process.env.TZ = prev;
+  }
+}
+
+test("dayLabel formats a date as 'Thu 13 Aug'", () => {
+  expect(dayLabel("2026-08-13")).toBe("Thu 13 Aug");
+  expect(dayLabel("2026-08-03")).toBe("Mon 03 Aug");
+  expect(dayLabel("2026-01-01")).toBe("Thu 01 Jan");
+});
+
+test("dayLabel ignores the process timezone", () => {
+  // The Pacific/Midway (UTC-11) case is the one that bites: it is what fails if the UTC getters are
+  // ever swapped for local ones. UTC+14 does not shift a 00:00Z date at all.
+  expect(withTZ("Pacific/Kiritimati", () => dayLabel("2026-08-13"))).toBe("Thu 13 Aug");
+  expect(withTZ("Pacific/Midway", () => dayLabel("2026-08-13"))).toBe("Thu 13 Aug");
+});
+
+test("dayLabel refuses a malformed date instead of rendering garbage", () => {
+  // Without the guard these return the literal string "undefined NaN undefined", which this
+  // function's own docstring would put at the top of the buyer's daily message.
+  for (const bad of ["garbage", "", "2026-13-45", "2026-8-3"]) {
+    expect(() => dayLabel(bad)).toThrow("not a YYYY-MM-DD date");
+  }
+});
 
 const items: ListItem[] = [
   { promptId: 7, title: "Slots.lv", status: "Live", question: "Any changes today?", state: "pending" },
@@ -879,6 +919,27 @@ export function forceReplyText(input: { title: string; status: string; question:
   return `✍️ Update for ${input.title} (${input.status})\n${input.question}\n↩️ Reply to this message.`;
 }
 
+const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/**
+ * "Thu 13 Aug" from a YYYY-MM-DD date, for the top of the buyer's daily Telegram message.
+ *
+ * Table lookup on UTC fields rather than a locale format: `en-GB` returns "Thu, 13 Aug" and would
+ * need its comma stripped, buying a dependency on ICU never reordering the fields. (`shortDay` in
+ * `src/portal/mock.ts` avoids `Date` entirely by splitting the string; this needs the weekday, which
+ * only a `Date` can give.)
+ *
+ * Throws rather than rendering `"undefined NaN undefined"`: `DAYS[NaN]` types as `string` while
+ * evaluating to `undefined`, because this project does not enable `noUncheckedIndexedAccess`.
+ */
+export function dayLabel(date: string): string {
+  const d = new Date(`${date}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) throw new Error(`dayLabel: not a YYYY-MM-DD date: ${date}`);
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  return `${DAYS[d.getUTCDay()]} ${day} ${MONTHS[d.getUTCMonth()]}`;
+}
+
 /**
  * The Notion comment, split into `rich_text`-sized chunks.
  *
@@ -923,8 +984,8 @@ export function escalationText(
 
 Run: `bun test src/lib/checkin-render.test.ts`
 
-Expected: PASS, 9 tests in the new file. Then run `bun test src/lib` and confirm 23 pass overall
-(7 berlin-time + 7 checkin core + 9 render), with no pre-existing test newly broken.
+Expected: PASS, 12 tests in the new file. Then run `bun test src/lib` and confirm 24 pass overall
+(5 berlin-time + 7 checkin core + 12 render), with no pre-existing test newly broken.
 
 - [ ] **Step 5: Commit**
 
@@ -1704,8 +1765,8 @@ import { db, schema } from "@/db/client";
 import { env } from "@/lib/env";
 import { boardRows } from "@/notion/parse";
 import { TelegramClient } from "@/telegram/client";
-import { berlinNow, dayLabel } from "@/lib/berlin-time";
-import { renderList, type ListItem } from "@/lib/checkin-render";
+import { berlinNow } from "@/lib/berlin-time";
+import { dayLabel, renderList, type ListItem } from "@/lib/checkin-render";
 import {
   planPrompts,
   type CheckinBoardRow,
