@@ -4,6 +4,7 @@ import { env } from "@/lib/env";
 import { accountStatus } from "@/server/agg";
 import { addDays } from "@/lib/range";
 import { loadCampaignOwnership } from "@/server/fns/campaign-attribution";
+import { TelegramClient } from "@/telegram/client";
 
 /** Spend-drop alert thresholds (tune here). */
 export const ALERT_MIN_BASELINE = 50; // ignore accounts averaging < $50/day
@@ -107,23 +108,15 @@ async function sendTelegram(text: string): Promise<{ ok: boolean; error?: string
       ok: false,
       error: "Telegram not configured — set TELEGRAM_BOT_TOKEN + TELEGRAM_ALERT_CHAT_ID.",
     };
-  try {
-    const res = await fetch(`https://api.telegram.org/bot${e.TELEGRAM_BOT_TOKEN}/sendMessage`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        chat_id: e.TELEGRAM_ALERT_CHAT_ID,
-        text,
-        disable_web_page_preview: true,
-      }),
-    });
-    if (!res.ok)
-      return { ok: false, error: `Telegram ${res.status}: ${(await res.text()).slice(0, 200)}` };
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
-  }
+  const res = await new TelegramClient(e.TELEGRAM_BOT_TOKEN).sendMessage({
+    chatId: e.TELEGRAM_ALERT_CHAT_ID,
+    text,
+  });
+  return res.ok ? { ok: true } : { ok: false, error: res.error };
 }
+
+/** Same channel, exported so the check-in escalation reuses one Telegram path. */
+export { sendTelegram as sendAlertChannelMessage };
 
 /** Push new alerts to the configured Telegram channel (no-op if unconfigured). */
 async function notifyTelegram(
