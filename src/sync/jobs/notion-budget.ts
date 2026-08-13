@@ -464,6 +464,13 @@ export interface NotionBudgetRow {
   destCurrent: string;
   destWritten: string | null;
   destSkip: string | null;
+  /** Geo cell as it stood, what was derived, what was written (null = untouched), and why skipped.
+   *  `geoProposed` exists for the same reason `endProposed` does: on a dry run the column has not
+   *  been created yet, so there is no id to write against and `geoWritten` stays null. */
+  geoCurrent: string;
+  geoProposed: string | null;
+  geoWritten: string | null;
+  geoSkip: string | null;
   /** Derived delivery status written to `Account Status`, or null when the cell was left alone. */
   statusWritten: MachineStatus | null;
   /** True when a stale date was blanked because the row can no longer be projected. */
@@ -654,6 +661,7 @@ interface BoardRow {
   remainingCurrent: number | null;
   endCurrent: string | null;
   destCurrent: string;
+  geoCurrent: string;
   accountIds: string[];
   /** The row's OWN engagement budget and start date, straight off the board. */
   notionBudget: number | null;
@@ -752,6 +760,42 @@ export async function syncNotionDailyBudgets(
         ),
       );
     return Number(r?.s ?? 0);
+  };
+
+  /**
+   * Country and region spend for a set of campaigns over a closed window, summed per breakdown value.
+   * Campaign is the finest grain these breakdowns are synced at, which is exactly board-row grain
+   * once the caller has narrowed to the row's own attributed campaigns. The GROUP BY is required, not
+   * cosmetic: `insights_breakdown_daily` is keyed per day, and `geoCell` renders one entry per row it
+   * is given.
+   */
+  const geoOf = async (campaignIds: string[], from: string, to: string): Promise<GeoSpend[]> => {
+    if (campaignIds.length === 0) return [];
+    const rows = await db
+      .select({
+        type: schema.insightsBreakdownDaily.breakdownType,
+        value: schema.insightsBreakdownDaily.breakdownValue,
+        spend: sql<number>`coalesce(sum(${schema.insightsBreakdownDaily.spend}), 0)`,
+      })
+      .from(schema.insightsBreakdownDaily)
+      .where(
+        and(
+          eq(schema.insightsBreakdownDaily.level, "campaign"),
+          inArray(schema.insightsBreakdownDaily.breakdownType, ["country", "region"]),
+          inArray(schema.insightsBreakdownDaily.entityId, campaignIds),
+          gte(schema.insightsBreakdownDaily.date, from),
+          lte(schema.insightsBreakdownDaily.date, to),
+        ),
+      )
+      .groupBy(
+        schema.insightsBreakdownDaily.breakdownType,
+        schema.insightsBreakdownDaily.breakdownValue,
+      );
+    return rows.map((r) => ({
+      type: r.type === "region" ? "region" : "country",
+      value: r.value,
+      spend: Number(r.spend),
+    }));
   };
 
   const [campaignRows, adSetRows, accountRows, clientRows, spendRows, adLinkRows, allAdRows] =
@@ -988,6 +1032,17 @@ export async function syncNotionDailyBudgets(
       opts.dryRun ?? false,
     );
     if (destCol?.error) result.warning = destCol.error;
+    const geoCol = await ensureColumn(
+      notion,
+      dsId,
+      props,
+      GEO_COLUMN,
+      AUTO_GEO_COLUMN,
+      "rich_text",
+      result.columnsTouched,
+      opts.dryRun ?? false,
+    );
+    if (geoCol?.error) result.warning = geoCol.error;
 
     // Resolved by name rather than through ensureColumn, which would CREATE the column when absent —
     // wrong for a status property, whose options and groups the API cannot fully configure. Options
@@ -1039,6 +1094,7 @@ export async function syncNotionDailyBudgets(
         remainingCurrent: remainingCol ? numberCell(page, remainingCol.column.id) : null,
         endCurrent: endCol ? dateCell(page, endCol.column.id) : null,
         destCurrent: destCol ? textCell(page, destCol.column.id) : "",
+        geoCurrent: geoCol ? textCell(page, geoCol.column.id) : "",
         // The row's own contracted budget and engagement start — never the clubbed client's, so a
         // client with several engagements projects each one from its own numbers.
         notionBudget: parsed.budget,
@@ -1063,6 +1119,7 @@ export async function syncNotionDailyBudgets(
       remainingPlan: RowPlan;
       budgetRemaining: number | null;
       dest: TextPlan;
+      geo: TextPlan;
       sum: DailyBudgetSum | null;
       status: MachineStatus | null;
       budget: RowPlan;
@@ -1083,6 +1140,7 @@ export async function syncNotionDailyBudgets(
         // Unmapped rows have no attributed campaigns, so the ladder has nothing to reason from.
         status: null,
         dest: { text: null, skip: noMapping },
+        geo: { text: null, skip: noMapping },
         sum: null,
         budget: { dollars: null, skip: noMapping },
         spend: { dollars: null, skip: noMapping },
@@ -1154,6 +1212,7 @@ export async function syncNotionDailyBudgets(
             // write anyway.
             status: null,
             dest: { text: null, skip: "not a live engagement" },
+            geo: { text: null, skip: "not a live engagement" },
             sum: null,
             budget: planRow({ status: row.status, current: row.budgetCurrent, target: null }),
             spend: planSpendRow({ status: row.status, current: row.spendCurrent, spend: null }),
@@ -1216,16 +1275,19 @@ export async function syncNotionDailyBudgets(
           ),
         });
         const synced = row.accountIds.filter((a) => currencyOf.has(a));
+        // Shared with the geo column, which is why these three reasons live in `geoSkipReason`: two
+        // columns describing the same row must not drift into two vocabularies. The currency refusal
+        // below is deliberately NOT shared — these columns sum money across accounts and need an FX
+        // rate, while a percentage split does not.
+        const geoReason = geoSkipReason({
+          ambiguous: ambiguous.has(row.pageId),
+          accountIds: row.accountIds,
+          syncedAccountIds: synced,
+        });
         let sum: DailyBudgetSum | null = null;
         let spend: number | null = null;
-        let skip: string | null = null;
-        if (ambiguous.has(row.pageId)) {
-          skip = "campaigns on a shared account could not be split by name";
-        } else if (row.accountIds.length === 0) {
-          skip = "no ad accounts on this row";
-        } else if (synced.length === 0) {
-          skip = "row's ad accounts are not visible to the Meta token";
-        } else {
+        let skip: string | null = geoReason;
+        if (!skip) {
           const foreign = [
             ...new Set(mine.map((c) => currencyOf.get(c.accountId) ?? COLUMN_CURRENCY)),
           ].filter((cur) => cur !== COLUMN_CURRENCY);
@@ -1270,6 +1332,30 @@ export async function syncNotionDailyBudgets(
           spentSinceStart = spentTotal;
           dailyPace = pw && paceTotal !== null ? paceTotal / pw.days : null;
         }
+
+        // Geo comes from the row's OWN attributed campaigns over the same engagement-clamped window
+        // as the pace figures, so the two can never describe different periods. It uses `geoReason`
+        // rather than `skip`: `skip` may by now hold the foreign-currency refusal, which has no
+        // bearing on a percentage split. `paceTotal` above is unusable for the same reason plus one
+        // more — it is computed only when `skip` is null, and over a broader account-derived id set
+        // than `mine`.
+        let geoRows: GeoSpend[] = [];
+        let geoWindowSpend: number | null = null;
+        if (!geoReason && pw) {
+          const mineIds = mine.map((c) => c.id);
+          [geoRows, geoWindowSpend] = await Promise.all([
+            geoOf(mineIds, pw.from, until),
+            spendOf(mineIds, pw.from, until),
+          ]);
+        }
+        const geo = planGeo({
+          status: row.status,
+          current: row.geoCurrent,
+          rows: geoRows,
+          windowSpend: geoWindowSpend,
+          skip: geoReason,
+        });
+
         const remaining = budgetRemaining(row.notionBudget, spentSinceStart);
 
         // Money left is what is FUNDED into the ad accounts, not what was contracted. Notion's
@@ -1342,6 +1428,7 @@ export async function syncNotionDailyBudgets(
           work.push({
             row,
             dest,
+            geo,
             sum,
             status: statusNext,
             budget: planRow({ status: row.status, current: row.budgetCurrent, target }),
@@ -1373,6 +1460,7 @@ export async function syncNotionDailyBudgets(
         work.push({
           row,
           dest,
+          geo,
           sum,
           status: statusNext,
           // Not gated on `skip`: the target comes from the row's own contracted budget, so it is
@@ -1403,7 +1491,7 @@ export async function syncNotionDailyBudgets(
     }
 
     for (const w of work) {
-      const { row, sum, budget, spend, funds, end, dest, status, remainingPlan } = w;
+      const { row, sum, budget, spend, funds, end, dest, geo, status, remainingPlan } = w;
       result.rows += 1;
       const detail: NotionBudgetRow = {
         pageId: row.pageId,
@@ -1440,6 +1528,10 @@ export async function syncNotionDailyBudgets(
         destCurrent: row.destCurrent,
         destWritten: null,
         destSkip: dest.skip,
+        geoCurrent: row.geoCurrent,
+        geoProposed: geo.text,
+        geoWritten: null,
+        geoSkip: geo.skip,
         statusWritten: null,
       };
       for (const [plan, column, key] of [
@@ -1527,6 +1619,17 @@ export async function syncNotionDailyBudgets(
         detail.destWritten = dest.text;
         result.updated += 1;
       } else if (dest.skip === "unchanged") result.unchanged += 1;
+      else result.skipped += 1;
+      if (geo.text !== null && geoCol) {
+        if (!opts.dryRun) {
+          await notion.setPageValue(row.pageId, geoCol.column.id, {
+            rich_text: geo.text ? [{ type: "text", text: { content: geo.text } }] : [],
+          });
+          await sleep(WRITE_GAP_MS);
+        }
+        detail.geoWritten = geo.text;
+        result.updated += 1;
+      } else if (geo.skip === "unchanged") result.unchanged += 1;
       else result.skipped += 1;
       // Deliberately outside the `isLive` gate the numeric columns use: ownership was already decided
       // by `statusForRow` from the cell's own value, and a null here means "leave it alone".
