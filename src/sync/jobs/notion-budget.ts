@@ -465,8 +465,11 @@ export interface NotionBudgetRow {
   destWritten: string | null;
   destSkip: string | null;
   /** Geo cell as it stood, what was derived, what was written (null = untouched), and why skipped.
-   *  `geoProposed` exists for the same reason `endProposed` does: on a dry run the column has not
-   *  been created yet, so there is no id to write against and `geoWritten` stays null. */
+   *  `geoProposed` exists for the same reason `endProposed` does: on the FIRST dry run the column
+   *  does not exist yet, so `ensureColumn` returns null, there is no id to write against, and
+   *  `geoWritten` stays null even though a cell was derived. Once the column exists, `geoWritten`
+   *  mirrors `destWritten` and is populated on a dry run too — it means "would write", not "wrote".
+   */
   geoCurrent: string;
   geoProposed: string | null;
   geoWritten: string | null;
