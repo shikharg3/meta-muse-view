@@ -219,6 +219,24 @@ export class NotionClient {
       body: JSON.stringify({ properties: { [propertyId]: value } }),
     });
   }
+
+  /**
+   * Add a comment to a page. Requires the integration's "Insert comments" capability — a missing
+   * capability surfaces as a Notion 403 through `req`.
+   *
+   * `chunks` are pre-split by the caller because Notion rejects a rich_text item over 2000 chars.
+   */
+  async createComment(pageId: string, chunks: string[]): Promise<string> {
+    if (chunks.length === 0) throw new Error("refusing to post an empty comment");
+    const body = await this.req(`/comments`, {
+      method: "POST",
+      body: JSON.stringify({
+        parent: { page_id: pageId },
+        rich_text: chunks.map((content) => ({ type: "text", text: { content } })),
+      }),
+    });
+    return typeof body.id === "string" ? body.id : "";
+  }
 }
 
 /** Extract a Notion database id (32 hex chars, optionally dashed) from a URL or raw id. */

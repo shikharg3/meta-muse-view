@@ -188,3 +188,29 @@ test("addStatusOptions refuses to PATCH when an option lacks a usable name", asy
   );
   expect(calls).toHaveLength(1);
 });
+
+test("createComment posts one rich_text item per chunk and returns the comment id", async () => {
+  const { calls, impl } = recorder([{ object: "comment", id: "c123" }]);
+  const client = new NotionClient("tok", impl);
+
+  const id = await client.createComment("page-1", ["first", "second"]);
+
+  expect(id).toBe("c123");
+  expect(calls[0].url).toBe("https://api.notion.com/v1/comments");
+  expect(calls[0].method).toBe("POST");
+  expect(calls[0].body).toEqual({
+    parent: { page_id: "page-1" },
+    rich_text: [
+      { type: "text", text: { content: "first" } },
+      { type: "text", text: { content: "second" } },
+    ],
+  });
+});
+
+test("createComment rejects an empty body instead of posting a blank comment", async () => {
+  const { calls, impl } = recorder([{}]);
+  const client = new NotionClient("tok", impl);
+
+  await expect(client.createComment("page-1", [])).rejects.toThrow("empty");
+  expect(calls).toHaveLength(0);
+});
