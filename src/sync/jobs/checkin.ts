@@ -62,65 +62,111 @@ async function loadBoardRows(): Promise<CheckinBoardRow[]> {
  * The `checkin_runs` claim comes FIRST and is the whole idempotency story: a worker restart inside
  * the same minute cannot double-prompt, and a day with zero in-scope rows is recorded as planned
  * rather than re-planned on every 30s poll ("no prompts exist" is otherwise indistinguishable from
- * "not planned"). The unconfigured check comes before the claim on purpose — claiming a day we
- * cannot send on would silently burn that day if the token were set later the same afternoon.
+ * "not planned"). The unconfigured check comes before the claim on purpose — claiming a day the bot
+ * cannot send on would burn it, and since `env()` caches its parse, setting the token takes a worker
+ * restart, i.e. a fresh iteration that must still find the day claimable.
  *
- * Known gap: the claim is written before the prompts, so a crash between the two leaves the day
- * claimed with a null `planned_at` and nothing to retry. Recovery is deleting that `checkin_runs`
- * row; the alternative (re-claiming while `planned_at` is null) reopens the double-send this claim
- * exists to close.
+ * Claim and prompts share ONE transaction, committed before anything is sent. Without it the claim
+ * autocommits on its own statement and a death in the window before the inserts (deploy restart,
+ * OOM, tunnel drop) leaves the day claimed with zero prompts and `planned_at` null: every later
+ * iteration returns null here, so no prompts, no lists, nothing to escalate and no `health=false`
+ * either, recoverable only by a human deleting the `checkin_runs` row. Measured against Postgres:
+ * rolled back, the day is re-claimable and the prompt unique index makes the replan write no
+ * duplicates; a concurrent claimer blocks on the uncommitted row and still comes back with zero
+ * rows, so the transaction preserves the cross-process guarantee rather than weakening it.
+ *
+ * Known gap (unfixed, needs a column): a send is retried without limit for the rest of the day.
+ * There is no `send_attempts` analogue of `comment_attempts`, so a permanently unsendable chat (the
+ * buyer blocked the bot) is re-attempted every 30s until midnight, only ever recording the same
+ * `note`.
+ *
+ * Known gap (inherent, at-least-once): if Telegram delivers but the outcome never reaches the
+ * database — a lost response, or the `listMessageId` UPDATE failing — the buyer is re-sent seconds
+ * later, because Task 12's loop calls `sendDailyLists` again right after this function already did.
+ * The duplicate is intended; what is not addressed is that the FIRST message's id is unknown to the
+ * database, so `rerenderList` only ever updates the second. The orphan keeps a live keyboard and its
+ * taps still route correctly by prompt id, but it never shows a checkmark.
  */
 export async function runDailyCheckin(
   now: Date,
-): Promise<{ created: number; sent: number } | null> {
+): Promise<{ created: number; sent: number; failed: number } | null> {
   const tg = telegram();
   if (!tg) return null;
   const local = berlinNow(now);
 
-  const claimed = await db
-    .insert(schema.checkinRuns)
-    .values({ runDate: local.date })
-    .onConflictDoNothing()
-    .returning({ runDate: schema.checkinRuns.runDate });
-  if (claimed.length === 0) return null; // another iteration (or process) already planned today
-
   try {
-    const plans = planPrompts(await loadBoardRows(), await loadBuyers());
-    let created = 0;
-    for (const p of plans) {
-      // One statement per prompt rather than one batch: the day is already claimed, so a failure
-      // part-way through must leave the prompts written so far standing.
-      const ins = await db
-        .insert(schema.checkinPrompts)
-        .values({
-          promptDate: local.date,
-          notionPageId: p.notionPageId,
-          campaignTitle: p.campaignTitle,
-          status: p.status,
-          buyerPersonId: p.buyerPersonId,
-          chatId: p.chatId,
-          question: p.question,
-          // An unbound buyer's prompt is still recorded, so the 09:00 escalation names the missing
-          // binding instead of the campaign silently vanishing for the day.
-          state: p.chatId ? "pending" : "unroutable",
-        })
-        .onConflictDoNothing()
-        .returning({ id: schema.checkinPrompts.id });
-      created += ins.length;
+    // The claim and the prompts commit together or not at all. Null means the day was already
+    // claimed, which is distinct from a claimed day that legitimately planned zero prompts.
+    const plan = await db.transaction(async (tx) => {
+      const claimed = await tx
+        .insert(schema.checkinRuns)
+        .values({ runDate: local.date })
+        .onConflictDoNothing({ target: schema.checkinRuns.runDate })
+        .returning({ runDate: schema.checkinRuns.runDate });
+      if (claimed.length === 0) return null; // another iteration (or process) already planned today
+
+      // Read through the pool rather than `tx`: a transaction holds one connection, so these would
+      // serialise on it. Neither table is written here, so there is nothing to isolate them from.
+      const [rows, buyers] = await Promise.all([loadBoardRows(), loadBuyers()]);
+      let created = 0;
+      let unroutable = 0;
+      for (const p of planPrompts(rows, buyers)) {
+        const ins = await tx
+          .insert(schema.checkinPrompts)
+          .values({
+            promptDate: local.date,
+            notionPageId: p.notionPageId,
+            campaignTitle: p.campaignTitle,
+            status: p.status,
+            buyerPersonId: p.buyerPersonId,
+            chatId: p.chatId,
+            question: p.question,
+            // An unbound buyer's prompt is still recorded, so the 09:00 escalation names the missing
+            // binding instead of the campaign silently vanishing for the day.
+            state: p.chatId ? "pending" : "unroutable",
+          })
+          // Targeted: an untargeted DO NOTHING would also swallow a serial-PK collision from a
+          // broken sequence, silently counting a prompt that was never written.
+          .onConflictDoNothing({
+            target: [
+              schema.checkinPrompts.promptDate,
+              schema.checkinPrompts.notionPageId,
+              schema.checkinPrompts.buyerPersonId,
+            ],
+          })
+          .returning({ id: schema.checkinPrompts.id });
+        created += ins.length;
+        if (ins.length && !p.chatId) unroutable += 1;
+      }
+
+      await tx
+        .update(schema.checkinRuns)
+        .set({ plannedAt: new Date(), promptsCreated: created })
+        .where(eq(schema.checkinRuns.runDate, local.date));
+      return { created, unroutable };
+    });
+    if (plan === null) return null;
+
+    const { sent, failed } = await sendDailyLists(local.date);
+    // `sendDailyLists` reports its own outcome whenever it attempted a send, so a later iteration's
+    // success overwrites a failure and recovery registers. Only report from here when there was
+    // nothing to attempt — and then NOT unconditionally green: prompts that exist but reach nobody
+    // are the same class of silent nothing-happened as an evening of failed sends, so a day whose
+    // whole plan is unroutable must show red with the reason, while a genuinely quiet day stays green.
+    if (sent === 0 && failed === 0) {
+      const note =
+        plan.unroutable > 0
+          ? `${plan.created} prompts, none sent: ${plan.unroutable} unroutable (no Telegram chat bound)`
+          : `${plan.created} prompts, nothing to send`;
+      await recordServiceHealth("checkin", plan.unroutable === 0, note);
     }
-
-    await db
-      .update(schema.checkinRuns)
-      .set({ plannedAt: new Date(), promptsCreated: created })
-      .where(eq(schema.checkinRuns.runDate, local.date));
-
-    const sent = await sendDailyLists(local.date);
-    await recordServiceHealth("checkin", true, `${created} prompts, ${sent} messages`);
-    return { created, sent };
+    return { created: plan.created, sent, failed };
   } catch (err) {
-    // The day is claimed, so this will not be re-planned: record it rather than leaving the Settings
-    // badge stale-green. Best-effort — if the database is what failed, the original error must still
-    // be the one that reaches the loop.
+    // Recorded rather than leaving the badge stale-green; best-effort, so that if the database is
+    // what failed the original error is still the one that reaches the loop. Where the throw came
+    // from decides what happens next, and both outcomes are safe: from inside the transaction it
+    // rolled back, so the day is still claimable and the next iteration re-plans it; from the send
+    // afterwards the day is planned and committed, and the null `listMessageId` retry covers it.
     const note = err instanceof Error ? err.message : String(err);
     await recordServiceHealth("checkin", false, note).catch(() => {});
     throw err;
@@ -131,11 +177,15 @@ export async function runDailyCheckin(
  * One list message per buyer with a routable prompt today. Called from `runDailyCheckin` AND from the
  * worker loop, because it only picks up prompts whose `listMessageId` is still null — that is what
  * makes a failed or rate-limited send retry on the next iteration instead of being lost for the day.
- * Returns the number of messages sent.
+ *
+ * Reports its own health whenever it attempted at least one send, which is what makes recovery
+ * register: `TelegramClient` never throws, so an evening where every send failed would otherwise be
+ * recorded once, as success, by the claiming iteration and never revisited. Nothing to attempt writes
+ * nothing, so a quiet 30s tick cannot clobber the day's real note.
  */
-export async function sendDailyLists(date: string): Promise<number> {
+export async function sendDailyLists(date: string): Promise<{ sent: number; failed: number }> {
   const tg = telegram();
-  if (!tg) return 0;
+  if (!tg) return { sent: 0, failed: 0 }; // inert, not unhealthy: Settings surfaces the missing token
   const prompts = await db
     .select()
     .from(schema.checkinPrompts)
@@ -157,6 +207,8 @@ export async function sendDailyLists(date: string): Promise<number> {
   }
 
   let sent = 0;
+  let failed = 0;
+  let lastError: string | null = null;
   for (const [chatId, list] of byChat) {
     list.sort(byListOrder); // local to this call, so sorting in place needs no copy
     const ids = list.map((p) => p.id);
@@ -165,11 +217,13 @@ export async function sendDailyLists(date: string): Promise<number> {
     // A send reporting success with no message id leaves nothing to re-render or address later, so
     // it counts as a failure — the same rule TelegramClient applies to an unstated `ok`.
     if (!res.ok || res.messageId === undefined) {
+      failed += 1;
+      lastError = res.error ?? "send reported no message id";
       // listMessageId is left null ON PURPOSE: that is what makes the next iteration retry this
       // buyer. Recorded before the sleep so the failure is durable even if the process dies in it.
       await db
         .update(schema.checkinPrompts)
-        .set({ note: res.error ?? "send reported no message id" })
+        .set({ note: lastError })
         .where(inArray(schema.checkinPrompts.id, ids));
       if (res.retryAfter) await sleep(Math.min(res.retryAfter * 1000, MAX_RETRY_AFTER_MS));
       continue;
@@ -180,7 +234,12 @@ export async function sendDailyLists(date: string): Promise<number> {
       .set({ listMessageId: String(res.messageId), note: null })
       .where(inArray(schema.checkinPrompts.id, ids));
   }
-  return sent;
+
+  if (byChat.size > 0) {
+    const note = `${sent} list${sent === 1 ? "" : "s"} sent, ${failed} failed`;
+    await recordServiceHealth("checkin", failed === 0, lastError ? `${note}: ${lastError}` : note);
+  }
+  return { sent, failed };
 }
 
 /**
