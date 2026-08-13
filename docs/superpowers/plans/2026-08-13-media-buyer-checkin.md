@@ -483,7 +483,9 @@ const buyers: CheckinBuyer[] = [
 const row = (o: Partial<CheckinBoardRow> = {}): CheckinBoardRow => ({
   pageId: o.pageId ?? "p1",
   title: o.title ?? "Slots.lv",
-  status: o.status ?? "Live",
+  // `?? "Live"` cannot distinguish an explicit null from an absent key, which would silently turn
+  // `row({ status: null })` into a Live row and make the out-of-scope test assert nothing.
+  status: "status" in o ? (o.status ?? null) : "Live",
   ownerIds: o.ownerIds ?? [SHIKHAR],
 });
 
