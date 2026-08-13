@@ -5,7 +5,10 @@ import {
   saveCredentials,
   saveNotionCredentials,
   saveChatCredentials,
+  saveTelegramCredentials,
+  getTelegramCredentials,
 } from "@/lib/credentials";
+import { TelegramClient } from "@/telegram/client";
 import { DEFAULT_CHAT_MODEL, DEFAULT_CHAT_EFFORT } from "@/lib/chat-options";
 import { MetaClient } from "@/meta/client";
 import { isCycleRunning } from "@/sync/cycle";
@@ -27,6 +30,7 @@ export interface SettingsView {
   syncRunning: boolean;
   notion: { configured: boolean; dbId: string; clients: number; lastSync: string | null };
   chat: { configured: boolean; model: string; effort: string };
+  telegram: { configured: boolean; chatId: string };
   health: {
     rateLimitedLastHour: number;
     events: {
@@ -63,6 +67,9 @@ export async function fetchSettings(): Promise<SettingsView> {
   const states = await db.select().from(schema.syncState);
   const clientRows = await db.select({ syncedAt: schema.clients.syncedAt }).from(schema.clients);
   const events = await getRecentSyncEvents(50);
+  // Resolved rather than read off `cred`, so a deployment still configured through env reports
+  // "configured" and shows the chat id actually in use instead of an empty box.
+  const telegram = await getTelegramCredentials();
   const hourAgo = Date.now() - 3_600_000;
   return {
     appId: cred?.appId ?? "",
@@ -104,6 +111,10 @@ export async function fetchSettings(): Promise<SettingsView> {
       configured: Boolean(cred?.anthropicTokenEnc),
       model: cred?.chatModel ?? DEFAULT_CHAT_MODEL,
       effort: cred?.chatEffort ?? DEFAULT_CHAT_EFFORT,
+    },
+    telegram: {
+      configured: telegram !== null,
+      chatId: telegram?.chatId ?? "",
     },
     health: {
       rateLimitedLastHour: events.filter(
@@ -228,4 +239,44 @@ export async function runNotionSync(): Promise<{
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }
+}
+
+export async function saveTelegramForm(data: {
+  token?: string;
+  chatId: string;
+}): Promise<{ ok: boolean; error?: string }> {
+  await requireAdmin();
+  const chatId = data.chatId.trim();
+  // A `https://t.me/+…` invite link is the most likely wrong input: it looks like an address for the
+  // channel but the Bot API cannot use it, and a bot cannot join by link either. Reject it with the
+  // fix rather than storing a value that fails silently at the next alert.
+  if (/t\.me\//i.test(chatId))
+    return {
+      ok: false,
+      error:
+        "That is an invite link, not a chat id. Add the bot to the channel as an admin, then paste the numeric id (e.g. -1004386932732).",
+    };
+  await saveTelegramCredentials(data.token?.trim() ?? "", chatId);
+  await audit("settings.telegram", "saved Telegram settings");
+  return { ok: true };
+}
+
+/**
+ * Confirm the stored bot can see the stored chat, and report what it is.
+ *
+ * Uses `getChat`, never `getUpdates`: the latter is single-consumer and consuming, so polling it
+ * here would steal updates from the check-in loop that owns that stream.
+ */
+export async function verifyTelegramChat(): Promise<{
+  ok: boolean;
+  title?: string;
+  type?: string;
+  error?: string;
+}> {
+  await requireAdmin();
+  const creds = await getTelegramCredentials();
+  if (!creds) return { ok: false, error: "Set a bot token and chat id first" };
+  const info = await new TelegramClient(creds.token).getChat(creds.chatId);
+  if (!info.ok) return { ok: false, error: info.error };
+  return { ok: true, title: info.title, type: info.type };
 }

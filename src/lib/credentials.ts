@@ -1,6 +1,6 @@
 import { eq } from "drizzle-orm";
 import { db, schema } from "@/db/client";
-import { env } from "@/lib/env";
+import { env, type Env } from "@/lib/env";
 import { encryptSecret, decryptSecret } from "@/lib/crypto";
 import {
   CHAT_MODELS,
@@ -154,4 +154,49 @@ export async function getChatCredentials(): Promise<ChatCredentials | null> {
     model: row.model ?? DEFAULT_CHAT_MODEL,
     effort: row.effort ?? DEFAULT_CHAT_EFFORT,
   };
+}
+
+export interface TelegramCredentials {
+  token: string;
+  chatId: string;
+}
+
+/**
+ * Telegram bot token + alert chat id, from the singleton row, falling back to env.
+ *
+ * Each half falls back independently and treats "" as unset, so saving only one field in the UI does
+ * not strand the other that env still supplies. Env is the bootstrap path — a fresh deploy alerts
+ * before anyone opens Settings — and a stored value wins the moment it exists, matching how the
+ * Meta credentials behave.
+ *
+ * `e` is injectable because `env()` memoises on first call, so a test cannot exercise the fallback
+ * by mutating `process.env`. Same reason `NotionClient` and `TelegramClient` take a `fetchImpl`.
+ */
+export async function getTelegramCredentials(
+  e: Pick<Env, "APP_ENCRYPTION_KEY" | "TELEGRAM_BOT_TOKEN" | "TELEGRAM_ALERT_CHAT_ID"> = env(),
+): Promise<TelegramCredentials | null> {
+  const [row] = await db
+    .select({
+      tokenEnc: schema.metaCredentials.telegramTokenEnc,
+      chatId: schema.metaCredentials.telegramChatId,
+    })
+    .from(schema.metaCredentials)
+    .where(eq(schema.metaCredentials.id, "singleton"));
+  const token = row?.tokenEnc
+    ? decryptSecret(row.tokenEnc, e.APP_ENCRYPTION_KEY)
+    : e.TELEGRAM_BOT_TOKEN;
+  const chatId = row?.chatId || e.TELEGRAM_ALERT_CHAT_ID;
+  if (!token || !chatId) return null;
+  return { token, chatId };
+}
+
+/** Telegram fields live on the same singleton row; blank token keeps the stored one. */
+export async function saveTelegramCredentials(token: string, chatId: string): Promise<void> {
+  const key = env().APP_ENCRYPTION_KEY;
+  const set: Record<string, unknown> = { telegramChatId: chatId, updatedAt: new Date() };
+  if (token) set.telegramTokenEnc = encryptSecret(token, key);
+  await db
+    .insert(schema.metaCredentials)
+    .values({ id: "singleton", ...set })
+    .onConflictDoUpdate({ target: schema.metaCredentials.id, set });
 }

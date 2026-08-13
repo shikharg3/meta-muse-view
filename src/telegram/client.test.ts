@@ -368,3 +368,35 @@ test("a failed answerCallbackQuery comes back as data with its backoff hint", as
     retryAfter: 2,
   });
 });
+test("getChat reports the title and type so a pasted id can be confirmed", async () => {
+  const { calls, impl } = recorder([
+    { body: { ok: true, result: { id: -1004386932732, title: "DOTStats", type: "channel" } } },
+  ]);
+  const tg = new TelegramClient("TOK", impl);
+
+  expect(await tg.getChat("-1004386932732")).toEqual({
+    ok: true,
+    id: -1004386932732,
+    title: "DOTStats",
+    type: "channel",
+  });
+  expect(calls[0].url).toContain("/getChat");
+  expect(calls[0].body).toEqual({ chat_id: "-1004386932732" });
+});
+
+test("getChat surfaces the API's own reason when the bot cannot see the chat", async () => {
+  // The realistic failure: an id typed correctly but the bot was never added to that channel.
+  const { impl } = recorder([{ status: 400, body: { ok: false, description: "chat not found" } }]);
+  const tg = new TelegramClient("TOK", impl);
+
+  const res = await tg.getChat("-100999");
+  expect(res.ok).toBe(false);
+  expect(res.error).toContain("chat not found");
+});
+
+test("getChat tolerates a private chat, which carries no title", async () => {
+  const { impl } = recorder([{ body: { ok: true, result: { id: 347759628, type: "private" } } }]);
+  const tg = new TelegramClient("TOK", impl);
+
+  expect(await tg.getChat("347759628")).toEqual({ ok: true, id: 347759628, type: "private" });
+});

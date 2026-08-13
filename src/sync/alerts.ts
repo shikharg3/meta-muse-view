@@ -1,6 +1,6 @@
 import { and, eq, gte, inArray, sql } from "drizzle-orm";
 import { db, schema } from "@/db/client";
-import { env } from "@/lib/env";
+import { getTelegramCredentials } from "@/lib/credentials";
 import { accountStatus } from "@/server/agg";
 import { addDays } from "@/lib/range";
 import { loadCampaignOwnership } from "@/server/fns/campaign-attribution";
@@ -107,14 +107,14 @@ export async function detectSpendDropAlerts(): Promise<number> {
 export async function sendAlertChannelMessage(
   text: string,
 ): Promise<{ ok: boolean; error?: string }> {
-  const e = env();
-  if (!e.TELEGRAM_BOT_TOKEN || !e.TELEGRAM_ALERT_CHAT_ID)
+  const creds = await getTelegramCredentials();
+  if (!creds)
     return {
       ok: false,
-      error: "Telegram not configured — set TELEGRAM_BOT_TOKEN + TELEGRAM_ALERT_CHAT_ID.",
+      error: "Telegram not configured — set the bot token and chat id in Settings.",
     };
-  const res = await new TelegramClient(e.TELEGRAM_BOT_TOKEN).sendMessage({
-    chatId: e.TELEGRAM_ALERT_CHAT_ID,
+  const res = await new TelegramClient(creds.token).sendMessage({
+    chatId: creds.chatId,
     text,
   });
   return res.ok ? { ok: true } : { ok: false, error: res.error };
@@ -375,14 +375,13 @@ export interface AlertSettings {
 }
 
 /** Current alert configuration for the settings panel (no secrets leaked). */
-export function alertSettings(): AlertSettings {
-  const e = env();
+export async function alertSettings(): Promise<AlertSettings> {
   return {
     minBaseline: ALERT_MIN_BASELINE,
     dropPct: ALERT_DROP_PCT,
     lowFundsUsd: ALERT_LOW_FUNDS_USD,
     inUseDays: ALERT_IN_USE_DAYS,
-    telegramConfigured: Boolean(e.TELEGRAM_BOT_TOKEN && e.TELEGRAM_ALERT_CHAT_ID),
+    telegramConfigured: (await getTelegramCredentials()) !== null,
   };
 }
 

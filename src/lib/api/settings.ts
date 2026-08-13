@@ -6,6 +6,8 @@ import {
   saveNotionForm,
   runNotionSync,
   saveChatForm,
+  saveTelegramForm,
+  verifyTelegramChat,
   type CredsForm,
 } from "@/server/fns/settings";
 import { resetAndResync as resetAndResyncImpl, triggerSync } from "@/server/fns/reset";
@@ -35,3 +37,11 @@ export const syncNotionNow = createServerFn({ method: "POST" }).handler(() => ru
 export const saveChatSettings = createServerFn({ method: "POST" })
   .inputValidator((d: { token?: string; model: string; effort: string }) => d)
   .handler(({ data }) => saveChatForm(data));
+
+export const saveTelegramSettings = createServerFn({ method: "POST" })
+  .inputValidator((d: { token?: string; chatId: string }) => d)
+  .handler(({ data }) => saveTelegramForm(data));
+
+export const verifyTelegram = createServerFn({ method: "POST" }).handler(() =>
+  verifyTelegramChat(),
+);

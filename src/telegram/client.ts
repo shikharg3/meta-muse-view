@@ -50,6 +50,16 @@ export interface UpdatesResult {
   retryAfter?: number;
 }
 
+/** What `getChat` tells us about a target: enough to confirm an operator pasted the right id. */
+export interface ChatInfo {
+  ok: boolean;
+  id?: number;
+  /** Channels and groups carry a title; a private chat carries a name instead. */
+  title?: string;
+  type?: string;
+  error?: string;
+}
+
 interface ApiEnvelope {
   ok?: boolean;
   description?: string;
@@ -159,5 +169,27 @@ export class TelegramClient {
     // so callers still have to check what they read.
     const updates = Array.isArray(r.result) ? (r.result as TelegramUpdate[]) : [];
     return { ok: true, updates };
+  }
+
+  /**
+   * Resolve a chat id to its title and type, so Settings can confirm a pasted id is the intended
+   * channel before alerts start going there.
+   *
+   * Deliberately NOT built on `getUpdates`. That endpoint is single-consumer and CONSUMING: the
+   * check-in poller owns the update stream, and a second caller would confirm updates out from
+   * under it and provoke 409s. `getChat` is an ordinary read and competes with nothing. It also
+   * answers the question an operator actually has ("is this the right channel?") rather than
+   * requiring one to guess which of several chats is meant.
+   */
+  async getChat(chatId: string): Promise<ChatInfo> {
+    const r = await this.call("getChat", { chat_id: chatId });
+    if (!r.ok) return { ok: false, error: r.error };
+    const c = (r.result ?? {}) as { id?: unknown; title?: unknown; type?: unknown };
+    return {
+      ok: true,
+      id: typeof c.id === "number" ? c.id : undefined,
+      title: typeof c.title === "string" ? c.title : undefined,
+      type: typeof c.type === "string" ? c.type : undefined,
+    };
   }
 }
