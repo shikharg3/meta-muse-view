@@ -452,10 +452,11 @@ export const notionStatusOverrides = pgTable("notion_status_overrides", {
 export const infraProfiles = pgTable("infra_profiles", {
   id: text("id").primaryKey(), // crypto.randomUUID() at the insert site
   name: text("name").notNull(),
-  status: text("status").notNull().default("new"), // ProfileStatus; guarded in the server fn
+  // A SET, not one value: Meta can strip several capabilities at once, and "active but read only" is
+  // a real state. Guarded through `parseProfileStatuses` in the server fn.
+  statuses: text("statuses").array().notNull().default(["active"]),
   geo: text("geo"),
   browser: text("browser"), // antidetect tool in use. Non-secret.
-  proxyProvider: text("proxy_provider"), // provider NAME only — never an address or credential
   notes: text("notes"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -468,6 +469,7 @@ export const infraBusinessManagers = pgTable("infra_business_managers", {
   bmId: text("bm_id").notNull().unique(),
   name: text("name").notNull(),
   status: text("status").notNull().default("active"), // BmStatus
+  type: text("type").notNull().default("non_verified"), // BmType — what the BM is for, not its health
   verifiedAt: timestamp("verified_at", { withTimezone: true }),
   notes: text("notes"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

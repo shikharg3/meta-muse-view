@@ -23,7 +23,13 @@ import {
 } from "@/lib/api/infrastructure";
 import { fmtRelTime } from "@/lib/format";
 import { pageRisk, usableBm, usableProfile } from "@/lib/infra-risk";
-import { PAGE_STATUSES, isBmStatus, isPageStatus, isProfileStatus } from "@/lib/infra-status";
+import {
+  INFRA_STATUS_LABEL,
+  PAGE_STATUSES,
+  isBmStatus,
+  isPageStatus,
+  type ProfileStatus,
+} from "@/lib/infra-status";
 import { cn } from "@/lib/utils";
 import type { PageView } from "@/server/fns/infra/pages";
 
@@ -97,7 +103,7 @@ function Pages() {
       profiles.map((p) => ({
         id: p.id,
         label: p.name,
-        unusable: !(isProfileStatus(p.status) && usableProfile(p.status)),
+        unusable: !usableProfile(p.statuses),
       })),
     [profiles],
   );
@@ -106,10 +112,7 @@ function Pages() {
   // got banned can still be repointed instead of becoming uneditable.
   const editingOwnerId = form?.ownerProfileId ?? "";
   const ownerOptions = useMemo(
-    () =>
-      profiles.filter(
-        (p) => (isProfileStatus(p.status) && usableProfile(p.status)) || p.id === editingOwnerId,
-      ),
+    () => profiles.filter((p) => usableProfile(p.statuses) || p.id === editingOwnerId),
     [profiles, editingOwnerId],
   );
 
@@ -283,10 +286,9 @@ function Pages() {
             <tbody className="divide-y divide-border">
               {sorted.map((r) => {
                 const owner = profileById.get(r.ownerProfileId);
-                const rawOwnerStatus = owner?.status;
-                // A missing or unrecognised owner status is treated as the worst case, never ignored.
-                const ownerStatus = isProfileStatus(rawOwnerStatus) ? rawOwnerStatus : "banned";
-                const ownerUsable = usableProfile(ownerStatus);
+                // A missing owner is treated as the worst case, never ignored.
+                const ownerStatuses = owner ? owner.statuses : (["suspended"] as ProfileStatus[]);
+                const ownerUsable = usableProfile(ownerStatuses);
                 // Stored as typed; the anchor needs a scheme to leave the app.
                 const href = /^https?:\/\//i.test(r.pageUrl) ? r.pageUrl : `https://${r.pageUrl}`;
                 return (
@@ -378,7 +380,7 @@ function Pages() {
                       <RiskBadge
                         risk={pageRisk({
                           status: isPageStatus(r.status) ? r.status : "restricted",
-                          ownerStatus,
+                          ownerStatuses,
                           bmCount: r.bmIds.length,
                           profileCount: r.profileIds.length,
                         })}
@@ -487,9 +489,9 @@ function Pages() {
                   <option value="">Select a profile…</option>
                   {ownerOptions.map((p) => (
                     <option key={p.id} value={p.id}>
-                      {isProfileStatus(p.status) && usableProfile(p.status)
+                      {usableProfile(p.statuses)
                         ? p.name
-                        : `${p.name} (${p.status})`}
+                        : `${p.name} (${p.statuses.map((s) => INFRA_STATUS_LABEL[s] ?? s).join(", ")})`}
                     </option>
                   ))}
                 </select>

@@ -22,9 +22,9 @@ async function makeBm(name: string, status = "active") {
   return id;
 }
 
-async function makeProfile(name: string, status = "active") {
+async function makeProfile(name: string, statuses: string[] = ["active"]) {
   const id = randomUUID();
-  await db.insert(schema.infraProfiles).values({ id, name, status });
+  await db.insert(schema.infraProfiles).values({ id, name, statuses });
   return id;
 }
 
@@ -152,7 +152,7 @@ describe("buildRiskMap", () => {
     const orphanBm = await makeBm("orphan");
     const p1 = await makeProfile("p1");
     const p2 = await makeProfile("p2");
-    const bannedProfile = await makeProfile("gone", "banned");
+    const bannedProfile = await makeProfile("gone", ["suspended"]);
 
     await db.insert(schema.infraProfileBm).values([
       { profileId: p1, bmId: redundantBm },
@@ -169,8 +169,29 @@ describe("buildRiskMap", () => {
     expect(level.get("orphan")).toBe("critical");
   });
 
-  test("an ad account reachable only through a banned BM is critical", async () => {
-    const deadBm = await makeBm("dead", "banned");
+  test("a profile marked active AND blocked is not an access path", async () => {
+    // The case multi-status exists for: Meta leaves the profile active but strips a capability.
+    const bm = await makeBm("half-blocked");
+    const blocked = await makeProfile("active-but-read-only", ["active", "read_only"]);
+    await db.insert(schema.infraProfileBm).values({ profileId: blocked, bmId: bm });
+
+    const map = await buildRiskMap();
+    const row = map.bms.find((r) => r.name === "half-blocked");
+    expect(row?.risk.level).toBe("critical");
+    expect(row?.detail).toBe("0 usable profiles");
+  });
+
+  test("a profile marked active with only a pending video selfie still counts", async () => {
+    const bm = await makeBm("selfie-pending");
+    const p = await makeProfile("awaiting-selfie", ["active", "video_selfie"]);
+    await db.insert(schema.infraProfileBm).values({ profileId: p, bmId: bm });
+
+    const map = await buildRiskMap();
+    expect(map.bms.find((r) => r.name === "selfie-pending")?.risk.level).toBe("warning");
+  });
+
+  test("an ad account reachable only through a suspended BM is critical", async () => {
+    const deadBm = await makeBm("dead", "suspended");
     await db.insert(schema.infraAdAccounts).values({ id: "act_1", label: "Acct one" });
     await db.insert(schema.infraBmAdAccount).values({ bmId: deadBm, adAccountId: "act_1" });
 

@@ -13,7 +13,7 @@ import {
   isBmStatus,
   isPageStatus,
   isPixelStatus,
-  isProfileStatus,
+  parseProfileStatuses,
   type BmStatus,
   type ProfileStatus,
 } from "@/lib/infra-status";
@@ -70,18 +70,19 @@ export async function buildRiskMap(): Promise<InfraRiskMap> {
     db.select().from(schema.infraPageProfile),
   ]);
 
-  const profileStatus = new Map<string, ProfileStatus>(
-    profiles.map((p) => [p.id, isProfileStatus(p.status) ? p.status : "banned"]),
+  // A row whose set is unreadable parses to `suspended`, so it can never count as an access path.
+  const profileStatuses = new Map<string, ProfileStatus[]>(
+    profiles.map((p) => [p.id, parseProfileStatuses(p.statuses)]),
   );
   const bmStatus = new Map<string, BmStatus>(
-    bms.map((b) => [b.id, isBmStatus(b.status) ? b.status : "banned"]),
+    bms.map((b) => [b.id, isBmStatus(b.status) ? b.status : "suspended"]),
   );
   const bmName = new Map(bms.map((b) => [b.id, b.name]));
 
   const usableProfilesPerBm = new Map<string, number>();
   for (const link of profileBm) {
-    const status = profileStatus.get(link.profileId);
-    if (status && usableProfile(status)) {
+    const statuses = profileStatuses.get(link.profileId);
+    if (statuses && usableProfile(statuses)) {
       usableProfilesPerBm.set(link.bmId, (usableProfilesPerBm.get(link.bmId) ?? 0) + 1);
     }
   }
@@ -155,7 +156,7 @@ export async function buildRiskMap(): Promise<InfraRiskMap> {
         status: p.status,
         risk: pixelRisk({
           status: isPixelStatus(p.status) ? p.status : "restricted",
-          rootBmStatus: bmStatus.get(p.rootBmId) ?? "banned",
+          rootBmStatus: bmStatus.get(p.rootBmId) ?? "suspended",
           shareCount: shares,
         }),
         detail: `root ${bmName.get(p.rootBmId) ?? p.rootBmId} · ${shares} share${shares === 1 ? "" : "s"}`,
@@ -173,7 +174,7 @@ export async function buildRiskMap(): Promise<InfraRiskMap> {
         status: p.status,
         risk: pageRisk({
           status: isPageStatus(p.status) ? p.status : "restricted",
-          ownerStatus: profileStatus.get(p.ownerProfileId) ?? "banned",
+          ownerStatuses: profileStatuses.get(p.ownerProfileId) ?? ["suspended"],
           bmCount,
           profileCount,
         }),

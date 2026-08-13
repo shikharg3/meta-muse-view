@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { createFileRoute, redirect, useRouter } from "@tanstack/react-router";
-import { Plus, Search } from "lucide-react";
+import { ChevronDown, Plus, Search } from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { PagePendingSkeleton } from "@/components/dashboard/TableSkeleton";
 import { StatusPill } from "@/components/dashboard/StatusPill";
@@ -15,10 +16,15 @@ import {
   saveInfraProfile,
   deleteInfraProfile,
   linkInfraProfileBm,
-  setInfraProfileStatus,
+  setInfraProfileStatuses,
 } from "@/lib/api/infrastructure";
 import { usableBm } from "@/lib/infra-risk";
-import { PROFILE_STATUSES, isBmStatus } from "@/lib/infra-status";
+import {
+  INFRA_STATUS_LABEL,
+  PROFILE_STATUSES,
+  isBmStatus,
+  type ProfileStatus,
+} from "@/lib/infra-status";
 import { cn } from "@/lib/utils";
 import type { ProfileView } from "@/server/fns/infra/profiles";
 import type { BmView } from "@/server/fns/infra/bms";
@@ -46,7 +52,7 @@ function ProfilesPage() {
   const router = useRouter();
 
   const [q, setQ] = useState("");
-  const [status, setStatus] = useState<string>("all");
+  const [status, setStatus] = useState<"all" | ProfileStatus>("all");
   const [target, setTarget] = useState<DialogTarget | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
 
@@ -66,16 +72,19 @@ function ProfilesPage() {
     [bms],
   );
 
-  // Multi-hop: a profile matches on its own fields, or on any assigned BM's name / BM ID.
+  // Multi-hop: a profile matches on its own fields, its status labels, or an assigned BM's name / ID.
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
     return profiles.filter((r: ProfileView) => {
-      if (status !== "all" && r.status !== status) return false;
+      if (status !== "all" && !r.statuses.includes(status)) return false;
       if (!needle) return true;
+      // Labels, not keys, so the operator can search the words they see: "read only", "ads manager".
+      const statusText = r.statuses.map((s) => INFRA_STATUS_LABEL[s] ?? s).join(" ");
       if (
         r.name.toLowerCase().includes(needle) ||
         (r.geo?.toLowerCase().includes(needle) ?? false) ||
-        (r.notes?.toLowerCase().includes(needle) ?? false)
+        (r.notes?.toLowerCase().includes(needle) ?? false) ||
+        statusText.toLowerCase().includes(needle)
       ) {
         return true;
       }
@@ -91,17 +100,17 @@ function ProfilesPage() {
     filtered,
     {
       name: (r) => r.name,
-      status: (r) => r.status,
+      statuses: (r) => r.statuses.join(","),
       bms: (r) => r.bmIds.length,
     },
     "name",
     "asc",
   );
 
-  const changeStatus = async (r: ProfileView, next: string) => {
-    const res = await setInfraProfileStatus({ data: { id: r.id, status: next } });
+  const changeStatuses = async (r: ProfileView, next: ProfileStatus[]) => {
+    const res = await setInfraProfileStatuses({ data: { id: r.id, statuses: next } });
     if (!res.ok) {
-      setMsg(res.error ?? "Could not change status");
+      setMsg(res.error ?? "Could not change statuses");
       return;
     }
     setMsg(null);
@@ -140,7 +149,7 @@ function ProfilesPage() {
           <input
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="Search profiles, geo, notes, assigned BMs…"
+            placeholder="Search profiles, status, geo, notes, assigned BMs…"
             className="w-full h-9 rounded-md border border-border bg-card pl-8 pr-3 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
           />
         </div>
@@ -156,7 +165,7 @@ function ProfilesPage() {
                   : "text-muted-foreground hover:bg-accent",
               )}
             >
-              {s.replace("_", " ")}
+              {s === "all" ? "all" : (INFRA_STATUS_LABEL[s] ?? s)}
             </button>
           ))}
         </div>
@@ -179,7 +188,7 @@ function ProfilesPage() {
                 <SortHeader label="Name" sortKey="name" active={key} dir={dir} onSort={toggle} />
                 <SortHeader
                   label="Status"
-                  sortKey="status"
+                  sortKey="statuses"
                   active={key}
                   dir={dir}
                   onSort={toggle}
@@ -193,7 +202,6 @@ function ProfilesPage() {
                 />
                 <th className="text-left px-3 py-2.5">Geo</th>
                 <th className="text-left px-3 py-2.5">Browser</th>
-                <th className="text-left px-3 py-2.5">Proxy</th>
                 <th className="text-right px-5 py-2.5">Actions</th>
               </tr>
             </thead>
@@ -205,20 +213,17 @@ function ProfilesPage() {
                     <div className="font-mono text-[10px] text-muted-foreground">{r.id}</div>
                   </td>
                   <td className="px-3 py-3">
-                    <div className="flex items-center gap-2">
-                      <StatusPill status={r.status} />
-                      <select
-                        value={r.status}
-                        onChange={(e) => void changeStatus(r, e.target.value)}
-                        aria-label={`Status for ${r.name}`}
-                        className="h-7 rounded-md border border-border bg-card px-1.5 text-[11px] focus:outline-none focus:ring-1 focus:ring-ring"
-                      >
-                        {PROFILE_STATUSES.map((s) => (
-                          <option key={s} value={s}>
-                            {s.replace("_", " ")}
-                          </option>
+                    <div className="flex items-start gap-2">
+                      <div className="flex flex-wrap gap-1">
+                        {r.statuses.map((s) => (
+                          <StatusPill key={s} status={s} />
                         ))}
-                      </select>
+                      </div>
+                      <StatusPicker
+                        statuses={r.statuses}
+                        name={r.name}
+                        onChange={(next) => changeStatuses(r, next)}
+                      />
                     </div>
                   </td>
                   <td className="px-3 py-3 min-w-[240px]">
@@ -237,7 +242,6 @@ function ProfilesPage() {
                   </td>
                   <td className="px-3 py-3 text-muted-foreground">{r.geo ?? "—"}</td>
                   <td className="px-3 py-3 text-muted-foreground">{r.browser ?? "—"}</td>
-                  <td className="px-3 py-3 text-muted-foreground">{r.proxyProvider ?? "—"}</td>
                   <td className="px-5 py-3 text-right space-x-1.5 whitespace-nowrap">
                     <button
                       onClick={() => setTarget(r)}
@@ -256,7 +260,7 @@ function ProfilesPage() {
               ))}
               {sorted.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="px-5 py-12 text-center text-sm text-muted-foreground">
+                  <td colSpan={6} className="px-5 py-12 text-center text-sm text-muted-foreground">
                     No profiles match your filters.
                   </td>
                 </tr>
@@ -283,12 +287,118 @@ function ProfilesPage() {
   );
 }
 
+/**
+ * The row's set editor: a count trigger over the shared checkbox list. A `<select>` cannot express a
+ * set, and every row needs its own open state, so the popover lives here and not in the table cell.
+ * Each tick posts on its own and the panel stays open, so swapping a status reads as two steps.
+ */
+function StatusPicker({
+  statuses,
+  name,
+  onChange,
+}: {
+  statuses: readonly ProfileStatus[];
+  name: string;
+  onChange: (next: ProfileStatus[]) => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const apply = async (next: ProfileStatus[]) => {
+    setBusy(true);
+    await onChange(next);
+    setBusy(false);
+  };
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          disabled={busy}
+          aria-label={`Statuses for ${name}`}
+          className="inline-flex items-center gap-1 h-7 rounded-md border border-border bg-card px-1.5 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-40"
+        >
+          {statuses.length}
+          <ChevronDown className="size-3" />
+        </button>
+      </PopoverTrigger>
+      {/*
+       * Portaled, not `absolute`: this sits inside a table whose wrapper is `overflow-x-auto`, and
+       * per spec a non-visible overflow on one axis forces the other to `auto`, so an absolutely
+       * positioned panel is clipped by the scroll box and painted under the table footer — the
+       * checkboxes become unclickable. Radix's portal escapes the container.
+       */}
+      <PopoverContent align="start" className="w-56 p-1">
+        <StatusCheckboxes
+          statuses={statuses}
+          disabled={busy}
+          requireOne
+          onChange={(next) => void apply(next)}
+        />
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+/**
+ * The status set as checkboxes, shared by the row popover and the dialog.
+ *
+ * `requireOne` locks the last ticked box for the row editor, which posts on every tick and would
+ * otherwise send the empty set the server refuses. The dialog leaves it unlocked and renders that
+ * refusal, since a form submission is one deliberate act the operator can correct.
+ */
+function StatusCheckboxes({
+  className = "",
+  statuses,
+  disabled = false,
+  requireOne = false,
+  onChange,
+}: {
+  className?: string;
+  statuses: readonly string[];
+  disabled?: boolean;
+  requireOne?: boolean;
+  onChange: (next: ProfileStatus[]) => void;
+}) {
+  return (
+    <div className={className}>
+      {PROFILE_STATUSES.map((s) => {
+        const checked = statuses.includes(s);
+        const locked = requireOne && checked && statuses.length === 1;
+        return (
+          <label
+            key={s}
+            title={locked ? "A profile needs at least one status" : undefined}
+            className="flex items-center gap-2 rounded px-2 py-1 text-xs hover:bg-accent"
+          >
+            <input
+              type="checkbox"
+              checked={checked}
+              disabled={disabled || locked}
+              // Filtering the vocabulary instead of splicing keeps the set ordered and deduped the
+              // way `parseProfileStatuses` returns it, so the pills never reshuffle on the round trip.
+              onChange={() =>
+                onChange(
+                  PROFILE_STATUSES.filter((v) => (v === s ? !checked : statuses.includes(v))),
+                )
+              }
+              className="size-3.5 accent-primary disabled:opacity-40"
+            />
+            {INFRA_STATUS_LABEL[s] ?? s}
+          </label>
+        );
+      })}
+    </div>
+  );
+}
+
 interface ProfileForm {
   name: string;
-  status: string;
+  /** A set — see PROFILE_STATUSES. An empty one is refused by the server, not hidden by the form. */
+  statuses: string[];
   geo: string;
   browser: string;
-  proxyProvider: string;
   notes: string;
 }
 
@@ -307,10 +417,10 @@ function ProfileDialog({
   const editing = target === "new" ? null : target;
   const [form, setForm] = useState<ProfileForm>({
     name: editing?.name ?? "",
-    status: editing?.status ?? PROFILE_STATUSES[0],
+    // A new profile is healthy until told otherwise; an edit seeds from the stored set.
+    statuses: editing ? [...editing.statuses] : ["active"],
     geo: editing?.geo ?? "",
     browser: editing?.browser ?? "",
-    proxyProvider: editing?.proxyProvider ?? "",
     notes: editing?.notes ?? "",
   });
   const [error, setError] = useState<string | null>(null);
@@ -351,22 +461,17 @@ function ProfileDialog({
               className={INPUT_CLASS}
             />
           </label>
-          <label className="block space-y-1">
+          {/* Nested <label>s are invalid, so the group is a <div> with its own caption. */}
+          <div className="space-y-1">
             <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
               Status
             </span>
-            <select
-              value={form.status}
-              onChange={(e) => setForm({ ...form, status: e.target.value })}
-              className={INPUT_CLASS}
-            >
-              {PROFILE_STATUSES.map((s) => (
-                <option key={s} value={s}>
-                  {s.replace("_", " ")}
-                </option>
-              ))}
-            </select>
-          </label>
+            <StatusCheckboxes
+              className="rounded-md border border-border bg-card p-1"
+              statuses={form.statuses}
+              onChange={(statuses) => setForm({ ...form, statuses })}
+            />
+          </div>
           <div className="grid grid-cols-2 gap-3">
             <label className="block space-y-1">
               <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
@@ -391,17 +496,6 @@ function ProfileDialog({
               />
             </label>
           </div>
-          <label className="block space-y-1">
-            <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
-              Proxy provider
-            </span>
-            <input
-              value={form.proxyProvider}
-              onChange={(e) => setForm({ ...form, proxyProvider: e.target.value })}
-              placeholder="e.g. Bright Data"
-              className={INPUT_CLASS}
-            />
-          </label>
           <label className="block space-y-1">
             <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
               Notes

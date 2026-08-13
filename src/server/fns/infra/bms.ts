@@ -2,7 +2,14 @@ import { randomUUID } from "node:crypto";
 import { and, desc, eq } from "drizzle-orm";
 import { db, schema } from "@/db/client";
 import { usableBm, usableProfile } from "@/lib/infra-risk";
-import { BM_STATUSES, isBmStatus, isProfileStatus } from "@/lib/infra-status";
+import {
+  BM_STATUSES,
+  BM_TYPES,
+  isBmStatus,
+  isBmType,
+  parseProfileStatuses,
+  type ProfileStatus,
+} from "@/lib/infra-status";
 import { audit, requireAdmin } from "../auth";
 import { logInfraEvent } from "./events";
 
@@ -11,6 +18,7 @@ export interface BmView {
   bmId: string;
   name: string;
   status: string;
+  type: string;
   verifiedAt: string | null;
   notes: string | null;
   profileIds: string[];
@@ -42,6 +50,7 @@ export async function fetchBms(): Promise<BmView[]> {
       bmId: r.bmId,
       name: r.name,
       status: r.status,
+      type: r.type,
       verifiedAt: r.verifiedAt?.toISOString() ?? null,
       notes: r.notes,
       profileIds: profilesByBm.get(r.id) ?? [],
@@ -62,7 +71,7 @@ export interface BmHistoryEntry {
 export interface BmDetail {
   bm: BmView;
   /** Profiles administering this BM, with usability already resolved for the access chain. */
-  profiles: { id: string; name: string; status: string; usable: boolean }[];
+  profiles: { id: string; name: string; statuses: ProfileStatus[]; usable: boolean }[];
   adAccounts: { id: string; label: string | null }[];
   history: BmHistoryEntry[];
 }
@@ -80,7 +89,7 @@ export async function fetchBmDetail(id: string): Promise<BmDetail | null> {
       .select({
         id: schema.infraProfiles.id,
         name: schema.infraProfiles.name,
-        status: schema.infraProfiles.status,
+        statuses: schema.infraProfiles.statuses,
       })
       .from(schema.infraProfileBm)
       .innerJoin(schema.infraProfiles, eq(schema.infraProfiles.id, schema.infraProfileBm.profileId))
@@ -109,15 +118,16 @@ export async function fetchBmDetail(id: string): Promise<BmDetail | null> {
       bmId: row.bmId,
       name: row.name,
       status: row.status,
+      type: row.type,
       verifiedAt: row.verifiedAt?.toISOString() ?? null,
       notes: row.notes,
       profileIds: profileRows.map((p) => p.id),
       adAccountIds: accountRows.map((a) => a.id),
     },
-    profiles: profileRows.map((p) => ({
-      ...p,
-      usable: isProfileStatus(p.status) ? usableProfile(p.status) : false,
-    })),
+    profiles: profileRows.map((p) => {
+      const statuses = parseProfileStatuses(p.statuses);
+      return { id: p.id, name: p.name, statuses, usable: usableProfile(statuses) };
+    }),
     adAccounts: accountRows,
     history: historyRows.map((h) => ({
       event: h.event,
@@ -135,6 +145,7 @@ export async function saveBm(input: {
   bmId: string;
   name: string;
   status: string;
+  type: string;
   notes?: string | null;
 }): Promise<{ ok: boolean; error?: string; id?: string }> {
   const user = await requireAdmin();
@@ -144,6 +155,9 @@ export async function saveBm(input: {
   if (!bmId) return { ok: false, error: "BM ID is required" };
   if (!isBmStatus(input.status)) {
     return { ok: false, error: `Status must be one of: ${BM_STATUSES.join(", ")}` };
+  }
+  if (!isBmType(input.type)) {
+    return { ok: false, error: `Type must be one of: ${BM_TYPES.join(", ")}` };
   }
 
   // Checked explicitly so the operator gets a sentence rather than a unique-violation stack trace.
@@ -155,7 +169,13 @@ export async function saveBm(input: {
     return { ok: false, error: `BM ID ${bmId} is already registered as "${clash.name}"` };
   }
 
-  const fields = { bmId, name, notes: input.notes?.trim() || null, updatedAt: new Date() };
+  const fields = {
+    bmId,
+    name,
+    type: input.type,
+    notes: input.notes?.trim() || null,
+    updatedAt: new Date(),
+  };
 
   if (input.id) {
     const [existing] = await db

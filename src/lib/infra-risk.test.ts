@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { BM_STATUSES, PROFILE_STATUSES, type PageStatus, type PixelStatus } from "./infra-status";
+import { BM_STATUSES, type PageStatus, type PixelStatus, type ProfileStatus } from "./infra-status";
 import {
   VERIFICATION_OVERDUE_DAYS,
   isVerificationOverdue,
@@ -30,64 +30,86 @@ describe("redundancy", () => {
 });
 
 describe("usableProfile", () => {
-  test("only active and new profiles provide access", () => {
-    const expected: Record<(typeof PROFILE_STATUSES)[number], boolean> = {
-      new: true,
-      active: true,
-      in_review: false,
-      suspended: false,
-      banned: false,
-      retired: false,
-    };
-    for (const s of PROFILE_STATUSES) expect(usableProfile(s)).toBe(expected[s]);
+  test("active alone is usable", () => {
+    expect(usableProfile(["active"])).toBe(true);
+  });
+
+  test("active plus video_selfie stays usable — a pending selfie is not lost access", () => {
+    expect(usableProfile(["active", "video_selfie"])).toBe(true);
+  });
+
+  test("every blocking status defeats active, even when active is also set", () => {
+    const blocking: ProfileStatus[] = [
+      "suspended",
+      "in_review",
+      "cannot_use_page",
+      "cannot_use_ads_manager",
+      "read_only",
+    ];
+    for (const s of blocking) {
+      expect(usableProfile(["active", s])).toBe(false);
+    }
+  });
+
+  test("a profile without active is not usable however harmless the rest", () => {
+    expect(usableProfile(["video_selfie"])).toBe(false);
+  });
+
+  test("an empty set is not usable", () => {
+    expect(usableProfile([])).toBe(false);
   });
 });
 
 describe("usableBm", () => {
-  test("only active and pending_verification BMs are access paths", () => {
+  test("only active BMs are access paths", () => {
     const expected: Record<(typeof BM_STATUSES)[number], boolean> = {
-      pending_verification: true,
       active: true,
       in_review: false,
-      restricted: false,
-      banned: false,
+      suspended: false,
     };
     for (const s of BM_STATUSES) expect(usableBm(s)).toBe(expected[s]);
   });
 });
 
 describe("BM access paths", () => {
-  test("a BM whose only three profiles are unusable reads critical", () => {
-    const profiles = ["suspended", "banned", "in_review"] as const;
+  test("a BM whose only profiles are all blocked reads critical", () => {
+    const profiles: ProfileStatus[][] = [["suspended"], ["active", "read_only"], ["in_review"]];
     expect(redundancy(profiles.filter(usableProfile).length)).toEqual({
       level: "critical",
       label: "No backup",
     });
   });
-});
 
-describe("ad account access paths", () => {
-  test("an account reachable only through a banned BM is critical, not safe", () => {
-    // The bug this rule fixes: counting raw links scores this account safe.
-    const linked = ["banned"] as const;
-    expect(redundancy(linked.filter(usableBm).length)).toEqual({
-      level: "critical",
-      label: "No backup",
-    });
-  });
-
-  test("two live BMs is safe", () => {
-    const linked = ["active", "pending_verification"] as const;
-    expect(redundancy(linked.filter(usableBm).length)).toEqual({
+  test("two clean profiles is redundant", () => {
+    const profiles: ProfileStatus[][] = [["active"], ["active", "video_selfie"]];
+    expect(redundancy(profiles.filter(usableProfile).length)).toEqual({
       level: "safe",
       label: "Redundant",
     });
   });
 });
 
+describe("ad account access paths", () => {
+  test("an account reachable only through a suspended BM is critical, not safe", () => {
+    const linked = ["suspended"] as const;
+    expect(redundancy(linked.filter(usableBm).length)).toEqual({
+      level: "critical",
+      label: "No backup",
+    });
+  });
+
+  test("an in_review BM is not a backup path", () => {
+    const linked = ["active", "in_review"] as const;
+    expect(redundancy(linked.filter(usableBm).length)).toEqual({
+      level: "warning",
+      label: "Single access",
+    });
+  });
+});
+
 describe("pixelRisk precedence", () => {
   test("an unusable root BM beats every other signal", () => {
-    expect(pixelRisk({ status: "active", rootBmStatus: "banned", shareCount: 5 })).toEqual({
+    expect(pixelRisk({ status: "active", rootBmStatus: "suspended", shareCount: 5 })).toEqual({
       level: "critical",
       label: "Root BM unusable",
     });
@@ -124,19 +146,35 @@ describe("pixelRisk precedence", () => {
 describe("pageRisk precedence", () => {
   test("an unusable owner beats a banned page", () => {
     expect(
-      pageRisk({ status: "banned", ownerStatus: "suspended", bmCount: 3, profileCount: 3 }),
+      pageRisk({
+        status: "banned",
+        ownerStatuses: ["suspended"],
+        bmCount: 3,
+        profileCount: 3,
+      }),
+    ).toEqual({ level: "critical", label: "No active owner" });
+  });
+
+  test("an owner blocked while still marked active is not an owner", () => {
+    expect(
+      pageRisk({
+        status: "active",
+        ownerStatuses: ["active", "cannot_use_page"],
+        bmCount: 2,
+        profileCount: 0,
+      }),
     ).toEqual({ level: "critical", label: "No active owner" });
   });
 
   test("no added access is a warning when the page itself is healthy", () => {
     expect(
-      pageRisk({ status: "active", ownerStatus: "active", bmCount: 0, profileCount: 0 }),
+      pageRisk({ status: "active", ownerStatuses: ["active"], bmCount: 0, profileCount: 0 }),
     ).toEqual({ level: "warning", label: "No added access" });
   });
 
   test("one additional profile and no BM still counts as added access", () => {
     expect(
-      pageRisk({ status: "active", ownerStatus: "active", bmCount: 0, profileCount: 1 }),
+      pageRisk({ status: "active", ownerStatuses: ["active"], bmCount: 0, profileCount: 1 }),
     ).toEqual({ level: "safe", label: "Added" });
   });
 
@@ -149,7 +187,7 @@ describe("pageRisk precedence", () => {
       unpublished: { level: "warning", label: "Unpublished" },
     };
     for (const status of Object.keys(expected) as PageStatus[]) {
-      expect(pageRisk({ status, ownerStatus: "active", bmCount: 1, profileCount: 0 })).toEqual(
+      expect(pageRisk({ status, ownerStatuses: ["active"], bmCount: 1, profileCount: 0 })).toEqual(
         expected[status],
       );
     }

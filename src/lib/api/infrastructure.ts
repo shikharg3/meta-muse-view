@@ -5,7 +5,7 @@ import {
   fetchProfiles,
   linkProfileBm,
   saveProfile,
-  setProfileStatus,
+  setProfileStatuses,
 } from "@/server/fns/infra/profiles";
 import {
   deleteBm,
@@ -67,18 +67,17 @@ export const saveInfraProfile = createServerFn({ method: "POST" })
     (d: {
       id?: string | null;
       name: string;
-      status: string;
+      statuses: string[];
       geo?: string | null;
       browser?: string | null;
-      proxyProvider?: string | null;
       notes?: string | null;
     }) => d,
   )
   .handler(({ data }) => saveProfile(data));
 
-export const setInfraProfileStatus = createServerFn({ method: "POST" })
-  .inputValidator((d: { id: string; status: string; reason?: string | null }) => d)
-  .handler(({ data }) => setProfileStatus(data));
+export const setInfraProfileStatuses = createServerFn({ method: "POST" })
+  .inputValidator((d: { id: string; statuses: string[]; reason?: string | null }) => d)
+  .handler(({ data }) => setProfileStatuses(data));
 
 export const deleteInfraProfile = createServerFn({ method: "POST" })
   .inputValidator((d: { id: string }) => d)
@@ -97,6 +96,7 @@ export const saveInfraBm = createServerFn({ method: "POST" })
       bmId: string;
       name: string;
       status: string;
+      type: string;
       notes?: string | null;
     }) => d,
   )

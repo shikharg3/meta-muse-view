@@ -23,7 +23,13 @@ import { getCurrentUser } from "@/lib/api/auth";
 import { isAdmin } from "@/lib/auth/roles";
 import { fmtRelTime } from "@/lib/format";
 import { isVerificationOverdue, usableProfile } from "@/lib/infra-risk";
-import { BM_STATUSES, isBmStatus, isProfileStatus } from "@/lib/infra-status";
+import {
+  BM_STATUSES,
+  BM_TYPES,
+  INFRA_STATUS_LABEL,
+  isBmStatus,
+  isBmType,
+} from "@/lib/infra-status";
 import { cn } from "@/lib/utils";
 import type { BmBanImpact, BmView } from "@/server/fns/infra/bms";
 
@@ -66,18 +72,22 @@ interface BmForm {
   name: string;
   bmId: string;
   status: string;
+  type: string;
   notes: string;
 }
 
 /**
- * A ban is the one status change that is not fire-and-forget.
+ * Suspension is the one status change that is not fire-and-forget.
  *
- * The impact is fetched BEFORE anything is written, so the operator sees which access paths the ban
- * costs while the `<select>` still shows the old value — cancelling therefore needs no undo. The
- * counts are reported as paths lost, never as accounts "needing reassignment": access is a flat list
- * here, so there is no primary BM to re-point.
+ * The impact is fetched BEFORE anything is written, so the operator sees which access paths the
+ * suspension costs while the `<select>` still shows the old value — cancelling therefore needs no
+ * undo. The counts are reported as paths lost, never as accounts "needing reassignment": access is
+ * a flat list here, so there is no primary BM to re-point.
+ *
+ * The server fn is still named for a ban: the query it runs is unchanged, only the status that
+ * triggers it.
  */
-interface BanPrompt {
+interface SuspendPrompt {
   bm: BmView;
   impact: BmBanImpact;
 }
@@ -92,10 +102,10 @@ function BusinessManagersPage() {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [form, setForm] = useState<BmForm | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
-  const [ban, setBan] = useState<BanPrompt | null>(null);
-  const [banReason, setBanReason] = useState("");
-  const [banError, setBanError] = useState<string | null>(null);
-  const [banBusy, setBanBusy] = useState(false);
+  const [suspend, setSuspend] = useState<SuspendPrompt | null>(null);
+  const [suspendReason, setSuspendReason] = useState("");
+  const [suspendError, setSuspendError] = useState<string | null>(null);
+  const [suspendBusy, setSuspendBusy] = useState(false);
 
   const profileById = useMemo(() => new Map(profiles.map((p) => [p.id, p])), [profiles]);
   const accountById = useMemo(() => new Map(adAccounts.map((a) => [a.id, a])), [adAccounts]);
@@ -105,7 +115,7 @@ function BusinessManagersPage() {
       profiles.map((p) => ({
         id: p.id,
         label: p.name,
-        unusable: !(isProfileStatus(p.status) && usableProfile(p.status)),
+        unusable: !usableProfile(p.statuses),
       })),
     [profiles],
   );
@@ -149,6 +159,7 @@ function BusinessManagersPage() {
     {
       name: (r) => r.name,
       status: (r) => r.status,
+      type: (r) => r.type,
       profiles: (r) => r.profileIds.length,
       accounts: (r) => r.adAccountIds.length,
       verified: (r) => r.verifiedAt ?? "",
@@ -174,28 +185,45 @@ function BusinessManagersPage() {
 
   const changeStatus = async (bm: BmView, next: string) => {
     if (next === bm.status) return;
-    if (next === "banned") {
+    if (next === "suspended") {
       const impact = await getInfraBmBanPreview({ data: { id: bm.id } });
-      setBanReason("");
-      setBanError(null);
-      setBan({ bm, impact });
+      setSuspendReason("");
+      setSuspendError(null);
+      setSuspend({ bm, impact });
       return;
     }
     await apply(setInfraBmStatus({ data: { id: bm.id, status: next } }));
   };
 
-  const confirmBan = async () => {
-    if (!ban) return;
-    setBanBusy(true);
+  /** Type is metadata, not health: it saves straight through, with no preview and no reason. */
+  const changeType = async (bm: BmView, next: string) => {
+    if (next === bm.type) return;
+    await apply(
+      saveInfraBm({
+        data: {
+          id: bm.id,
+          bmId: bm.bmId,
+          name: bm.name,
+          status: bm.status,
+          type: next,
+          notes: bm.notes ?? "",
+        },
+      }),
+    );
+  };
+
+  const confirmSuspend = async () => {
+    if (!suspend) return;
+    setSuspendBusy(true);
     const res = await setInfraBmStatus({
-      data: { id: ban.bm.id, status: "banned", reason: banReason },
+      data: { id: suspend.bm.id, status: "suspended", reason: suspendReason },
     });
-    setBanBusy(false);
+    setSuspendBusy(false);
     if (!res.ok) {
-      setBanError(res.error ?? "Failed");
+      setSuspendError(res.error ?? "Failed");
       return;
     }
-    setBan(null);
+    setSuspend(null);
     setMsg(null);
     await router.invalidate();
   };
@@ -207,12 +235,19 @@ function BusinessManagersPage() {
 
   const openCreate = () => {
     setFormError(null);
-    setForm({ id: null, name: "", bmId: "", status: "pending_verification", notes: "" });
+    setForm({ id: null, name: "", bmId: "", status: "active", type: "non_verified", notes: "" });
   };
 
   const openEdit = (bm: BmView) => {
     setFormError(null);
-    setForm({ id: bm.id, name: bm.name, bmId: bm.bmId, status: bm.status, notes: bm.notes ?? "" });
+    setForm({
+      id: bm.id,
+      name: bm.name,
+      bmId: bm.bmId,
+      status: bm.status,
+      type: bm.type,
+      notes: bm.notes ?? "",
+    });
   };
 
   const submit = async () => {
@@ -223,6 +258,7 @@ function BusinessManagersPage() {
         name: form.name,
         bmId: form.bmId,
         status: form.status,
+        type: form.type,
         notes: form.notes,
       },
     });
@@ -273,7 +309,7 @@ function BusinessManagersPage() {
                   : "text-muted-foreground hover:bg-accent",
               )}
             >
-              {s}
+              {INFRA_STATUS_LABEL[s] ?? s}
             </button>
           ))}
         </div>
@@ -299,6 +335,7 @@ function BusinessManagersPage() {
                   dir={dir}
                   onSort={toggle}
                 />
+                <SortHeader label="Type" sortKey="type" active={key} dir={dir} onSort={toggle} />
                 <SortHeader
                   label="Profiles"
                   sortKey="profiles"
@@ -361,10 +398,34 @@ function BusinessManagersPage() {
                         className="h-7 rounded-md border border-border bg-card px-1.5 text-[11px] focus:outline-none focus:ring-1 focus:ring-ring"
                         aria-label={`Change status of ${r.name}`}
                       >
-                        {!isBmStatus(r.status) && <option value={r.status}>{r.status}</option>}
+                        {!isBmStatus(r.status) && (
+                          <option value={r.status}>
+                            {INFRA_STATUS_LABEL[r.status] ?? r.status}
+                          </option>
+                        )}
                         {BM_STATUSES.map((s) => (
                           <option key={s} value={s}>
-                            {s}
+                            {INFRA_STATUS_LABEL[s] ?? s}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </td>
+                  <td className="px-3 py-3">
+                    <div className="flex items-center gap-2">
+                      <StatusPill status={r.type} />
+                      <select
+                        value={r.type}
+                        onChange={(e) => void changeType(r, e.target.value)}
+                        className="h-7 rounded-md border border-border bg-card px-1.5 text-[11px] focus:outline-none focus:ring-1 focus:ring-ring"
+                        aria-label={`Change type of ${r.name}`}
+                      >
+                        {!isBmType(r.type) && (
+                          <option value={r.type}>{INFRA_STATUS_LABEL[r.type] ?? r.type}</option>
+                        )}
+                        {BM_TYPES.map((t) => (
+                          <option key={t} value={t}>
+                            {INFRA_STATUS_LABEL[t] ?? t}
                           </option>
                         ))}
                       </select>
@@ -409,7 +470,7 @@ function BusinessManagersPage() {
                   </td>
                   <td className="px-5 py-3 text-right whitespace-nowrap">
                     <div className="inline-flex items-center gap-2">
-                      {r.status !== "banned" && (
+                      {r.status !== "suspended" && (
                         <button
                           type="button"
                           onClick={() => void apply(verifyInfraBm({ data: { id: r.id } }))}
@@ -434,7 +495,7 @@ function BusinessManagersPage() {
               ))}
               {sorted.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="px-5 py-12 text-center text-sm text-muted-foreground">
+                  <td colSpan={8} className="px-5 py-12 text-center text-sm text-muted-foreground">
                     No Business Managers match your filters.
                   </td>
                 </tr>
@@ -447,55 +508,55 @@ function BusinessManagersPage() {
         </div>
       </div>
 
-      <Dialog open={ban != null} onOpenChange={(o) => !o && setBan(null)}>
+      <Dialog open={suspend != null} onOpenChange={(o) => !o && setSuspend(null)}>
         <DialogContent className="max-w-md" aria-describedby={undefined}>
           <DialogTitle className="text-sm font-semibold">
-            Ban {ban?.bm.name ?? "Business Manager"}?
+            Suspend {suspend?.bm.name ?? "Business Manager"}?
           </DialogTitle>
-          {ban && (
+          {suspend && (
             <form
               className="space-y-3"
               onSubmit={(e) => {
                 e.preventDefault();
-                void confirmBan();
+                void confirmSuspend();
               }}
             >
               <p className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-                {ban.impact.accountsLosingAPath} ad account(s) lose an access path;{" "}
-                {ban.impact.accountsLeftWithNone} would be left with none. {ban.impact.profiles}{" "}
-                profile(s) are assigned.
+                {suspend.impact.accountsLosingAPath} ad account(s) lose an access path;{" "}
+                {suspend.impact.accountsLeftWithNone} would be left with none.{" "}
+                {suspend.impact.profiles} profile(s) are assigned.
               </p>
               <div>
-                <label className={LABEL} htmlFor="ban-reason">
+                <label className={LABEL} htmlFor="suspend-reason">
                   Reason <span className="text-destructive">*</span>
                 </label>
                 <input
-                  id="ban-reason"
+                  id="suspend-reason"
                   required
-                  value={banReason}
-                  onChange={(e) => setBanReason(e.target.value)}
-                  placeholder="What was the ban notice?"
+                  value={suspendReason}
+                  onChange={(e) => setSuspendReason(e.target.value)}
+                  placeholder="What was the suspension notice?"
                   className={INPUT}
                 />
                 <p className="mt-1 text-[10px] text-muted-foreground">
                   Recorded in this BM's history alongside the status change.
                 </p>
               </div>
-              {banError && <p className="text-[11px] text-destructive">{banError}</p>}
+              {suspendError && <p className="text-[11px] text-destructive">{suspendError}</p>}
               <div className="flex items-center justify-end gap-2 pt-1">
                 <button
                   type="button"
-                  onClick={() => setBan(null)}
+                  onClick={() => setSuspend(null)}
                   className="h-9 px-3 rounded-md border border-border bg-card text-xs font-medium hover:bg-accent"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  disabled={banBusy || !banReason.trim()}
+                  disabled={suspendBusy || !suspendReason.trim()}
                   className="h-9 px-3 rounded-md bg-destructive text-destructive-foreground text-xs font-medium hover:bg-destructive/90 disabled:opacity-50"
                 >
-                  {banBusy ? "Banning…" : "Ban Business Manager"}
+                  {suspendBusy ? "Suspending…" : "Suspend Business Manager"}
                 </button>
               </div>
             </form>
@@ -553,7 +614,25 @@ function BusinessManagersPage() {
                 >
                   {BM_STATUSES.map((s) => (
                     <option key={s} value={s}>
-                      {s}
+                      {INFRA_STATUS_LABEL[s] ?? s}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className={LABEL} htmlFor="bm-type">
+                  Type
+                </label>
+                <select
+                  id="bm-type"
+                  required
+                  value={form.type}
+                  onChange={(e) => setForm({ ...form, type: e.target.value })}
+                  className={INPUT}
+                >
+                  {BM_TYPES.map((t) => (
+                    <option key={t} value={t}>
+                      {INFRA_STATUS_LABEL[t] ?? t}
                     </option>
                   ))}
                 </select>

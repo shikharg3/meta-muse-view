@@ -1,21 +1,28 @@
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { db, schema } from "@/db/client";
-import { PROFILE_STATUSES, isProfileStatus } from "@/lib/infra-status";
+import { parseProfileStatuses, type ProfileStatus } from "@/lib/infra-status";
 import { audit, requireAdmin } from "../auth";
 import { logInfraEvent } from "./events";
 
 export interface ProfileView {
   id: string;
+  /** A set, not one value — see PROFILE_STATUSES. Always ordered and non-empty. */
+  statuses: ProfileStatus[];
   name: string;
-  status: string;
   geo: string | null;
   browser: string | null;
-  proxyProvider: string | null;
   notes: string | null;
   bmIds: string[];
   statusChangedAt: string;
 }
+
+/** History stores a set as one readable string, so `from -> to` still reads as a sentence. */
+const joinStatuses = (statuses: readonly string[]) => statuses.join(", ");
+
+/** Set comparison independent of tick order; both sides are vocabulary-ordered by the parser. */
+const sameStatuses = (a: readonly string[], b: readonly string[]) =>
+  a.length === b.length && a.every((v, i) => v === b[i]);
 
 export async function fetchProfiles(): Promise<ProfileView[]> {
   await requireAdmin();
@@ -33,10 +40,9 @@ export async function fetchProfiles(): Promise<ProfileView[]> {
     .map((r) => ({
       id: r.id,
       name: r.name,
-      status: r.status,
+      statuses: parseProfileStatuses(r.statuses),
       geo: r.geo,
       browser: r.browser,
-      proxyProvider: r.proxyProvider,
       notes: r.notes,
       bmIds: bmsByProfile.get(r.id) ?? [],
       statusChangedAt: r.statusChangedAt.toISOString(),
@@ -47,10 +53,9 @@ export async function fetchProfiles(): Promise<ProfileView[]> {
 export interface SaveProfileInput {
   id?: string | null;
   name: string;
-  status: string;
+  statuses: string[];
   geo?: string | null;
   browser?: string | null;
-  proxyProvider?: string | null;
   notes?: string | null;
 }
 
@@ -60,15 +65,16 @@ export async function saveProfile(
   const user = await requireAdmin();
   const name = input.name.trim();
   if (!name) return { ok: false, error: "Name is required" };
-  if (!isProfileStatus(input.status)) {
-    return { ok: false, error: `Status must be one of: ${PROFILE_STATUSES.join(", ")}` };
+  // At least one real status: an empty set would parse to `suspended` and silently mislabel the row.
+  if (!Array.isArray(input.statuses) || input.statuses.length === 0) {
+    return { ok: false, error: "Pick at least one status" };
   }
+  const statuses = parseProfileStatuses(input.statuses);
 
   const fields = {
     name,
     geo: input.geo?.trim() || null,
     browser: input.browser?.trim() || null,
-    proxyProvider: input.proxyProvider?.trim() || null,
     notes: input.notes?.trim() || null,
     updatedAt: new Date(),
   };
@@ -80,23 +86,20 @@ export async function saveProfile(
       .where(eq(schema.infraProfiles.id, input.id));
     if (!existing) return { ok: false, error: "Profile not found" };
 
-    const statusChanged = existing.status !== input.status;
+    const before = parseProfileStatuses(existing.statuses);
+    const changed = !sameStatuses(before, statuses);
     await db
       .update(schema.infraProfiles)
-      .set({
-        ...fields,
-        status: input.status,
-        ...(statusChanged ? { statusChangedAt: new Date() } : {}),
-      })
+      .set({ ...fields, statuses, ...(changed ? { statusChangedAt: new Date() } : {}) })
       .where(eq(schema.infraProfiles.id, input.id));
 
-    if (statusChanged) {
+    if (changed) {
       await logInfraEvent({
         kind: "profile",
         entityId: input.id,
         event: "status_change",
-        fromStatus: existing.status,
-        toStatus: input.status,
+        fromStatus: joinStatuses(before),
+        toStatus: joinStatuses(statuses),
         actorEmail: user.email,
       });
     }
@@ -105,47 +108,53 @@ export async function saveProfile(
   }
 
   const id = randomUUID();
-  await db.insert(schema.infraProfiles).values({ ...fields, id, status: input.status });
+  await db.insert(schema.infraProfiles).values({ ...fields, id, statuses });
   await audit("infra.profile.create", `${name} (${id})`);
   return { ok: true, id };
 }
 
 /**
- * Change status on its own, with an optional reason.
+ * Replace the status set, with an optional reason.
  *
  * Separate from `saveProfile` because a status change is the event worth recording precisely, and the
- * list screen changes it inline without opening the form.
+ * list screen edits the set without opening the form.
  */
-export async function setProfileStatus(input: {
+export async function setProfileStatuses(input: {
   id: string;
-  status: string;
+  statuses: string[];
   reason?: string | null;
 }): Promise<{ ok: boolean; error?: string }> {
   const user = await requireAdmin();
-  if (!isProfileStatus(input.status)) {
-    return { ok: false, error: `Status must be one of: ${PROFILE_STATUSES.join(", ")}` };
+  if (!Array.isArray(input.statuses) || input.statuses.length === 0) {
+    return { ok: false, error: "Pick at least one status" };
   }
+  const statuses = parseProfileStatuses(input.statuses);
   const [existing] = await db
     .select()
     .from(schema.infraProfiles)
     .where(eq(schema.infraProfiles.id, input.id));
   if (!existing) return { ok: false, error: "Profile not found" };
-  if (existing.status === input.status) return { ok: true };
+
+  const before = parseProfileStatuses(existing.statuses);
+  if (sameStatuses(before, statuses)) return { ok: true };
 
   await db
     .update(schema.infraProfiles)
-    .set({ status: input.status, statusChangedAt: new Date(), updatedAt: new Date() })
+    .set({ statuses, statusChangedAt: new Date(), updatedAt: new Date() })
     .where(eq(schema.infraProfiles.id, input.id));
   await logInfraEvent({
     kind: "profile",
     entityId: input.id,
     event: "status_change",
-    fromStatus: existing.status,
-    toStatus: input.status,
+    fromStatus: joinStatuses(before),
+    toStatus: joinStatuses(statuses),
     reason: input.reason?.trim() || null,
     actorEmail: user.email,
   });
-  await audit("infra.profile.status", `${existing.name}: ${existing.status} → ${input.status}`);
+  await audit(
+    "infra.profile.status",
+    `${existing.name}: ${joinStatuses(before)} → ${joinStatuses(statuses)}`,
+  );
   return { ok: true };
 }
 
@@ -153,8 +162,7 @@ export async function setProfileStatus(input: {
  * Delete a profile.
  *
  * Postgres refuses this when the profile owns a page (`ON DELETE RESTRICT`). The dependency is checked
- * first so the operator gets a sentence naming the blocking pages instead of a constraint-violation
- * stack trace.
+ * first so the operator gets a sentence naming the blocking pages instead of a constraint violation.
  */
 export async function deleteProfile(input: {
   id: string;
