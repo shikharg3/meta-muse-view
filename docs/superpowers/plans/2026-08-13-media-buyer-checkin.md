@@ -30,7 +30,12 @@
   tests can record calls. Copy the `recorder()` helper from `src/notion/client.test.ts`.
 - Server fns live in `src/server/fns/*.ts` as plain async functions that call `requireAdmin()` from
   `./auth`, and are exposed to the client through `createServerFn` wrappers in `src/lib/api/*.ts`.
-- Migrations: edit `src/db/schema.ts`, then `bun run db:generate`. Never hand-write SQL migrations.
+- **Schema changes use `drizzle-kit push`, not migrations.** Measured 2026-08-13: `src/db/migrations`
+  does not exist in this repo or on the droplet, and the 11 infrastructure-registry tables added
+  earlier today are live in production — so the project's convention is `bun run db:push`. Edit
+  `src/db/schema.ts`, then push. Never hand-write SQL.
+- `drizzle-kit` reads `DATABASE_URL` from the environment via `drizzle.config.ts`. A fresh git
+  worktree has no `.env` (it is gitignored), so copy it in before running any `db:*` script.
 - Commit after every task. Stage only the files that task names — the repo has untracked scratch
   files (`.tmp-*.ts`) and **a parallel session may be working in this worktree**, so
   `git add -A` is prohibited.
@@ -1015,7 +1020,7 @@ git commit -m "feat(checkin): render the daily list, force-reply prompt and Noti
 
 **Files:**
 - Modify: `src/db/schema.ts`
-- Generated: `src/db/migrations/*`
+- Applied with: `bun run db:push`
 
 - [ ] **Step 1: Add the tables**
 
@@ -1116,13 +1121,19 @@ import {
 } from "drizzle-orm/pg-core";
 ```
 
-- [ ] **Step 2: Generate the migration**
+- [ ] **Step 2: Push the schema**
 
-Run: `bun run db:generate`
+First confirm `DATABASE_URL` is available (`grep -c DATABASE_URL .env`; copy `.env` from the main
+checkout if the worktree lacks it).
 
-Expected: a new file under `src/db/migrations/` creating five tables. Read it and confirm it contains
-`CREATE TABLE "checkin_prompts"` and `CREATE UNIQUE INDEX "checkin_prompts_day_page_buyer_idx"`, and
-that it does **not** alter or drop any existing table.
+Run: `bun run db:push`
+
+Expected: drizzle prints the statements it intends to run. **Read them before confirming.** They must
+be purely additive — five `CREATE TABLE` statements plus `CREATE UNIQUE INDEX
+"checkin_prompts_day_page_buyer_idx"` and the two secondary indexes. If drizzle proposes ANY
+`DROP`, `ALTER ... DROP COLUMN` or table rename, abort and report: that means the schema file has
+drifted from the live database (another session ships tables to this same schema), and pushing would
+destroy their work.
 
 - [ ] **Step 3: Typecheck**
 
@@ -3037,7 +3048,7 @@ git push madsmonitor
 ```bash
 ssh -i C:/Users/shikh/.ssh/id_ed25519 root@159.65.110.111 \
   'cd /opt/meta-dashboard && git pull origin feat/meta-integration \
-   && set -a && . ./.env && set +a && bun run db:migrate \
+   && set -a && . ./.env && set +a && bun run db:push \
    && bun run build && systemctl restart meta-web meta-sync'
 ```
 
