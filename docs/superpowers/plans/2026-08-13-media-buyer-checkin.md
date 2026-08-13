@@ -40,8 +40,12 @@ inserts are unverified.
 
 | File | Responsibility |
 |---|---|
-| `src/lib/checkin.ts` (create) | Pure core: question map, time helpers, prompt planner, message/comment rendering, callback encoding. No imports from `db/`, `sync/`, `notion/` or `telegram/`. |
-| `src/lib/checkin.test.ts` (create) | Unit tests for all of the above. |
+| `src/lib/checkin.ts` (create) | Pure decision core: gate hours, the status→question catalogue, the `CheckinStatus`/`PromptState` vocabulary, and the prompt planner. No imports except a type-only one from `delivery-status.ts`. |
+| `src/lib/checkin.test.ts` (create) | Unit tests for the decision core. |
+| `src/lib/berlin-time.ts` (create) | Generic Berlin wall-clock helpers: `berlinNow`, `dayLabel`. Knows nothing about check-ins. |
+| `src/lib/berlin-time.test.ts` (create) | Unit tests for the time helpers, including hostile-timezone runs. |
+| `src/lib/checkin-render.ts` (create) | Presentation for two external systems: Telegram callback encoding + message rendering, and Notion comment chunking. Pure. |
+| `src/lib/checkin-render.test.ts` (create) | Unit tests for the renderers. |
 | `src/telegram/client.ts` (create) | `TelegramClient`: `sendMessage`, `editMessageText`, `answerCallbackQuery`, `getUpdates`. Never throws. |
 | `src/telegram/client.test.ts` (create) | Recorded-`fetchImpl` tests. |
 | `src/telegram/updates.ts` (create) | `handleUpdate(update, deps)` — dispatch logic over injected repository functions. |
@@ -129,13 +133,181 @@ Delete the test comment and the throwaway page. Delete `/tmp/verify_comment.ts`.
 
 ---
 
-## Task 1: Question map and time helpers
+## Task 1: Time helpers, the question catalogue and the prompt vocabulary
+
+> **Revised 2026-08-13** after code review of the first attempt. Three changes from the original
+> task, all evidence-driven — do not "restore" the older shapes:
+> 1. The Berlin/label helpers moved to their own module. They are generic calendar plumbing that
+>    would read identically in a module about invoices, and every other module in `src/lib` is one
+>    concept plus one test file (`delivery-status.ts` 101 lines, `range.ts` 131, `creative-links.ts`
+>    118, largest 196). Leaving them here put `checkin.ts` on course for ~275 lines over four
+>    concerns.
+> 2. `previousDate` is **deleted, not moved**: `addDays(date, n)` in `src/lib/range.ts:47` already
+>    does it and is already used by four call sites. Task 11 calls `addDays(date, -1)`.
+> 3. `hourCycle: "h23"` replaces `hour12: false` + `% 24`. Measured on this runtime:
+>    `hour12: false` already resolves to `h23`, so the modulo was unreachable dead code with a
+>    three-line comment; ECMA-402 lets `hour12` override `hourCycle`, so the two cannot be combined.
+>    Under a forced `h24` cycle Berlin midnight really does format as hour `"24"` with the date
+>    already rolled over, so the hazard is real — it is now prevented at the formatter instead of
+>    patched after it.
 
 **Files:**
+- Create: `src/lib/berlin-time.ts`
+- Create: `src/lib/berlin-time.test.ts`
 - Create: `src/lib/checkin.ts`
 - Create: `src/lib/checkin.test.ts`
 
-- [ ] **Step 1: Write the failing tests**
+- [ ] **Step 1: Write the failing time-helper tests**
+
+Create `src/lib/berlin-time.test.ts`:
+
+```typescript
+import { test, expect } from "bun:test";
+import { berlinNow, dayLabel } from "./berlin-time";
+
+/** Run `fn` as if the process were in `tz`, then restore. Bun applies a mid-run TZ change at once. */
+function withTZ<T>(tz: string, fn: () => T): T {
+  const prev = process.env.TZ;
+  process.env.TZ = tz;
+  try {
+    return fn();
+  } finally {
+    process.env.TZ = prev;
+  }
+}
+
+test("converts UTC to Berlin wall clock in summer", () => {
+  // 2026-08-13 15:30Z is 17:30 CEST.
+  expect(berlinNow(new Date("2026-08-13T15:30:00Z"))).toEqual({ date: "2026-08-13", hour: 17 });
+});
+
+test("converts UTC to Berlin wall clock in winter", () => {
+  // 2026-01-13 16:30Z is 17:30 CET — an hour of offset difference from the summer case, so a
+  // hard-coded +2 cannot satisfy both tests.
+  expect(berlinNow(new Date("2026-01-13T16:30:00Z"))).toEqual({ date: "2026-01-13", hour: 17 });
+});
+
+test("reports Berlin midnight as hour 0 of the NEXT date", () => {
+  // 22:00Z in summer is 00:00 Berlin the following day. An h24 hour cycle would say "24" here and
+  // leave every `hour >= CHECKIN_HOUR` gate true all night.
+  expect(berlinNow(new Date("2026-08-12T22:00:00Z"))).toEqual({ date: "2026-08-13", hour: 0 });
+});
+
+test("does not reach the prompt hour one minute early", () => {
+  // 14:59Z summer is 16:59 Berlin: the 17:00 gate must still be shut.
+  expect(berlinNow(new Date("2026-08-13T14:59:00Z")).hour).toBe(16);
+});
+
+test("berlinNow ignores the process timezone", () => {
+  // Fails if the formatter's `timeZone: "Europe/Berlin"` is ever dropped — the sync worker's host
+  // timezone must not decide when the prompt fires.
+  const hostile = withTZ("Pacific/Kiritimati", () => berlinNow(new Date("2026-08-13T15:30:00Z")));
+  expect(hostile).toEqual({ date: "2026-08-13", hour: 17 });
+});
+
+test("dayLabel formats a date as 'Thu 13 Aug'", () => {
+  expect(dayLabel("2026-08-13")).toBe("Thu 13 Aug");
+  expect(dayLabel("2026-08-03")).toBe("Mon 03 Aug");
+  expect(dayLabel("2026-01-01")).toBe("Thu 01 Jan");
+});
+
+test("dayLabel ignores the process timezone", () => {
+  // A UTC+14 runner must not shift the label onto the next day.
+  expect(withTZ("Pacific/Kiritimati", () => dayLabel("2026-08-13"))).toBe("Thu 13 Aug");
+  expect(withTZ("Pacific/Midway", () => dayLabel("2026-08-13"))).toBe("Thu 13 Aug");
+});
+```
+
+- [ ] **Step 2: Run the tests and watch them fail**
+
+Run: `bun test src/lib/berlin-time.test.ts`
+
+Expected: FAIL — `Cannot find module './berlin-time'`.
+
+- [ ] **Step 3: Write the time helpers**
+
+Create `src/lib/berlin-time.ts`:
+
+```typescript
+/**
+ * Berlin wall-clock helpers.
+ *
+ * Deliberately NOT in `checkin.ts`: nothing here knows what a check-in is, and the next consumer
+ * will look for these beside the other date helpers rather than inside a feature module.
+ */
+
+export interface LocalNow {
+  /** Local calendar date, YYYY-MM-DD. */
+  date: string;
+  /** Local hour, 0-23. */
+  hour: number;
+}
+
+/**
+ * `hourCycle: "h23"` asks ICU for the 0-23 cycle explicitly.
+ *
+ * Do NOT swap it for `hour12: false`: ECMA-402 lets `hour12` override `hourCycle`, and an `h24`
+ * cycle renders Berlin midnight as hour "24" (measured) with the date already rolled forward, which
+ * would leave an `hour >= CHECKIN_HOUR` gate true all night.
+ */
+const BERLIN = new Intl.DateTimeFormat("en-CA", {
+  timeZone: "Europe/Berlin",
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  hourCycle: "h23",
+});
+
+const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/**
+ * Berlin wall-clock date and hour for an instant. "17:00 CET" means 17:00 local, so this follows
+ * DST: 15:00 UTC in summer, 16:00 UTC in winter.
+ *
+ * Throws on a missing part rather than returning a silent `NaN` hour. This project does not enable
+ * `noUncheckedIndexedAccess`, so a dropped field would otherwise yield `hour: NaN`, and
+ * `NaN >= CHECKIN_HOUR` is false forever — a check-in that never fires and never complains.
+ */
+export function berlinNow(at: Date): LocalNow {
+  let year: string | undefined;
+  let month: string | undefined;
+  let day: string | undefined;
+  let hour: string | undefined;
+  for (const p of BERLIN.formatToParts(at)) {
+    if (p.type === "year") year = p.value;
+    else if (p.type === "month") month = p.value;
+    else if (p.type === "day") day = p.value;
+    else if (p.type === "hour") hour = p.value;
+  }
+  if (!year || !month || !day || hour === undefined) {
+    throw new Error("berlinNow: Intl returned no Berlin date parts");
+  }
+  return { date: `${year}-${month}-${day}`, hour: Number(hour) };
+}
+
+/**
+ * "Thu 13 Aug" from a YYYY-MM-DD date, for the top of the buyer's daily Telegram message.
+ *
+ * Table lookup on UTC fields rather than a locale format: `en-GB` returns "Thu, 13 Aug" and would
+ * need its comma stripped, which buys a dependency on ICU never reordering the fields. Same approach
+ * as `shortDay` in `src/portal/mock.ts`.
+ */
+export function dayLabel(date: string): string {
+  const d = new Date(`${date}T00:00:00Z`);
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  return `${DAYS[d.getUTCDay()]} ${day} ${MONTHS[d.getUTCMonth()]}`;
+}
+```
+
+- [ ] **Step 4: Run the time-helper tests**
+
+Run: `bun test src/lib/berlin-time.test.ts`
+
+Expected: PASS, 7 tests.
+
+- [ ] **Step 5: Write the failing decision-core tests**
 
 Create `src/lib/checkin.test.ts`:
 
@@ -143,19 +315,16 @@ Create `src/lib/checkin.test.ts`:
 import { test, expect } from "bun:test";
 import {
   CHECKIN_QUESTIONS,
-  CHECKIN_STATUSES,
   questionFor,
-  berlinNow,
-  previousDate,
-  dayLabel,
+  isCheckinStatus,
   CHECKIN_HOUR,
   ESCALATION_HOUR,
 } from "./checkin";
 import { MACHINE_STATUSES } from "./delivery-status";
 
 test("every machine-owned status has a question", () => {
-  // If a sixth delivery state is ever added to the ladder, this fails instead of silently
-  // producing campaigns that are never asked about.
+  // `satisfies` already enforces this at compile time; asserted at runtime too so loosening the
+  // type does not silently produce campaigns nobody is ever asked about.
   for (const s of MACHINE_STATUSES) expect(questionFor(s)).toBeTruthy();
 });
 
@@ -170,8 +339,24 @@ test("statuses outside the check-in set are not asked", () => {
   expect(questionFor("")).toBeNull();
 });
 
+test("inherited Object members are not mistaken for statuses", () => {
+  // Statuses arrive as untrusted strings from Notion; a bare index read would hand back inherited
+  // functions and break the declared string | null contract.
+  expect(questionFor("toString")).toBeNull();
+  expect(questionFor("constructor")).toBeNull();
+  expect(questionFor("hasOwnProperty")).toBeNull();
+});
+
+test("isCheckinStatus recognises exactly the six in-scope statuses", () => {
+  expect(Object.keys(CHECKIN_QUESTIONS).every(isCheckinStatus)).toBe(true);
+  expect(Object.keys(CHECKIN_QUESTIONS)).toHaveLength(6);
+  expect(isCheckinStatus("Live")).toBe(true);
+  expect(isCheckinStatus("Not started")).toBe(false);
+  expect(isCheckinStatus(null)).toBe(false);
+});
+
 test("the status set is exactly the six agreed values", () => {
-  expect([...CHECKIN_STATUSES].sort()).toEqual(
+  expect(Object.keys(CHECKIN_QUESTIONS).sort()).toEqual(
     [
       "Ad Account Blocked",
       "Ad Account Disabled",
@@ -181,52 +366,6 @@ test("the status set is exactly the six agreed values", () => {
       "Paused",
     ].sort(),
   );
-  expect(Object.keys(CHECKIN_QUESTIONS)).toHaveLength(6);
-});
-
-test("inherited Object members are not mistaken for statuses", () => {
-  // Record<string, string> index access walks the prototype chain: without an own-property check
-  // these return functions, breaking the declared string | null contract.
-  expect(questionFor("toString")).toBeNull();
-  expect(questionFor("constructor")).toBeNull();
-  expect(questionFor("hasOwnProperty")).toBeNull();
-});
-
-test("berlinNow converts UTC to Berlin wall clock in summer", () => {
-  // 2026-08-13 15:30Z is 17:30 CEST.
-  expect(berlinNow(new Date("2026-08-13T15:30:00Z"))).toEqual({
-    date: "2026-08-13",
-    hour: 17,
-    minute: 30,
-  });
-});
-
-test("berlinNow converts UTC to Berlin wall clock in winter", () => {
-  // 2026-01-13 16:30Z is 17:30 CET — one hour of offset difference from the summer case.
-  expect(berlinNow(new Date("2026-01-13T16:30:00Z"))).toEqual({
-    date: "2026-01-13",
-    hour: 17,
-    minute: 30,
-  });
-});
-
-test("berlinNow reports local midnight as hour 0 of the NEXT date", () => {
-  // 22:00Z in summer is 00:00 Berlin on the following day. Some ICU builds render midnight as
-  // "24", which would make an hour>=17 gate true all night.
-  expect(berlinNow(new Date("2026-08-12T22:00:00Z"))).toEqual({
-    date: "2026-08-13",
-    hour: 0,
-    minute: 0,
-  });
-});
-
-test("previousDate steps back across a month boundary", () => {
-  expect(previousDate("2026-08-01")).toBe("2026-07-31");
-  expect(previousDate("2026-03-01")).toBe("2026-02-28");
-});
-
-test("dayLabel is stable regardless of the runner's timezone", () => {
-  expect(dayLabel("2026-08-13")).toBe("Thu 13 Aug");
 });
 
 test("the gate hours are the agreed ones", () => {
@@ -235,25 +374,26 @@ test("the gate hours are the agreed ones", () => {
 });
 ```
 
-- [ ] **Step 2: Run the tests and watch them fail**
+- [ ] **Step 6: Run the tests and watch them fail**
 
 Run: `bun test src/lib/checkin.test.ts`
 
 Expected: FAIL — `Cannot find module './checkin'`.
 
-- [ ] **Step 3: Write the implementation**
+- [ ] **Step 7: Write the decision core**
 
 Create `src/lib/checkin.ts`:
 
 ```typescript
 /**
- * Pure core of the daily media-buyer check-in.
+ * Pure decision core of the daily media-buyer check-in: which campaigns are asked about, who is
+ * asked, and what they are asked.
  *
- * Everything here is a pure function: the caller supplies rows, buyers and a clock, and gets back
- * plans and strings. No database, no network, no `Date.now()`. That is what makes the whole decision
- * surface — who is asked, what they are asked, how the message and the Notion comment read — testable
- * without infrastructure.
+ * No database, no network, no clock — the caller supplies rows, buyers and a time. Berlin wall-clock
+ * helpers live in `berlin-time.ts`; Telegram/Notion rendering lives in `checkin-render.ts`. The only
+ * import here is type-only, so this module has no runtime dependencies at all.
  */
+import type { MachineStatus } from "./delivery-status";
 
 /** The prompt fires at this Europe/Berlin hour. */
 export const CHECKIN_HOUR = 17;
@@ -261,102 +401,61 @@ export const CHECKIN_HOUR = 17;
 export const ESCALATION_HOUR = 9;
 
 /**
- * One question per status. Five are the machine-owned delivery states from `delivery-status.ts`; the
- * sixth, `On Boarding`, is human-owned and included on the operator's instruction.
+ * One question per status: the five machine-owned delivery states from `delivery-status.ts`, plus
+ * the human-owned `On Boarding` on the operator's instruction.
  *
- * A status absent from this map is NOT prompted (see `questionFor`). That is deliberate: a default
- * question would ask a finished engagement for a daily update.
+ * `as const satisfies Record<MachineStatus | "On Boarding", string>` earns three things a
+ * `Record<string, string>` annotation cannot: the compiler rejects a missing machine status, the
+ * catalogue cannot be mutated by a consumer (this is imported into a long-lived sync worker), and
+ * `CheckinStatus` below becomes a usable union instead of bare `string`.
+ *
+ * A status absent from this map is NOT prompted (see `questionFor`) — a default question would ask a
+ * finished engagement for a daily update.
  */
-export const CHECKIN_QUESTIONS: Record<string, string> = {
+export const CHECKIN_QUESTIONS = {
   Live: "Any changes today — budget, creatives, targeting?",
   Paused: "Why is it paused, and when does it resume?",
   "Ad Account Disabled": "What's the recovery plan — is a replacement account lined up?",
   "Ad Account Blocked": "Funding/top-up status — when does delivery resume?",
   "All ads rejected": "What's the fix — new creatives or an appeal?",
   "On Boarding": "What's still outstanding before launch?",
-};
+} as const satisfies Record<MachineStatus | "On Boarding", string>;
 
-export const CHECKIN_STATUSES: readonly string[] = Object.keys(CHECKIN_QUESTIONS);
+/** The statuses the check-in asks about. */
+export type CheckinStatus = keyof typeof CHECKIN_QUESTIONS;
+
+/** The lifecycle of one prompt; mirrored by `checkin_prompts.state` in the database. */
+export type PromptState =
+  | "pending"
+  | "awaiting_reply"
+  | "answered"
+  | "no_changes"
+  | "escalated"
+  | "unroutable";
+
+/** Narrows an untrusted board status to one the check-in asks about. */
+export function isCheckinStatus(status: string | null | undefined): status is CheckinStatus {
+  return status != null && Object.hasOwn(CHECKIN_QUESTIONS, status);
+}
 
 /** The question for a status, or null when the status is out of scope for the check-in. */
 export function questionFor(status: string | null | undefined): string | null {
-  if (!status) return null;
-  // Own-property check, not `?? null`: `Record<string, string>` index access walks the prototype
-  // chain, so "toString" or "constructor" would hand back an inherited function and break the
-  // declared `string | null` return type.
-  return Object.hasOwn(CHECKIN_QUESTIONS, status) ? CHECKIN_QUESTIONS[status] : null;
-}
-
-export interface LocalNow {
-  /** Local calendar date, YYYY-MM-DD. */
-  date: string;
-  /** Local hour, 0-23. */
-  hour: number;
-  minute: number;
-}
-
-const BERLIN_PARTS = new Intl.DateTimeFormat("en-CA", {
-  timeZone: "Europe/Berlin",
-  year: "numeric",
-  month: "2-digit",
-  day: "2-digit",
-  hour: "2-digit",
-  minute: "2-digit",
-  hour12: false,
-});
-
-/**
- * The Berlin wall-clock date and time for an instant. "17:00 CET" means 17:00 local, so this follows
- * DST: 15:00 UTC in summer, 16:00 UTC in winter.
- *
- * `hour` is taken modulo 24 because some ICU builds render local midnight as "24" under
- * `hour12: false`, which would leave an `hour >= CHECKIN_HOUR` gate true all night.
- */
-export function berlinNow(at: Date): LocalNow {
-  const parts: Record<string, string> = {};
-  for (const p of BERLIN_PARTS.formatToParts(at)) parts[p.type] = p.value;
-  return {
-    date: `${parts.year}-${parts.month}-${parts.day}`,
-    hour: Number(parts.hour) % 24,
-    minute: Number(parts.minute),
-  };
-}
-
-/** The calendar day before `date` (YYYY-MM-DD in, YYYY-MM-DD out). */
-export function previousDate(date: string): string {
-  const t = Date.parse(`${date}T12:00:00Z`) - 86_400_000;
-  return new Date(t).toISOString().slice(0, 10);
-}
-
-/** "Thu 13 Aug" — fixed to UTC noon so the label never shifts with the runner's timezone. */
-export function dayLabel(date: string): string {
-  return new Intl.DateTimeFormat("en-GB", {
-    timeZone: "UTC",
-    weekday: "short",
-    day: "2-digit",
-    month: "short",
-  })
-    .format(new Date(`${date}T12:00:00Z`))
-    .replace(",", "");
+  return isCheckinStatus(status) ? CHECKIN_QUESTIONS[status] : null;
 }
 ```
 
-- [ ] **Step 4: Run the tests and watch them pass**
+- [ ] **Step 8: Run both test files and the typecheck**
 
-Run: `bun test src/lib/checkin.test.ts`
+Run: `bun test src/lib/checkin.test.ts src/lib/berlin-time.test.ts && bunx tsc --noEmit`
 
-Expected: PASS, 11 tests. If `dayLabel` returns `Thu 13 Aug` with a comma or a different order, adjust
-the `.replace()` — do not change the expected string, the format is what appears in the buyer's
-message every day.
+Expected: PASS, 14 tests total (7 + 7); typecheck clean.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
-git add src/lib/checkin.ts src/lib/checkin.test.ts
-git commit -m "feat(checkin): question map and Berlin-local time helpers"
+git add src/lib/berlin-time.ts src/lib/berlin-time.test.ts src/lib/checkin.ts src/lib/checkin.test.ts
+git commit -m "feat(checkin): Berlin time helpers, question catalogue and prompt vocabulary"
 ```
-
----
 
 ## Task 2: The prompt planner
 
@@ -528,7 +627,7 @@ export function planPrompts(rows: CheckinBoardRow[], buyers: CheckinBuyer[]): Pl
 
 Run: `bun test src/lib/checkin.test.ts`
 
-Expected: PASS, 20 tests.
+Expected: PASS, 16 tests (7 from Task 1 plus the 9 planner tests).
 
 - [ ] **Step 5: Commit**
 
@@ -542,14 +641,20 @@ git commit -m "feat(checkin): plan one prompt per campaign per owning media buye
 ## Task 3: Message, comment and callback rendering
 
 **Files:**
-- Modify: `src/lib/checkin.ts`
-- Modify: `src/lib/checkin.test.ts`
+- Create: `src/lib/checkin-render.ts`
+- Create: `src/lib/checkin-render.test.ts`
 
 - [ ] **Step 1: Write the failing tests**
 
-Append to `src/lib/checkin.test.ts`:
+Create `src/lib/checkin-render.test.ts`:
+
+> Its own module rather than more of `checkin.ts`: these ~120 lines are presentation for two
+> different external systems — Telegram `callback_data` plus inline keyboards, and Notion `rich_text`
+> chunking — while `checkin.ts` decides who is asked what. Both stay pure, and downstream tasks only
+> change which module name they import from.
 
 ```typescript
+import { test, expect } from "bun:test";
 import {
   callbackData,
   parseCallback,
@@ -559,7 +664,7 @@ import {
   escalationText,
   NOTION_TEXT_LIMIT,
   type ListItem,
-} from "./checkin";
+} from "./checkin-render";
 
 const items: ListItem[] = [
   { promptId: 7, title: "Slots.lv", status: "Live", question: "Any changes today?", state: "pending" },
@@ -672,25 +777,27 @@ test("the escalation message groups unanswered campaigns by buyer and names bind
 
 - [ ] **Step 2: Run the tests and watch them fail**
 
-Run: `bun test src/lib/checkin.test.ts`
+Run: `bun test src/lib/checkin-render.test.ts`
 
-Expected: FAIL — the new exports do not exist.
+Expected: FAIL — `Cannot find module './checkin-render'`.
 
 - [ ] **Step 3: Write the implementation**
 
-Append to `src/lib/checkin.ts`:
+Create `src/lib/checkin-render.ts`:
 
 ```typescript
+/**
+ * Presentation for the daily check-in: the buyer's Telegram list, the force-reply prompt, the
+ * callback encoding, and the Notion comment body.
+ *
+ * Pure, like `checkin.ts`, but a separate module because it renders for two external systems rather
+ * than deciding anything. `PromptState` is imported rather than redeclared — the prompt lifecycle is
+ * core vocabulary and the database column mirrors it.
+ */
+import type { PromptState } from "./checkin";
+
 /** Notion rejects a `rich_text` item over 2000 characters. */
 export const NOTION_TEXT_LIMIT = 2000;
-
-export type PromptState =
-  | "pending"
-  | "awaiting_reply"
-  | "answered"
-  | "no_changes"
-  | "escalated"
-  | "unroutable";
 
 export type CallbackAction = "no_changes" | "update";
 
@@ -814,14 +921,15 @@ export function escalationText(
 
 - [ ] **Step 4: Run the tests and watch them pass**
 
-Run: `bun test src/lib/checkin.test.ts`
+Run: `bun test src/lib/checkin-render.test.ts`
 
-Expected: PASS, 29 tests.
+Expected: PASS, 9 tests in the new file. Then run `bun test src/lib` and confirm 23 pass overall
+(7 berlin-time + 7 checkin core + 9 render), with no pre-existing test newly broken.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/lib/checkin.ts src/lib/checkin.test.ts
+git add src/lib/checkin-render.ts src/lib/checkin-render.test.ts
 git commit -m "feat(checkin): render the daily list, force-reply prompt and Notion comment"
 ```
 
@@ -1596,14 +1704,12 @@ import { db, schema } from "@/db/client";
 import { env } from "@/lib/env";
 import { boardRows } from "@/notion/parse";
 import { TelegramClient } from "@/telegram/client";
+import { berlinNow, dayLabel } from "@/lib/berlin-time";
+import { renderList, type ListItem } from "@/lib/checkin-render";
 import {
-  berlinNow,
-  dayLabel,
   planPrompts,
-  renderList,
   type CheckinBoardRow,
   type CheckinBuyer,
-  type ListItem,
   type PromptState,
 } from "@/lib/checkin";
 import { recordServiceHealth } from "@/sync/state";
@@ -1994,7 +2100,8 @@ Expected: FAIL — `Cannot find module './updates'`.
 Create `src/telegram/updates.ts`:
 
 ```typescript
-import { forceReplyText, parseCallback, type PromptState } from "@/lib/checkin";
+import { type PromptState } from "@/lib/checkin";
+import { forceReplyText, parseCallback } from "@/lib/checkin-render";
 import type { TelegramUpdate } from "./client";
 
 /** A prompt row as the dispatcher needs it. */
@@ -2153,7 +2260,8 @@ top of the file, not beside the functions below):
 ```typescript
 import { getNotionCredentials } from "@/lib/credentials";
 import { NotionClient } from "@/notion/client";
-import { commentBody, escalationText, previousDate } from "@/lib/checkin";
+import { commentBody, escalationText } from "@/lib/checkin-render";
+import { addDays } from "@/lib/range";
 import { handleUpdate, type PromptRow, type UpdateDeps } from "@/telegram/updates";
 import { sendAlertChannelMessage } from "@/sync/alerts";
 
@@ -2358,7 +2466,7 @@ export async function flushPendingComments(): Promise<number> {
  */
 export async function escalateUnanswered(now: Date): Promise<number | null> {
   const local = berlinNow(now);
-  const date = previousDate(local.date);
+  const date = addDays(local.date, -1); // yesterday, via the shared date helper
 
   const [run] = await db
     .select()
@@ -2447,7 +2555,8 @@ import {
   flushPendingComments,
   sendDailyLists,
 } from "./jobs/checkin";
-import { berlinNow, CHECKIN_HOUR, ESCALATION_HOUR } from "@/lib/checkin";
+import { berlinNow } from "@/lib/berlin-time";
+import { CHECKIN_HOUR, ESCALATION_HOUR } from "@/lib/checkin";
 
 const HOUR_MS = 3_600_000;
 // Backfill always gets at least this much time each loop, so a slow daily full refresh can never
