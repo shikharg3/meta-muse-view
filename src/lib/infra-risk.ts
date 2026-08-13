@@ -47,8 +47,8 @@ export function redundancy(paths: number): Risk {
  * A profile is an access path only while it is active AND nothing has taken its access away.
  *
  * The set matters: Meta commonly leaves a profile flagged `active` while stripping a capability, so
- * "active" alone is not evidence of access. `video_selfie` is not blocking — see
- * PROFILE_BLOCKING_STATUSES for why.
+ * `active` alone is not evidence of access. Every other status blocks, `video_selfie` included — see
+ * PROFILE_BLOCKING_STATUSES.
  */
 export function usableProfile(statuses: readonly ProfileStatus[]): boolean {
   if (!statuses.includes("active")) return false;
