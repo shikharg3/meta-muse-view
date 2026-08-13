@@ -1,5 +1,6 @@
 import { test, expect } from "bun:test";
-import { forecastBudgetEnd } from "@/lib/budget-forecast";
+import { forecastBudgetEnd, PACE_DAYS } from "@/lib/budget-forecast";
+import type { GeoSpend } from "@/lib/geo-cell";
 import {
   sumDailyBudget,
   planRow,
@@ -23,6 +24,13 @@ import {
   type ActiveAdSet,
   statusForRow,
   AUTO_ACCOUNT_STATUS_COLUMN,
+  GEO_COLUMN,
+  AUTO_GEO_COLUMN,
+  geoSkipReason,
+  planGeo,
+  AUTO_FUNDS_COLUMN,
+  FUNDS_COLUMN,
+  BUDGET_REMAINING_COLUMN,
 } from "./notion-budget";
 import { ACCOUNT_STATUS_COLUMN, resolvePropertyKey } from "@/notion/parse";
 
@@ -201,9 +209,21 @@ test("planSpendRow follows the same live-only rule and skips unchanged values", 
   );
 });
 
-test("both auto-updated columns carry the marker the plain lookup still resolves", () => {
+test("every auto-updated column name matches what is actually on the board", () => {
+  // These are not decoration. `ensureColumn` resolves by shape and CREATES when it finds nothing, so
+  // a constant that has drifted from the board silently stops maintaining the real column and grows
+  // a duplicate beside it. That is exactly what happened to the funds column when the team renamed
+  // it, which is why its name is spelled out here rather than assumed.
   expect(AUTO_BUDGET_COLUMN).toBe("🤖 Daily Budget ($)");
   expect(AUTO_SPEND_COLUMN).toBe("🤖 Avg Daily Spend 7d ($)");
+  expect(AUTO_FUNDS_COLUMN).toBe("🤖 Ad Account Funds Remaining ($)");
+  expect(AUTO_BUDGET_REMAINING_COLUMN).toBe("🤖 Budget Remaining ($)");
+  expect(AUTO_PROJECTED_END_COLUMN).toBe("🤖 Projected End Date");
+  expect(AUTO_DESTINATION_COLUMN).toBe("🤖 Destination URL");
+  // The two remaining-money columns must stay distinguishable by shape, or one would resolve to the
+  // other's column and the job would write the contract figure into the ad-account balance.
+  expect(resolvePropertyKey([AUTO_FUNDS_COLUMN], BUDGET_REMAINING_COLUMN)).toBeNull();
+  expect(resolvePropertyKey([AUTO_BUDGET_REMAINING_COLUMN], FUNDS_COLUMN)).toBeNull();
 });
 
 test("planEndDate writes a projection only for live rows, and never rewrites the same date", () => {
@@ -446,4 +466,101 @@ test("planBudgetRemainingRow writes live rows, skips unchanged, and never touche
 
 test("the budget-remaining column carries the machine-written marker", () => {
   expect(AUTO_BUDGET_REMAINING_COLUMN).toBe("🤖 Budget Remaining ($)");
+});
+
+test("the geo column cannot collide with the human `Geo's` brief", () => {
+  // ensureColumn resolves by keyShape and RENAMES what it finds. keyShape strips punctuation and the
+  // emoji, so keyShape("Geo's") === keyShape("🤖 Geo's") — passing "Geo's" would rename the team's
+  // brief column and begin overwriting 79 rows of prose that no code can regenerate.
+  expect(resolvePropertyKey(["Geo's", "Campaign"], GEO_COLUMN)).toBeNull();
+  expect(resolvePropertyKey(["Geo's", "Campaign"], AUTO_GEO_COLUMN)).toBeNull();
+  // It must still find its own column once the marker has been stamped on it.
+  expect(resolvePropertyKey([AUTO_GEO_COLUMN], GEO_COLUMN)).toBe(AUTO_GEO_COLUMN);
+  // Pinned as a literal like every other machine column: once the board carries this column, a
+  // rename that still avoids the collision would silently orphan it. The `14d` is not decoration —
+  // it names the window `paceWindow()` measures, so the two must move together.
+  expect(AUTO_GEO_COLUMN).toBe("🤖 Geo Delivered 14d");
+  expect(GEO_COLUMN).toContain(String(PACE_DAYS));
+});
+
+test("geo skips what it cannot attribute, but never for currency", () => {
+  const ok = { ambiguous: false, accountIds: ["act_1"], syncedAccountIds: ["act_1"] };
+  expect(geoSkipReason(ok)).toBeNull();
+  expect(geoSkipReason({ ...ok, ambiguous: true })).toBe(
+    "campaigns on a shared account could not be split by name",
+  );
+  expect(geoSkipReason({ ambiguous: false, accountIds: [], syncedAccountIds: [] })).toBe(
+    "no ad accounts on this row",
+  );
+  expect(geoSkipReason({ ...ok, syncedAccountIds: [] })).toBe(
+    "row's ad accounts are not visible to the Meta token",
+  );
+  // The dollar columns refuse a non-USD row because they sum money across accounts. This cascade
+  // takes no currency argument at all: a share needs no FX rate, so a EUR row still gets a geo cell.
+});
+
+const usOnly: GeoSpend[] = [{ type: "country", value: "US", spend: 1000 }];
+
+test("the geo cell is written for live rows and cleared when nothing delivered", () => {
+  expect(
+    planGeo({ status: "Live", current: "", rows: usOnly, windowSpend: 1000, skip: null }),
+  ).toEqual({
+    text: "US 100%",
+    skip: null,
+  });
+  expect(
+    planGeo({ status: "Live", current: "US 100%", rows: usOnly, windowSpend: 1000, skip: null }),
+  ).toEqual({ text: null, skip: "unchanged" });
+  // Live, nothing delivered, a stale value on the board: clear it. A leftover geo reads as "we are
+  // running here" when nothing is.
+  expect(
+    planGeo({ status: "Live", current: "AR 100%", rows: [], windowSpend: 0, skip: null }),
+  ).toEqual({
+    text: "",
+    skip: null,
+  });
+  // Nothing delivered and nothing recorded: leave it alone.
+  expect(planGeo({ status: "Live", current: "", rows: [], windowSpend: 0, skip: null })).toEqual({
+    text: null,
+    skip: "nothing delivered in the window",
+  });
+});
+
+test("spend with no breakdown rows behind it is a data gap, and must never blank the cell", () => {
+  // Breakdowns refresh on the daily `full` pass (`sync/cycle.ts`); insights_daily refreshes hourly.
+  // A row that spent but has no country rows yet is mid-lag, not geo-less. Clearing here would
+  // report a sync fault as a geo fact on a row delivering perfectly well.
+  expect(
+    planGeo({ status: "Live", current: "US 100%", rows: [], windowSpend: 420, skip: null }),
+  ).toEqual({ text: null, skip: "breakdown data not caught up" });
+});
+
+test("a row too new for a pace window is skipped, not cleared", () => {
+  // `rows: usOnly`, not an empty set: with no rows this passes even if the guard is moved below the
+  // geoCell call, because the empty-cell path reaches the same place. Breakdown rows present is the
+  // case only this guard answers — a two-day-old engagement must not get a cell labelled `14d`.
+  expect(
+    planGeo({ status: "Live", current: "US 100%", rows: usOnly, windowSpend: null, skip: null }),
+  ).toEqual({ text: null, skip: "engagement too new to measure" });
+  // The caller's reason outranks the missing window, so these two guards cannot be swapped.
+  expect(
+    planGeo({
+      status: "Live",
+      current: "US 100%",
+      rows: usOnly,
+      windowSpend: null,
+      skip: "no ad accounts on this row",
+    }),
+  ).toEqual({ text: null, skip: "no ad accounts on this row" });
+});
+
+test("liveness outranks every other geo skip reason", () => {
+  const caller = "no ad accounts on this row";
+  expect(
+    planGeo({ status: "Live", current: "", rows: usOnly, windowSpend: 1000, skip: caller }),
+  ).toEqual({ text: null, skip: caller });
+  for (const status of ["Full Budget Finished", "Not started", null])
+    expect(
+      planGeo({ status, current: "AR 100%", rows: usOnly, windowSpend: 1000, skip: caller }),
+    ).toEqual({ text: null, skip: "not a live engagement" });
 });
