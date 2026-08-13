@@ -10,6 +10,8 @@ import {
   boolean,
   primaryKey,
   index,
+  serial,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
 
 export const accounts = pgTable("accounts", {
@@ -616,3 +618,75 @@ export const infraStatusEvents = pgTable(
   },
   (t) => [index("infra_status_events_entity_idx").on(t.kind, t.entityId, t.at)],
 );
+
+// Telegram chats the bot has seen, so an admin can bind one to a media buyer in Settings. Discovery
+// only: being here grants nothing. Chat ids are text — Telegram ids exceed 32-bit.
+export const telegramChats = pgTable("telegram_chats", {
+  chatId: text("chat_id").primaryKey(),
+  username: text("username"),
+  firstName: text("first_name"),
+  firstSeenAt: timestamp("first_seen_at", { withTimezone: true }).notNull().defaultNow(),
+  lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// Membership here is what makes someone a media buyer: the daily check-in prompts exactly these
+// people, matched against the Notion `Owners` people property by PERSON ID (display names drift).
+// A third buyer is therefore a Settings action, not a deploy.
+export const mediaBuyers = pgTable("media_buyers", {
+  notionPersonId: text("notion_person_id").primaryKey(),
+  displayName: text("display_name").notNull(),
+  telegramChatId: text("telegram_chat_id"), // null = unroutable; prompts are still recorded
+  active: boolean("active").notNull().default(true),
+  boundBy: text("bound_by"),
+  boundAt: timestamp("bound_at", { withTimezone: true }),
+});
+
+// One row per (local date, board page, buyer). The unique index is what makes the 17:00 job
+// idempotent: a worker restart inside the same minute cannot double-prompt.
+export const checkinPrompts = pgTable(
+  "checkin_prompts",
+  {
+    id: serial("id").primaryKey(),
+    promptDate: date("prompt_date").notNull(),
+    notionPageId: text("notion_page_id").notNull(),
+    campaignTitle: text("campaign_title").notNull(),
+    status: text("status").notNull(), // snapshotted: the status at prompt time
+    buyerPersonId: text("buyer_person_id").notNull(),
+    chatId: text("chat_id"),
+    question: text("question").notNull(), // snapshotted, so re-wording never rewrites history
+    listMessageId: text("list_message_id"), // the buyer's daily list, for re-rendering
+    replyMessageId: text("reply_message_id"), // the force_reply message an answer replies to
+    state: text("state").notNull().default("pending"),
+    answerText: text("answer_text"), // stored BEFORE the Notion write, so an answer is never lost
+    notionCommentId: text("notion_comment_id"), // null while state=answered means a retry is owed
+    note: text("note"), // last error (send failure, comment failure)
+    commentAttempts: integer("comment_attempts").notNull().default(0), // stops an unwritable comment retrying forever
+    answeredAt: timestamp("answered_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("checkin_prompts_day_page_buyer_idx").on(
+      t.promptDate,
+      t.notionPageId,
+      t.buyerPersonId,
+    ),
+    index("checkin_prompts_reply_idx").on(t.chatId, t.replyMessageId),
+    index("checkin_prompts_state_idx").on(t.state),
+  ],
+);
+
+// Makes both time gates idempotent. Without it the 17:00 gate would re-plan every poll iteration on
+// a day with zero in-scope rows, because "no prompts exist" is indistinguishable from "not planned".
+export const checkinRuns = pgTable("checkin_runs", {
+  runDate: date("run_date").primaryKey(),
+  plannedAt: timestamp("planned_at", { withTimezone: true }),
+  promptsCreated: integer("prompts_created").notNull().default(0),
+  escalatedAt: timestamp("escalated_at", { withTimezone: true }),
+});
+
+// The getUpdates cursor. `sync_state` is keyed per ad account and cannot hold this.
+export const telegramState = pgTable("telegram_state", {
+  id: text("id").primaryKey().default("singleton"),
+  updateOffset: bigint("update_offset", { mode: "number" }),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
