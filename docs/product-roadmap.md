@@ -177,6 +177,31 @@ agent can reach.
 (`luckywhale`/`luckywhalecasino.com`, `play quack`/`playquack.com`) before granting either brand a
 login, or the login shows half its spend.
 
+### Shipped — Daily media-buyer check-in (2026-08-13)
+
+Added after the §3 triage on the operator's request, built and deployed the same day. At 17:00
+Europe/Berlin a Telegram bot asks each media buyer one status-appropriate question per campaign they
+own whose `🤖 Account Status` is `Live`, `Paused`, `Ad Account Disabled`, `Ad Account Blocked`,
+`All ads rejected` or `On Boarding`; a "No changes" button writes nothing, any typed reply becomes a
+comment on that campaign's Notion card, and anything unanswered escalates to the shared alert channel
+at 09:00 the next morning.
+
+**This is not a reversal of fork K.** Idea 8 (the buyer digest) stays rejected: this pushes no
+performance figures to Telegram. It is a workflow prompt that collects human context and writes it
+back to Notion — the opposite direction of travel from a metrics digest.
+
+Design: `docs/superpowers/specs/2026-08-13-media-buyer-checkin-design.md`.
+Plan: `docs/superpowers/plans/2026-08-13-media-buyer-checkin.md` (carries `> Corrected …` blocks
+recording ~30 defects found while building it — read those before re-running any task).
+
+Verified on production data 2026-08-13: 92 board rows, 63 carrying owner ids, **16 prompts — Shikhar
+9, Vlad 7** — matching the board probe that scoped the feature. The worker loop is live in
+`meta-sync`; `checkin_runs` shows the day claimed and `service_health.checkin` reports honestly.
+
+**Outstanding operator step:** Vlad and Shikhar must each send `/start` to the bot once, then an admin
+binds them in Settings → "Daily check-in · media buyers". Until then every prompt is recorded
+`unroutable` and the 09:00 escalation names the missing binding.
+
 ### Cycle 2 — signals on data already synced
 
 | #      | Item                                     | Why it is actionable                                                                                                                                                                                                                              | Size |
