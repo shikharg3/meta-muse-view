@@ -86,17 +86,23 @@ export interface PlannedPrompt {
 /**
  * One prompt per (row, media-buyer owner) for rows whose status is in scope.
  *
- * Rows are de-duplicated by page id: the same board page can appear in more than one client
- * snapshot, and a duplicate would write two comments for one answer. An unbound buyer is still
- * planned (with `chatId: null`) so the escalation can name the missing binding instead of the row
- * disappearing silently.
+ * Prompts are de-duplicated per (page, buyer), NOT per page: the same board page can appear in more
+ * than one client snapshot, and a duplicate would write two comments for one answer. Keying on the
+ * page alone would instead collapse a multi-owner row into a single prompt and silently drop a
+ * buyer's question. This mirrors the `checkin_prompts` unique index
+ * `(prompt_date, notion_page_id, buyer_person_id)`, minus the date.
+ *
+ * An unbound buyer is still planned (with `chatId: null`) so the escalation can name the missing
+ * binding instead of the row disappearing silently.
  */
 export function planPrompts(rows: CheckinBoardRow[], buyers: CheckinBuyer[]): PlannedPrompt[] {
   const byPerson = new Map(buyers.filter((b) => b.active).map((b) => [b.personId, b]));
   const seen = new Set<string>();
   const out: PlannedPrompt[] = [];
 
-  const ordered = [...rows].sort((a, b) => a.title.localeCompare(b.title));
+  // Collation pinned to "en": bare `localeCompare` follows the ambient LANG/ICU build, so the
+  // droplet and a dev machine could order the same board differently.
+  const ordered = [...rows].sort((a, b) => a.title.localeCompare(b.title, "en"));
   for (const row of ordered) {
     // Narrow rather than lookup-then-null-check: this is what lets `PlannedPrompt.status` be the
     // `CheckinStatus` union instead of bare `string`, all the way through to the database write.

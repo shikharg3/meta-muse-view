@@ -5,6 +5,9 @@ import {
   isCheckinStatus,
   CHECKIN_HOUR,
   ESCALATION_HOUR,
+  planPrompts,
+  type CheckinBoardRow,
+  type CheckinBuyer,
 } from "./checkin";
 import { MACHINE_STATUSES } from "./delivery-status";
 
@@ -58,8 +61,6 @@ test("the gate hours are the agreed ones", () => {
   expect(CHECKIN_HOUR).toBe(17);
   expect(ESCALATION_HOUR).toBe(9);
 });
-
-import { planPrompts, type CheckinBoardRow, type CheckinBuyer } from "./checkin";
 
 const VLAD = "2cbd872b-594c-8119-9649-0002845d8d9c";
 const SHIKHAR = "254d872b-594c-8154-9479-000271904e5b";
@@ -126,8 +127,12 @@ test("a buyer with no bound chat is still planned, with a null chat", () => {
 
 test("the same page listed twice yields one prompt per buyer", () => {
   // A page can appear under more than one client snapshot; a duplicate prompt would double-comment.
-  const plans = planPrompts([row(), row()], buyers);
-  expect(plans).toHaveLength(1);
+  // Two owners, so this also pins the `:${ownerId}` half of the key: a dedupe keyed on page id
+  // alone would collapse the two buyers into one prompt and silently drop a buyer's question.
+  const dupe = { pageId: "p1", ownerIds: [SHIKHAR, VLAD] };
+  const plans = planPrompts([row(dupe), row(dupe)], buyers);
+  expect(plans).toHaveLength(2);
+  expect(plans.map((p) => p.buyerPersonId).sort()).toEqual([SHIKHAR, VLAD].sort());
 });
 
 test("prompts are ordered by campaign title so the message is stable", () => {
