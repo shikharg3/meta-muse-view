@@ -1,5 +1,6 @@
 import { test, expect } from "bun:test";
 import { forecastBudgetEnd } from "@/lib/budget-forecast";
+import type { GeoSpend } from "@/lib/geo-cell";
 import {
   sumDailyBudget,
   planRow,
@@ -26,6 +27,7 @@ import {
   GEO_COLUMN,
   AUTO_GEO_COLUMN,
   geoSkipReason,
+  planGeo,
 } from "./notion-budget";
 import { ACCOUNT_STATUS_COLUMN, resolvePropertyKey } from "@/notion/parse";
 
@@ -475,4 +477,57 @@ test("geo skips what it cannot attribute, but never for currency", () => {
   );
   // The dollar columns refuse a non-USD row because they sum money across accounts. This cascade
   // takes no currency argument at all: a share needs no FX rate, so a EUR row still gets a geo cell.
+});
+
+const usOnly: GeoSpend[] = [{ type: "country", value: "US", spend: 1000 }];
+
+test("the geo cell is written for live rows and cleared when nothing delivered", () => {
+  expect(
+    planGeo({ status: "Live", current: "", rows: usOnly, windowSpend: 1000, skip: null }),
+  ).toEqual({
+    text: "US 100%",
+    skip: null,
+  });
+  expect(
+    planGeo({ status: "Live", current: "US 100%", rows: usOnly, windowSpend: 1000, skip: null }),
+  ).toEqual({ text: null, skip: "unchanged" });
+  // Live, nothing delivered, a stale value on the board: clear it. A leftover geo reads as "we are
+  // running here" when nothing is.
+  expect(
+    planGeo({ status: "Live", current: "AR 100%", rows: [], windowSpend: 0, skip: null }),
+  ).toEqual({
+    text: "",
+    skip: null,
+  });
+  // Nothing delivered and nothing recorded: leave it alone.
+  expect(planGeo({ status: "Live", current: "", rows: [], windowSpend: 0, skip: null })).toEqual({
+    text: null,
+    skip: "nothing delivered in the window",
+  });
+});
+
+test("spend with no breakdown rows behind it is a data gap, and must never blank the cell", () => {
+  // Breakdowns refresh on the daily `full` pass (`sync/cycle.ts`); insights_daily refreshes hourly.
+  // A row that spent but has no country rows yet is mid-lag, not geo-less. Clearing here would
+  // report a sync fault as a geo fact on a row delivering perfectly well.
+  expect(
+    planGeo({ status: "Live", current: "US 100%", rows: [], windowSpend: 420, skip: null }),
+  ).toEqual({ text: null, skip: "breakdown data not caught up" });
+});
+
+test("a row too new for a pace window is skipped, not cleared", () => {
+  expect(
+    planGeo({ status: "Live", current: "US 100%", rows: [], windowSpend: null, skip: null }),
+  ).toEqual({ text: null, skip: "engagement too new to measure" });
+});
+
+test("liveness outranks every other geo skip reason", () => {
+  const caller = "no ad accounts on this row";
+  expect(
+    planGeo({ status: "Live", current: "", rows: usOnly, windowSpend: 1000, skip: caller }),
+  ).toEqual({ text: null, skip: caller });
+  for (const status of ["Full Budget Finished", "Not started", null])
+    expect(
+      planGeo({ status, current: "AR 100%", rows: usOnly, windowSpend: 1000, skip: caller }),
+    ).toEqual({ text: null, skip: "not a live engagement" });
 });

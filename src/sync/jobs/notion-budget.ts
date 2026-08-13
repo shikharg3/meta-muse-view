@@ -31,6 +31,7 @@ import { addDays } from "@/lib/range";
 import { effectiveAccountIds } from "./clients";
 import { forecastBudgetEnd, paceWindow, PACE_DAYS } from "@/lib/budget-forecast";
 import { clickDestinations, groupByLandingPage } from "@/lib/creative-links";
+import { geoCell, type GeoSpend } from "@/lib/geo-cell";
 
 /**
  * Maintain three auto-updated columns on the Notion campaigns board: the daily budget that can
@@ -580,6 +581,42 @@ export function geoSkipReason(input: {
   if (accountIds.length === 0) return "no ad accounts on this row";
   if (syncedAccountIds.length === 0) return "row's ad accounts are not visible to the Meta token";
   return null;
+}
+
+/**
+ * The geo cell for one row: where its delivered spend actually landed.
+ *
+ * Non-live rows are never written, like every other machine column - their accounts get recycled and
+ * the recorded value is history. A live row with nothing delivered has its cell cleared, for the
+ * reason `planDestinations` clears.
+ *
+ * The case that must NOT clear is spend in the window with no breakdown rows behind it. Breakdowns
+ * refresh on the daily `full` pass only (`sync/cycle.ts`) while `insights_daily` refreshes hourly, so
+ * blanking there reports a sync lag as a geo fact on a row that is delivering fine. `windowSpend` is
+ * what separates the two, and it is null when there is no window to measure over at all.
+ */
+export function planGeo(input: {
+  status: string | null;
+  current: string;
+  rows: GeoSpend[];
+  /** Spend over the same window and the same campaigns, from `insights_daily`. Null = no window. */
+  windowSpend: number | null;
+  /** Why the row cannot be derived, from `geoSkipReason`; null when it can. */
+  skip: string | null;
+}): TextPlan {
+  const { status, current, rows, windowSpend, skip } = input;
+  if (notLive(status)) return { text: null, skip: "not a live engagement" };
+  if (skip) return { text: null, skip };
+  if (windowSpend === null) return { text: null, skip: "engagement too new to measure" };
+  const text = geoCell(rows);
+  if (!text) {
+    if (windowSpend > 0) return { text: null, skip: "breakdown data not caught up" };
+    return current.trim()
+      ? { text: "", skip: null }
+      : { text: null, skip: "nothing delivered in the window" };
+  }
+  if (text === current.trim()) return { text: null, skip: "unchanged" };
+  return { text, skip: null };
 }
 
 /** Read a page's rich-text cell by column id, flattened to plain text. */
