@@ -2735,6 +2735,26 @@ git commit -m "feat(checkin): poll updates, write comments with retries, escalat
 
 ## Task 12: Wire the independent worker loop
 
+> **Corrected 2026-08-13 during implementation.** The loop below relies on `pollTelegramOnce`
+> long-polling for 30 s to pace itself. **It does not, in the state this feature ships in.** With no
+> `TELEGRAM_BOT_TOKEN` bound, `telegram()` returns null and `pollTelegramOnce` returns `0`
+> immediately, so the loop becomes a busy-wait braked only by network latency — measured at **9
+> iterations in 20 s (~27/min against an intended 2)**, versus exactly 1 per 30 s once a floor is
+> added. A failing `getUpdates` returns nearly as fast, so a revoked token does the same. Token-less
+> is the DEFAULT first-deploy state, not an edge case: nobody can bind a chat until an admin has set
+> the token and a buyer has sent `/start`.
+>
+> Add an explicit floor after the try/catch, matching `POLL_TIMEOUT_SEC` in `sync/jobs/checkin.ts`:
+>
+> ```typescript
+> const CHECKIN_INTERVAL_MS = 30_000;
+> // …after the try/catch:
+> const rest = startedAt + CHECKIN_INTERVAL_MS - Date.now();
+> if (rest > 0) await sleep(rest);
+> ```
+>
+> It costs nothing on the healthy path, where the long-poll has already spent the budget.
+
 **Files:**
 - Modify: `src/sync/worker.ts`
 
