@@ -174,6 +174,17 @@ the trust surface — not analytics.
   approval-based auth with `superadmin|admin|member`, pacing forecast.
 - **Missing:** the `client` role, the scope-grant join table, and a scope boundary. Every server fn
   queries agency-wide today.
+- **Shipped 2026-08-13 — the UI, on mock data.** Five pages at
+  [`/portal`](https://analytics.madsmonitor.com/portal): overview, campaigns (with audiences),
+  creative approval, self-serve CSV/PDF export, and a client sign-in screen. Everything renders from
+  `src/portal/mock.ts` — deterministic generated figures, no server fn, no database — so the look
+  can be agreed while the decisions below are still open, and a leak is structurally impossible. The
+  route group is exempt from the auth gate for exactly that reason; that exemption comes out the day
+  it reads real data. Two invariants are already built into the UI because they shape it: spend is
+  always the client-facing figure (no raw-spend formatter exists) and every name is a presentation
+  alias in client language. `deploy/portal.madsmonitor.com.conf` serves it on its own hostname and
+  bounces internal paths back to `/portal`; it needs a `portal.madsmonitor.com` A record plus
+  `certbot --nginx` to go live.
 
 **Identity: explicit scope grants.** Decided 2026-08-13 in preference to one login per `clients.id`.
 Measured shape as of that date: 55 live clients, one row per brand, multi-account normal (up to 22
