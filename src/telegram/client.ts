@@ -85,7 +85,10 @@ export class TelegramClient {
       // to a lie about a shape we never checked. `?? {}` covers both an unparseable body (a proxy's
       // HTML 502) and a literal `null` payload, either of which would otherwise fault on `.ok`.
       const body = ((await res.json().catch(() => null)) ?? {}) as ApiEnvelope;
-      if (!res.ok || body.ok === false) {
+      // Success must be stated, not merely un-denied: a truncated long-poll body leaves HTTP 200
+      // with nothing parseable, and treating that as a send that worked would record a prompt as
+      // delivered with no message id and nothing to retry.
+      if (!res.ok || body.ok !== true) {
         return {
           ok: false,
           error: `Telegram ${res.status}: ${body.description ?? "request failed"}`,

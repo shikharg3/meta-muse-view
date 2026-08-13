@@ -3,6 +3,8 @@ import { TelegramClient } from "./client";
 
 interface Call {
   url: string;
+  method: string;
+  headers: Record<string, string>;
   body: unknown;
 }
 
@@ -10,7 +12,12 @@ interface Call {
 function recorder(responses: { status?: number; body: unknown }[]) {
   const calls: Call[] = [];
   const impl = (async (url: string | URL | Request, init?: RequestInit) => {
-    calls.push({ url: String(url), body: init?.body ? JSON.parse(String(init.body)) : undefined });
+    calls.push({
+      url: String(url),
+      method: init?.method ?? "GET",
+      headers: Object.fromEntries(new Headers(init?.headers)),
+      body: init?.body ? JSON.parse(String(init.body)) : undefined,
+    });
     const r = responses[calls.length - 1] ?? { body: { ok: true, result: {} } };
     return new Response(JSON.stringify(r.body), {
       status: r.status ?? 200,
@@ -28,11 +35,24 @@ test("sendMessage posts the text and returns the new message id", async () => {
 
   expect(res).toEqual({ ok: true, messageId: 42 });
   expect(calls[0].url).toBe("https://api.telegram.org/botTOK/sendMessage");
+  // A body-carrying GET is rejected outright by real fetch, and Telegram ignores a payload it was
+  // not told to read as JSON.
+  expect(calls[0].method).toBe("POST");
+  expect(calls[0].headers["content-type"]).toBe("application/json");
   expect(calls[0].body).toEqual({
     chat_id: "111",
     text: "hello",
     disable_web_page_preview: true,
   });
+});
+
+test("sendMessage ignores a non-numeric message_id", async () => {
+  const { impl } = recorder([{ body: { ok: true, result: { message_id: "42" } } }]);
+  const tg = new TelegramClient("TOK", impl);
+
+  // Task 9 persists this as list_message_id and Task 10 matches it against a numeric
+  // reply_to_message.message_id, so a string here must not be passed through.
+  expect(await tg.sendMessage({ chatId: "111", text: "hi" })).toEqual({ ok: true });
 });
 
 test("sendMessage attaches an inline keyboard when given one", async () => {
@@ -185,6 +205,35 @@ test("a null JSON body is returned as an error, never thrown", async () => {
   });
 });
 
+// The realistic one: a truncated or aborted body on the 30s long-poll leaves res.status at 200
+// while json() rejects. Success must be stated by the envelope, not assumed from the status, or
+// Task 9 records a prompt as sent with no list_message_id and nothing ever retries it.
+test("an unparseable body on a 200 is a failure, not a silent success", async () => {
+  const impl = (async () =>
+    new Response('{"ok":true,"resu', {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    })) as unknown as typeof fetch;
+  const tg = new TelegramClient("TOK", impl);
+
+  expect(await tg.sendMessage({ chatId: "1", text: "x" })).toEqual({
+    ok: false,
+    error: "Telegram 200: request failed",
+  });
+});
+
+// And the converse: the HTTP status is authoritative, so a gateway serving a stale ok:true body
+// under a 5xx is still a failure.
+test("a failing status wins over a body claiming ok", async () => {
+  const { impl } = recorder([{ status: 503, body: { ok: true, result: { message_id: 9 } } }]);
+  const tg = new TelegramClient("TOK", impl);
+
+  expect(await tg.sendMessage({ chatId: "1", text: "x" })).toEqual({
+    ok: false,
+    error: "Telegram 503: request failed",
+  });
+});
+
 test("getUpdates passes the offset and long-poll timeout and returns updates", async () => {
   const { calls, impl } = recorder([
     {
@@ -222,12 +271,19 @@ test("getUpdates omits the offset when there is none yet", async () => {
 });
 
 // The caller iterates `updates` directly, so a malformed success envelope must not hand it a
-// non-array to loop over — that would throw one frame up and defeat the never-throw guarantee.
+// non-array to loop over: an object throws "not iterable" one frame up and a string quietly
+// iterates into characters — both defeat the never-throw guarantee at the caller.
 test("getUpdates yields an empty list when the result is not a list", async () => {
-  const { impl } = recorder([{ body: { ok: true, result: null } }]);
+  const { impl } = recorder([
+    { body: { ok: true, result: { not: "a list" } } },
+    { body: { ok: true, result: "nope" } },
+    { body: { ok: true, result: null } },
+  ]);
   const tg = new TelegramClient("TOK", impl);
 
-  expect(await tg.getUpdates({ offset: 1, timeoutSec: 30 })).toEqual({ ok: true, updates: [] });
+  for (let i = 0; i < 3; i++) {
+    expect(await tg.getUpdates({ offset: 1, timeoutSec: 30 })).toEqual({ ok: true, updates: [] });
+  }
 });
 
 // The polling loop destructures `updates` on every tick, so it must be an array even on failure.
