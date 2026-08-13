@@ -17,10 +17,23 @@
 - **Every test THIS PLAN adds is pure-unit:** pure functions, or an injected `fetchImpl`. Never write
   a new test that imports `@/db/client` — there is no test database provisioned for this feature.
 - **`bun test` is NOT a clean gate on this repo.** Measured 2026-08-13: some pre-existing tests hit
-  the real Postgres and are flaky, notably `setUserPassword rotates the password` in
-  `src/lib/auth/users.test.ts` (5 s timeout) and a `saveCredentials` case. A baseline run gave
-  126 pass / 1 fail, and a second gave 125 / 2, with no code change between them. Always compare
-  against a baseline you took yourself rather than expecting zero failures.
+  the real Postgres and are flaky. Known members of that set, all verified pre-existing by restoring
+  the `HEAD` version of the file and re-running:
+  - `src/lib/auth/users.test.ts` — `setUserPassword rotates the password` (5 s timeout)
+  - a `saveCredentials` case
+  - `src/sync/jobs/clients.test.ts` — imports `@/db/client`, runs `truncate table clients cascade` in
+    `beforeEach`; 2 of its 4 tests time out ("a client that leaves the board is retained and marked
+    removedAt", "a re-appearing client is un-marked"). **Task 14 must not gate on this file.**
+
+  **Root cause, measured 2026-08-13 — environmental, not a code defect.** Every DB-backed test runs
+  against the droplet's Postgres over an ssh tunnel from Windows. `src/db/schema.test.ts` (one
+  truncate, one insert, one select — the most trivial DB test in the repo) takes **3.84 s**, i.e. 77%
+  of bun's 5000 ms default timeout. Anything doing `truncate ... cascade` plus multi-row fixtures
+  therefore blows the timeout on round-trip latency alone. Do NOT "fix" these by rewriting the tests;
+  they pass against a local database.
+
+  A baseline run gave 126 pass / 1 fail, and a second gave 125 / 2, with no code change between them.
+  Always compare against a baseline you took yourself rather than expecting zero failures.
 - Run a single test file with `bun test <path>`; run this feature's own files with
   `bun test src/lib/checkin.test.ts src/lib/berlin-time.test.ts src/lib/checkin-render.test.ts`.
 - The project formatter is authoritative over the code blocks in this plan: `printWidth` is 100, and
@@ -3043,17 +3056,32 @@ git push droplet feat/meta-integration
 git push madsmonitor
 ```
 
-- [ ] **Step 3: Migrate and deploy**
+- [ ] **Step 3: Deploy (no schema step)**
 
 ```bash
 ssh -i C:/Users/shikh/.ssh/id_ed25519 root@159.65.110.111 \
   'cd /opt/meta-dashboard && git pull origin feat/meta-integration \
-   && set -a && . ./.env && set +a && bun run db:push \
    && bun run build && systemctl restart meta-web meta-sync'
 ```
 
-Expected: migration applies five tables plus `comment_attempts`; build succeeds; both services
-restart.
+Expected: build succeeds; both services restart.
+
+**Deliberately no `db:push` here.** The five tables were applied in Task 4, and this project has one
+shared Postgres (local dev reaches it through an ssh tunnel on 127.0.0.1:5432), so there is nothing
+left to apply. More importantly, **`bun run db:push` is not safe to run unattended on this repo** —
+measured 2026-08-13, and it predates this feature:
+
+> Alongside any additive change, drizzle also proposes
+> `ALTER TABLE insights_breakdown_daily DROP CONSTRAINT ... ` plus a re-`ADD` under a different name.
+> The composite `primaryKey()` at `src/db/schema.ts:183` has no explicit `name:`, so drizzle wants a
+> 79-character constraint name that Postgres truncates back to the same 63 characters. Drizzle
+> therefore sees a permanent diff and re-proposes the rename on every push — rebuilding the primary
+> key of a **458,423-row** table for no gain.
+
+Fixing that means giving the constraint an explicit short name, which is itself a rename on a large
+table: it needs its own owner and a deliberate window, and it is out of scope here. Until then, apply
+additive DDL explicitly (drizzle's own generated statements, in one transaction) rather than
+confirming a push.
 
 - [ ] **Step 4: Confirm the loop started**
 
