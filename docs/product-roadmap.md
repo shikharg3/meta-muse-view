@@ -28,6 +28,13 @@ boundary is not re-crossed by a future proposal: everything on the Hetzner box, 
 Telegram bot and its Telethon session, the Meta Ads Uploader, fbtools, n8n, WatchTower, the VA task
 manager and the finance app.
 
+**Building a capability natively is not the same as integrating.** Recorded 2026-08-13 so the
+distinction is not lost: the boundary forbids reading, writing or syncing another agency's systems. It
+does not forbid MetaConsole from having a feature that a PetalPixel project happens to also have. The
+infrastructure registry (§4, Track N) is the first case — it re-implements WatchTower's *functionality* in DOT's
+own Postgres with no network path to Hetzner, no Firebase, and no records copied. Track G below remains
+dropped: that track was reconciliation *against WatchTower's data*, which is still forbidden.
+
 Consequences that shape every track below:
 
 - DOT infrastructure is **one 3 GB droplet** (116 GB disk, 108 GB free) with no redundancy and no
@@ -117,6 +124,7 @@ Track B is on hold (§2).
 | **K — Interface direction (fork)** | **Resolved: dashboard-first.** Telegram stays exception-driven alerts only. Idea 8 (buyer digest) **rejected** — no scheduled message. Idea 20 (agent write actions) **rejected** — writes against live ad accounts with no undo, on top of a deliberately fuzzy `resolveClient()`. |
 | **L — Breadth vs depth (fork)** | **Resolved: depth on Meta.** Idea 28 (Google/TikTok/Kwai) rejected. |
 | **M — Productisation** | **Rejected** as premature; depends on A's multi-tenancy and on B, which is on hold. |
+| **N — Infrastructure registry** | **In, added 2026-08-13** after the §3 triage, on the operator's request. Native registry of profiles → BMs → ad accounts, plus pixels and pages, with a redundancy risk map. Operator-owned, no sync writes, admin-only. Not a revival of G — see §0 and §4 N. |
 
 Two client-facing policies were also settled:
 
@@ -132,8 +140,12 @@ Two client-facing policies were also settled:
 
 ## 3. Approved build list
 
-Eight items, in build order. Nothing else is cleared to start. Sizes are relative, not estimates in
+Nine items, in build order. Nothing else is cleared to start. Sizes are relative, not estimates in
 days; each still needs its own design → plan cycle.
+
+**Amended 2026-08-13:** item **N1** was added after the triage on the operator's request. It is
+independent of Track A — different tables, different routes, different sidebar group — so it runs
+alongside cycle 1 on its own branch rather than displacing anything.
 
 ### Cycle 1 — Track A foundation
 
@@ -160,6 +172,12 @@ login, or the login shows half its spend.
 | **H1** | **Blocked-spend signal** (idea 29) | Configured vs deliverable budget per client: how much intended daily spend is stopped by disabled or unfunded accounts. `canDeliver()` already computes the input; `deriveStatus()` already classifies the account states. | S |
 | **H2** | **Dayparting** (idea 12) | 99,603 hourly rows across both timezone framings, fresh to today. Per-geo hour-of-day view and "budget burns out before the peak hour". **Account + campaign level only** — per-ad dayparting would need an ingestion change and is not in scope. | M |
 | **H3** | **Audience saturation curves** (idea 13) | 16,531 `frequency_value` rows + reach, fresh to today. Answers "refresh the *audience*" versus "refresh the creative" — a different question from creative fatigue, and the only half of that pair still available while B is on hold. | M |
+
+### Parallel — Track N
+
+| # | Item | Why it is actionable | Size |
+| --- | --- | --- | --- |
+| **N1** | **Infrastructure registry** (Track N) | 84 of 175 ad accounts are already policy-disabled and nothing records what access each ban cost. The graph cannot be synced — the live token lacks `business_management`, so every business-level Graph edge 403s — so an operator-owned registry is the only shape available. Ad-account status is the one synced field, joined read-only. Design written: `docs/superpowers/specs/2026-08-13-infrastructure-monitor-design.md` | L |
 
 ---
 
@@ -284,6 +302,33 @@ against ~$1.6k of remaining capacity) would never have fired.
 ### G. WatchTower reconciliation — *dropped, boundary violation*
 
 WatchTower is a PetalPixel project. Retained here only so the idea is not re-proposed.
+
+**Clarified 2026-08-13:** what is dropped is *reading or reconciling against WatchTower's data*. The
+separate decision to build an infrastructure registry natively inside MetaConsole (§4, Track N) does not
+revive this track and does not touch the boundary — see §0.
+
+### N. Infrastructure registry — *approved 2026-08-13, in build*
+
+A native registry of the asset graph the book runs on: Facebook profiles → Business Managers → ad
+accounts, plus pixels and pages, with a risk map built on the redundancy rule (an asset with fewer than
+two independent access paths is a single ban away from being unreachable).
+
+Design: `docs/superpowers/specs/2026-08-13-infrastructure-monitor-design.md`. Branch `feat/infra-monitor`.
+
+**Why it is actionable now.** Measured 2026-08-13: 84 of 175 ad accounts are already `DISABLED` with
+`disable_reason = 1` (policy), and the app cannot say what access each ban cost. Only 14 of 175 accounts
+expose their owning BM, and the live system-user token lacks `business_management`, so every
+business-level Graph edge (`owned_ad_accounts`, `owned_pages`, `adspixels` at BM level, `owned_domains`,
+`business_users`) returns a permission error. The graph is therefore unobtainable from Meta and must be
+operator-maintained — which is what makes this a registry rather than a sync.
+
+**Decided shape.** Operator-owned throughout: no sync job writes any `infra_` table. Ad-account status is
+the one exception to manual entry — it is joined read-only from `accounts`, which already syncs it
+hourly, so no operator types a status Meta already knows. Admin + superadmin only. Real foreign keys, and
+status history with old → new values and the acting user.
+
+**Deliberately not in it:** no token or scope change, no secrets, no alert rows or Telegram, no client or
+spend linkage, no CSV import. Recorded because each was considered and declined, not overlooked.
 
 ---
 
