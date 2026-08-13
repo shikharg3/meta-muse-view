@@ -562,6 +562,26 @@ export function planDestinations(input: {
   return { text, skip: null };
 }
 
+/**
+ * Why a row's geo cannot be derived, or null when it can.
+ *
+ * Deliberately NOT the cascade the dollar columns use. That one also refuses a foreign account
+ * currency (`COLUMN_CURRENCY`), because summing money across currencies needs an FX rate. A
+ * percentage split does not, so a row whose accounts are denominated elsewhere still gets a cell -
+ * and currency is therefore absent from this signature rather than merely unused in it.
+ */
+export function geoSkipReason(input: {
+  ambiguous: boolean;
+  accountIds: string[];
+  syncedAccountIds: string[];
+}): string | null {
+  const { ambiguous, accountIds, syncedAccountIds } = input;
+  if (ambiguous) return "campaigns on a shared account could not be split by name";
+  if (accountIds.length === 0) return "no ad accounts on this row";
+  if (syncedAccountIds.length === 0) return "row's ad accounts are not visible to the Meta token";
+  return null;
+}
+
 /** Read a page's rich-text cell by column id, flattened to plain text. */
 function textCell(page: NotionPage, id: string): string {
   for (const p of Object.values(page.properties ?? {})) {

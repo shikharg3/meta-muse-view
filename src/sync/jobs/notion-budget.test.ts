@@ -25,6 +25,7 @@ import {
   AUTO_ACCOUNT_STATUS_COLUMN,
   GEO_COLUMN,
   AUTO_GEO_COLUMN,
+  geoSkipReason,
 } from "./notion-budget";
 import { ACCOUNT_STATUS_COLUMN, resolvePropertyKey } from "@/notion/parse";
 
@@ -458,4 +459,20 @@ test("the geo column cannot collide with the human `Geo's` brief", () => {
   expect(resolvePropertyKey(["Geo's", "Campaign"], AUTO_GEO_COLUMN)).toBeNull();
   // It must still find its own column once the marker has been stamped on it.
   expect(resolvePropertyKey([AUTO_GEO_COLUMN], GEO_COLUMN)).toBe(AUTO_GEO_COLUMN);
+});
+
+test("geo skips what it cannot attribute, but never for currency", () => {
+  const ok = { ambiguous: false, accountIds: ["act_1"], syncedAccountIds: ["act_1"] };
+  expect(geoSkipReason(ok)).toBeNull();
+  expect(geoSkipReason({ ...ok, ambiguous: true })).toBe(
+    "campaigns on a shared account could not be split by name",
+  );
+  expect(geoSkipReason({ ambiguous: false, accountIds: [], syncedAccountIds: [] })).toBe(
+    "no ad accounts on this row",
+  );
+  expect(geoSkipReason({ ...ok, syncedAccountIds: [] })).toBe(
+    "row's ad accounts are not visible to the Meta token",
+  );
+  // The dollar columns refuse a non-USD row because they sum money across accounts. This cascade
+  // takes no currency argument at all: a share needs no FX rate, so a EUR row still gets a geo cell.
 });
