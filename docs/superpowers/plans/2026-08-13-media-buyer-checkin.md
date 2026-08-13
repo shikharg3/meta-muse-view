@@ -14,10 +14,18 @@
 
 ## Conventions in this codebase — read before Task 1
 
-- **Tests are pure-unit only.** There is no test database and no test Notion/Telegram. Every test in
-  this plan runs against pure functions or an injected `fetchImpl`. Never write a test that imports
-  `@/db/client`.
-- Run a single test file with `bun test <path>`. Run everything with `bun test`.
+- **Every test THIS PLAN adds is pure-unit:** pure functions, or an injected `fetchImpl`. Never write
+  a new test that imports `@/db/client` — there is no test database provisioned for this feature.
+- **`bun test` is NOT a clean gate on this repo.** Measured 2026-08-13: some pre-existing tests hit
+  the real Postgres and are flaky, notably `setUserPassword rotates the password` in
+  `src/lib/auth/users.test.ts` (5 s timeout) and a `saveCredentials` case. A baseline run gave
+  126 pass / 1 fail, and a second gave 125 / 2, with no code change between them. Always compare
+  against a baseline you took yourself rather than expecting zero failures.
+- Run a single test file with `bun test <path>`; run this feature's own files with
+  `bun test src/lib/checkin.test.ts src/lib/berlin-time.test.ts src/lib/checkin-render.test.ts`.
+- The project formatter is authoritative over the code blocks in this plan: `printWidth` is 100, and
+  a few snippets here exceed it. If `bunx eslint` rejects a verbatim snippet on `prettier/prettier`,
+  run `bunx prettier --write` on the files you created and move on — do not hand-reflow.
 - API clients take `private fetchImpl: typeof fetch = fetch` as their second constructor argument so
   tests can record calls. Copy the `recorder()` helper from `src/notion/client.test.ts`.
 - Server fns live in `src/server/fns/*.ts` as plain async functions that call `requireAdmin()` from
@@ -989,8 +997,10 @@ export function escalationText(
 
 Run: `bun test src/lib/checkin-render.test.ts`
 
-Expected: PASS, 12 tests in the new file. Then run `bun test src/lib` and confirm 24 pass overall
-(5 berlin-time + 7 checkin core + 12 render), with no pre-existing test newly broken.
+Expected: PASS, 12 tests in the new file. Then run
+`bun test src/lib/checkin.test.ts src/lib/berlin-time.test.ts src/lib/checkin-render.test.ts` and
+confirm 33 pass (5 berlin-time + 16 checkin + 12 render). Do NOT expect `bun test src/lib` to be
+clean — it includes the pre-existing flaky DB-backed tests noted in the conventions above.
 
 - [ ] **Step 5: Commit**
 
@@ -2995,9 +3005,17 @@ git commit -m "feat(checkin): admin panel to bind media buyers to Telegram chats
 
 - [ ] **Step 1: Run the full suite and the linter locally**
 
-Run: `bun test` and then `bunx eslint $(git diff --name-only d735120..HEAD -- '*.ts' '*.tsx')`
+Run this feature's tests and lint only what it touched:
 
-Expected: all tests pass; eslint clean on the files this feature touched.
+```bash
+bun test src/lib/checkin.test.ts src/lib/berlin-time.test.ts src/lib/checkin-render.test.ts \
+  src/telegram/client.test.ts src/telegram/updates.test.ts src/notion/client.test.ts \
+  src/notion/parse.test.ts src/sync/alerts.test.ts src/sync/jobs/notion-budget.test.ts
+bunx eslint $(git diff --name-only origin/feat/meta-integration...HEAD -- '*.ts' '*.tsx')
+```
+
+Expected: all of those pass; eslint clean on the files this feature touched. Take a `bun test`
+baseline before and after if you want a whole-repo comparison — it is not expected to be zero-fail.
 
 **Do NOT gate on repo-wide `bun run lint`.** Measured 2026-08-13 on a clean checkout: it already
 reports 20 errors / 7 warnings, all prettier formatting in files this feature never touches
