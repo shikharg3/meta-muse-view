@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { NotionClient } from "./client";
+import { NotionApiError, NotionClient } from "./client";
 
 interface Call {
   url: string;
@@ -217,20 +217,113 @@ test("createComment rejects an empty body instead of posting a blank comment", a
   expect(calls).toHaveLength(0);
 });
 
-test("createComment throws when the accepted response carries no comment id", async () => {
-  // Task 11 stores this id and treats NULL as "a retry is owed"; returning "" would mark the prompt
-  // durably commented with an unusable id, so it would never be retried nor flagged.
-  const { impl } = recorder([{ object: "comment" }]);
-  const client = new NotionClient("tok", impl);
+test("createComment returns null when the accepted response carries no usable id", async () => {
+  // Accepted-but-unaddressable is NOT a failure: the comment IS on the client's card. It used to
+  // throw, and the flush's catch retried it — up to five identical comments on a client's card, each
+  // one followed by an alert claiming the write had failed. `""` is as unusable as absent, so a bare
+  // `typeof` check must not let it through as a real id.
+  for (const response of [{ object: "comment" }, { object: "comment", id: "" }]) {
+    const { calls, impl } = recorder([response]);
+    const client = new NotionClient("tok", impl);
 
-  await expect(client.createComment("page-1", ["hi"])).rejects.toThrow("returned no id");
+    expect(await client.createComment("page-1", ["hi"])).toBeNull();
+    expect(calls).toHaveLength(1); // it really did post; null is the OUTCOME, not a refusal
+  }
 });
 
-test("createComment throws when the returned comment id is blank", async () => {
-  // A falsy-but-present id is the same unusable value as none at all; a `typeof` check alone
-  // would let "" through and store it as a real comment id.
-  const { impl } = recorder([{ object: "comment", id: "" }]);
+test("a Notion rejection throws NotionApiError, and only 429/5xx are retryable", async () => {
+  // The flush spends a prompt's retry budget on non-retryable statuses only, so this classification
+  // is what stops one Notion outage permanently abandoning a whole backlog of answers.
+  const failing = (status: number, body: unknown) =>
+    new NotionClient(
+      "tok",
+      (async () =>
+        new Response(JSON.stringify(body), {
+          status,
+          headers: { "content-type": "application/json" },
+        })) as unknown as typeof fetch,
+    );
+
+  const err = await failing(403, { message: "insufficient capabilities" })
+    .createComment("page-1", ["hi"])
+    .catch((e: unknown) => e);
+  expect(err).toBeInstanceOf(NotionApiError);
+  // The message format is unchanged from the plain Error this replaced.
+  expect((err as NotionApiError).message).toBe("Notion 403: insufficient capabilities");
+  expect((err as NotionApiError).retryable).toBe(false);
+
+  for (const status of [429, 500, 502, 503]) {
+    const e = await failing(status, { message: "later" })
+      .createComment("page-1", ["hi"])
+      .catch((x: unknown) => x);
+    expect((e as NotionApiError).retryable).toBe(true);
+  }
+  for (const status of [400, 401, 404]) {
+    const e = await failing(status, { message: "nope" })
+      .createComment("page-1", ["hi"])
+      .catch((x: unknown) => x);
+    expect((e as NotionApiError).retryable).toBe(false);
+  }
+});
+
+test("an unparseable error body still classifies by status instead of faulting", async () => {
+  // A proxy's HTML 502 is exactly the retryable case, and `res.json()` throws on it. Reading the
+  // status before the body is what keeps that a NotionApiError rather than a SyntaxError the flush
+  // cannot classify.
+  const client = new NotionClient(
+    "tok",
+    (async () =>
+      new Response("<html>502 Bad Gateway</html>", { status: 502 })) as unknown as typeof fetch,
+  );
+
+  const err = (await client.createComment("page-1", ["hi"]).catch((e: unknown) => e)) as unknown;
+  expect(err).toBeInstanceOf(NotionApiError);
+  expect((err as NotionApiError).message).toBe("Notion 502: request failed");
+  expect((err as NotionApiError).retryable).toBe(true);
+});
+
+test("listComments flattens rich_text and follows the cursor", async () => {
+  const { calls, impl } = recorder([
+    {
+      results: [
+        { id: "c1", rich_text: [{ plain_text: "Daily check-in " }, { plain_text: "part two" }] },
+        { id: "c2", rich_text: [] },
+      ],
+      has_more: true,
+      next_cursor: "cur2",
+    },
+    { results: [{ id: "c3", rich_text: [{ plain_text: "last" }] }], has_more: false },
+  ]);
   const client = new NotionClient("tok", impl);
 
-  await expect(client.createComment("page-1", ["hi"])).rejects.toThrow("returned no id");
+  // The chunked body is reassembled: the flush compares against the WHOLE comment text, so a comment
+  // Notion split across rich_text items must not read as a different comment.
+  expect(await client.listComments("page-1")).toEqual([
+    { id: "c1", text: "Daily check-in part two" },
+    { id: "c2", text: "" },
+    { id: "c3", text: "last" },
+  ]);
+  expect(calls[0].url).toBe("https://api.notion.com/v1/comments?block_id=page-1&page_size=100");
+  expect(calls[0].method).toBe("GET");
+  expect(calls[1].url).toContain("start_cursor=cur2");
+});
+
+test("listComments follows a cursor only when Notion both claims more AND supplies one", async () => {
+  // This runs inside the comment flush, so an over-eager loop costs a request per comment page on
+  // every retry. Either half missing must end the pass after exactly one page.
+  const page = (extra: Record<string, unknown>) => ({
+    results: [{ id: "c1", rich_text: [{ plain_text: "one" }] }],
+    ...extra,
+  });
+  for (const last of [
+    { has_more: true, next_cursor: null }, // claims more, gives nothing to follow
+    { has_more: false, next_cursor: "cur9" }, // stale cursor on a final page
+    { has_more: true }, // truncated body
+  ]) {
+    const { calls, impl } = recorder([page(last), page({ has_more: false })]);
+    const client = new NotionClient("tok", impl);
+
+    expect(await client.listComments("page-1")).toEqual([{ id: "c1", text: "one" }]);
+    expect(calls).toHaveLength(1);
+  }
 });

@@ -1,22 +1,32 @@
 import { test, expect, beforeEach, beforeAll, afterAll } from "bun:test";
 import { sql } from "drizzle-orm";
 import { db, schema } from "@/db/client";
+import { env } from "@/lib/env";
 import {
   detectSpendDropAlerts,
   detectAccountAlerts,
   detectUnassignedSpendAlerts,
   scanUnassignedSpend,
   classifyAccount,
+  sendAlertChannelMessage,
   ALERT_LOW_FUNDS_USD,
   type AccountAlertRow,
 } from "./alerts";
 
 // Stub fetch so a detected alert never sends a real Telegram message during tests (Postgres uses a
 // socket, not fetch, so this only intercepts the Telegram POST).
+//
+// The envelope must STATE ok. `TelegramClient` requires `body.ok === true`, so the `{}` this used to
+// return modelled a FAILED send, not a successful one — inert only on a machine with no
+// TELEGRAM_BOT_TOKEN, where the unconfigured guard fires before any POST is attempted.
 let realFetch: typeof fetch;
 beforeAll(() => {
   realFetch = globalThis.fetch;
-  globalThis.fetch = (async () => new Response("{}", { status: 200 })) as unknown as typeof fetch;
+  globalThis.fetch = (async () =>
+    new Response('{"ok":true,"result":{"message_id":1}}', {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    })) as unknown as typeof fetch;
 });
 afterAll(() => {
   globalThis.fetch = realFetch;
@@ -39,6 +49,110 @@ beforeEach(async () => {
   await db.execute(
     sql`truncate table insights_daily, alerts, accounts, clients, campaigns, campaign_client_overrides cascade`,
   );
+});
+
+/**
+ * Runs `fn` with Telegram configured EXACTLY as given and every Telegram POST captured.
+ *
+ * `env()` memoises one object on first call and importing `@/db/client` above already forced that
+ * call, so configuring Telegram means writing onto that same object rather than onto `process.env`.
+ * Both keys are always written, never merged: the unconfigured cases must fail identically on a
+ * developer machine whose `.env` does have a bot token.
+ */
+async function withTelegram(
+  vars: { TELEGRAM_BOT_TOKEN?: string; TELEGRAM_ALERT_CHAT_ID?: string },
+  reply: () => Response,
+  fn: (calls: { url: string; body: Record<string, unknown> }[]) => Promise<void>,
+): Promise<void> {
+  const e = env();
+  const prev = {
+    TELEGRAM_BOT_TOKEN: e.TELEGRAM_BOT_TOKEN,
+    TELEGRAM_ALERT_CHAT_ID: e.TELEGRAM_ALERT_CHAT_ID,
+  };
+  const outerFetch = globalThis.fetch;
+  const calls: { url: string; body: Record<string, unknown> }[] = [];
+  Object.assign(e, { TELEGRAM_BOT_TOKEN: undefined, TELEGRAM_ALERT_CHAT_ID: undefined }, vars);
+  globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+    calls.push({ url: String(url), body: JSON.parse(String(init?.body ?? "{}")) });
+    return reply();
+  }) as unknown as typeof fetch;
+  try {
+    await fn(calls);
+  } finally {
+    Object.assign(e, prev);
+    globalThis.fetch = outerFetch;
+  }
+}
+
+const okReply = () =>
+  new Response('{"ok":true,"result":{"message_id":7}}', {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  });
+
+test("an unconfigured Telegram is reported verbatim and nothing is attempted", async () => {
+  // The 09:00 escalation is the ONLY thing that surfaces an unanswered check-in, so a send that
+  // silently does nothing means nobody ever learns. This exact string is what the Settings panel
+  // shows an admin, so it is the contract, not a log line.
+  const unconfigured = "Telegram not configured — set TELEGRAM_BOT_TOKEN + TELEGRAM_ALERT_CHAT_ID.";
+  // Each half alone is still unconfigured: a token with nowhere to send it is as useless as neither.
+  for (const vars of [{}, { TELEGRAM_BOT_TOKEN: "tok" }, { TELEGRAM_ALERT_CHAT_ID: "-1001" }]) {
+    await withTelegram(vars, okReply, async (calls) => {
+      expect(
+        await sendAlertChannelMessage("⚠️ Check-in 2026-08-12 — 2 campaigns unanswered"),
+      ).toStrictEqual({ ok: false, error: unconfigured });
+      // The guard must REPLACE the request, not merely precede a real one.
+      expect(calls).toHaveLength(0);
+    });
+  }
+});
+
+test("a delivered message reports ok and carries the configured chat id and the text", async () => {
+  await withTelegram(
+    { TELEGRAM_BOT_TOKEN: "bot-tok", TELEGRAM_ALERT_CHAT_ID: "-1001" },
+    okReply,
+    async (calls) => {
+      // toStrictEqual, not toEqual: a stray `error: undefined` on the success arm would slip past
+      // toEqual, and this shape is what Settings renders.
+      expect(
+        await sendAlertChannelMessage("⚠️ Check-in 2026-08-12 — 2 campaigns unanswered"),
+      ).toStrictEqual({ ok: true });
+      expect(calls).toHaveLength(1);
+      expect(calls[0].url).toBe("https://api.telegram.org/botbot-tok/sendMessage");
+      expect(calls[0].body.chat_id).toBe("-1001");
+      expect(calls[0].body.text).toBe("⚠️ Check-in 2026-08-12 — 2 campaigns unanswered");
+    },
+  );
+});
+
+test("a failed send comes back as data and never throws — every caller is a loop", async () => {
+  const configured = { TELEGRAM_BOT_TOKEN: "bot-tok", TELEGRAM_ALERT_CHAT_ID: "-1001" };
+  const cases: [string, () => Response, string][] = [
+    [
+      "a rejection carries Telegram's own reason",
+      () => new Response('{"ok":false,"description":"chat not found"}', { status: 400 }),
+      "Telegram 400: chat not found",
+    ],
+    [
+      // Exactly what this file's own fetch stub used to return. A 200 that does not STATE ok is a
+      // failure, which is why that stub had to change.
+      "a 200 that does not state ok is still a failure",
+      () => new Response("{}", { status: 200 }),
+      "Telegram 200: request failed",
+    ],
+    [
+      "a dropped socket surfaces as the transport error",
+      () => {
+        throw new Error("socket hang up");
+      },
+      "socket hang up",
+    ],
+  ];
+  for (const [, reply, error] of cases) {
+    await withTelegram(configured, reply, async () => {
+      expect(await sendAlertChannelMessage("x")).toStrictEqual({ ok: false, error });
+    });
+  }
 });
 
 test("flags a real collapse on the latest complete day, ignoring today's incompleteness", async () => {

@@ -23,6 +23,35 @@ export interface NotionPropSchema {
   type: string;
 }
 
+/** Only the fields `listComments` reads. Every one is optional: this is an untrusted API body. */
+interface NotionComment {
+  id?: unknown;
+  rich_text?: { plain_text?: string }[];
+}
+
+/**
+ * A rejection Notion ANSWERED with, carrying the status so a caller can tell "come back later" from
+ * "this will never work". The distinction is load-bearing for the check-in comment flush: a 429 or a
+ * proxy 502 must not consume a prompt's retry budget, while a 400 or 403 must.
+ *
+ * `message` is unchanged from the plain Error this replaced, so anything logging or matching on the
+ * text still sees `Notion <status>: <notion's message>`.
+ */
+export class NotionApiError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "NotionApiError";
+  }
+
+  /** Notion is up but would not serve this request now — rate limit, or its own failure. */
+  get retryable(): boolean {
+    return this.status === 429 || this.status >= 500;
+  }
+}
+
 export class NotionClient {
   constructor(
     private token: string,
@@ -39,13 +68,17 @@ export class NotionClient {
         ...init?.headers,
       },
     });
-    const body = (await res.json()) as Record<string, unknown>;
+    // The error body is parsed defensively but the success body is NOT: a proxy's HTML 502 must still
+    // classify by status, whereas an unparseable 200 is a real fault the callers below must not
+    // silently read as "no data".
     if (!res.ok) {
-      throw new Error(
-        `Notion ${res.status}: ${(body as { message?: string }).message ?? "request failed"}`,
+      const body = (await res.json().catch(() => null)) as { message?: string } | null;
+      throw new NotionApiError(
+        res.status,
+        `Notion ${res.status}: ${body?.message ?? "request failed"}`,
       );
     }
-    return body;
+    return (await res.json()) as Record<string, unknown>;
   }
 
   /** Data source ids of a database (multi-source boards have several). */
@@ -225,8 +258,16 @@ export class NotionClient {
    * capability surfaces as a Notion 403 through `req`.
    *
    * `chunks` are pre-split by the caller because Notion rejects a rich_text item over 2000 chars.
+   *
+   * Returns null when Notion ACCEPTED the write but answered without a usable id (absent, or the
+   * equally unusable `""`). That is NOT a failure and must never be retried: the comment is on the
+   * client's card, Notion's comment API has no idempotency key, and a retry therefore posts a
+   * duplicate the client can see. It used to throw — but an error whose own text said the write
+   * landed, wired to a retry loop, is how you post the same comment five times. Callers record the
+   * write as done with the id unknown. A REJECTION still throws (`NotionApiError`), because then
+   * nothing was written.
    */
-  async createComment(pageId: string, chunks: string[]): Promise<string> {
+  async createComment(pageId: string, chunks: string[]): Promise<string | null> {
     if (chunks.length === 0) throw new Error(`refusing to post an empty comment on ${pageId}`);
     const body = await this.req(`/comments`, {
       method: "POST",
@@ -236,10 +277,38 @@ export class NotionClient {
       }),
     });
     const id = body.id;
-    if (typeof id !== "string" || !id) {
-      throw new Error(`Notion accepted the comment on ${pageId} but returned no id`);
-    }
-    return id;
+    return typeof id === "string" && id ? id : null;
+  }
+
+  /**
+   * Comments already on a page, oldest first, each one's `rich_text` flattened to a single string.
+   *
+   * Exists so a RETRIED comment can tell "Notion never got it" from "Notion got it and we lost the
+   * answer" — there is no idempotency key on `POST /comments`, and a duplicate comment is the one
+   * failure a client actually sees. Notion lists only UNRESOLVED comments, so a comment someone has
+   * already resolved reads as absent here; that is the one gap the dedupe cannot close.
+   */
+  async listComments(pageId: string): Promise<{ id: string; text: string }[]> {
+    const out: { id: string; text: string }[] = [];
+    let cursor: string | undefined;
+    do {
+      const q = new URLSearchParams({ block_id: pageId, page_size: "100" });
+      if (cursor) q.set("start_cursor", cursor);
+      const body = await this.req(`/comments?${q}`);
+      const results = (body.results as NotionComment[] | undefined) ?? [];
+      for (const c of results) {
+        out.push({
+          id: typeof c.id === "string" ? c.id : "",
+          text: (c.rich_text ?? []).map((t) => t.plain_text ?? "").join(""),
+        });
+      }
+      // Both halves are required: Notion must claim another page AND hand back a cursor for it. The
+      // loop advances on the cursor alone, so a body claiming more without one ends the pass instead
+      // of re-fetching page one — this runs inside the comment flush, on every retry.
+      const next = body.next_cursor;
+      cursor = body.has_more === true && typeof next === "string" ? next : undefined;
+    } while (cursor);
+    return out;
   }
 }
 
