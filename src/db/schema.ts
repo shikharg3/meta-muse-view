@@ -430,3 +430,189 @@ export const notionStatusOverrides = pgTable("notion_status_overrides", {
   setBy: text("set_by"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Infrastructure registry (Track N).
+//
+// OPERATOR-OWNED: no sync job writes any `infra_` table. That is the invariant the whole feature
+// rests on — it is why an operator's entry can never be silently overwritten — and it is forced by
+// the permission ceiling: the system-user token lacks `business_management`, so every BM-level Graph
+// edge (owned_ad_accounts, owned_pages, BM-level adspixels, owned_domains, business_users) returns a
+// permission error. See docs/superpowers/specs/2026-08-13-infrastructure-monitor-design.md.
+//
+// These are the only tables here with real foreign keys besides the chat pair, and the reason the
+// rest avoid them does not apply: external syncs re-key ids and a cascade would erase an operator's
+// correction, but nothing external touches these rows — we own their lifetimes end to end.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const infraProfiles = pgTable("infra_profiles", {
+  id: text("id").primaryKey(), // crypto.randomUUID() at the insert site
+  name: text("name").notNull(),
+  status: text("status").notNull().default("new"), // ProfileStatus; guarded in the server fn
+  geo: text("geo"),
+  browser: text("browser"), // antidetect tool in use. Non-secret.
+  proxyProvider: text("proxy_provider"), // provider NAME only — never an address or credential
+  notes: text("notes"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  statusChangedAt: timestamp("status_changed_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const infraBusinessManagers = pgTable("infra_business_managers", {
+  id: text("id").primaryKey(),
+  // Unique: two rows for one Meta BM would silently split its access graph in half.
+  bmId: text("bm_id").notNull().unique(),
+  name: text("name").notNull(),
+  status: text("status").notNull().default("active"), // BmStatus
+  verifiedAt: timestamp("verified_at", { withTimezone: true }),
+  notes: text("notes"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  statusChangedAt: timestamp("status_changed_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * Operator-owned facts about a registered ad account. Deliberately has NO status column: live status,
+ * disable_reason, spend cap and balance are LEFT JOINed from `accounts`, which syncs them hourly. A
+ * hand-typed status would contradict the live value on the same screen and be stale within a day.
+ *
+ * No foreign key to `accounts.id` on purpose — a registry row may exist before the account appears in
+ * sync, or outlive its departure from the book. An unmatched row renders a "not in sync" badge.
+ */
+export const infraAdAccounts = pgTable("infra_ad_accounts", {
+  id: text("id").primaryKey(), // act_<digits>, format-checked in the server fn
+  label: text("label"), // optional operator alias; the real name comes from `accounts`
+  usageState: text("usage_state").notNull().default("in_use"), // AdAccountUsage
+  notes: text("notes"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const infraPixels = pgTable("infra_pixels", {
+  id: text("id").primaryKey(), // the Meta pixel id
+  name: text("name").notNull(),
+  // RESTRICT, not CASCADE: a pixel without a root BM is meaningless, so the delete is refused rather
+  // than the pixel silently vanishing. This is also what removes the "missing root BM" case entirely.
+  rootBmId: text("root_bm_id")
+    .notNull()
+    .references(() => infraBusinessManagers.id, { onDelete: "restrict" }),
+  status: text("status").notNull().default("active"), // PixelStatus
+  verifiedAt: timestamp("verified_at", { withTimezone: true }),
+  notes: text("notes"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  statusChangedAt: timestamp("status_changed_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const infraPages = pgTable("infra_pages", {
+  id: text("id").primaryKey(), // randomUUID — the Meta page id is optional so it cannot be the key
+  pageId: text("page_id"),
+  pageUrl: text("page_url").notNull(),
+  name: text("name").notNull(),
+  ownerProfileId: text("owner_profile_id")
+    .notNull()
+    .references(() => infraProfiles.id, { onDelete: "restrict" }),
+  status: text("status").notNull().default("active"), // PageStatus
+  verifiedAt: timestamp("verified_at", { withTimezone: true }),
+  notes: text("notes"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  statusChangedAt: timestamp("status_changed_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// ── Link tables. Membership cascades: removing a profile removes its BM memberships, never the BM.
+
+export const infraProfileBm = pgTable(
+  "infra_profile_bm",
+  {
+    profileId: text("profile_id")
+      .notNull()
+      .references(() => infraProfiles.id, { onDelete: "cascade" }),
+    bmId: text("bm_id")
+      .notNull()
+      .references(() => infraBusinessManagers.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.profileId, t.bmId] })],
+);
+
+export const infraBmAdAccount = pgTable(
+  "infra_bm_ad_account",
+  {
+    bmId: text("bm_id")
+      .notNull()
+      .references(() => infraBusinessManagers.id, { onDelete: "cascade" }),
+    adAccountId: text("ad_account_id")
+      .notNull()
+      .references(() => infraAdAccounts.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.bmId, t.adAccountId] })],
+);
+
+/** Pixel shares only. The root BM lives on `infra_pixels.root_bm_id` and is never also a share. */
+export const infraPixelBm = pgTable(
+  "infra_pixel_bm",
+  {
+    pixelId: text("pixel_id")
+      .notNull()
+      .references(() => infraPixels.id, { onDelete: "cascade" }),
+    bmId: text("bm_id")
+      .notNull()
+      .references(() => infraBusinessManagers.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.pixelId, t.bmId] })],
+);
+
+export const infraPageBm = pgTable(
+  "infra_page_bm",
+  {
+    pageId: text("page_id")
+      .notNull()
+      .references(() => infraPages.id, { onDelete: "cascade" }),
+    bmId: text("bm_id")
+      .notNull()
+      .references(() => infraBusinessManagers.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.pageId, t.bmId] })],
+);
+
+/** Additional page access. The owner lives on `infra_pages.owner_profile_id`, never also here. */
+export const infraPageProfile = pgTable(
+  "infra_page_profile",
+  {
+    pageId: text("page_id")
+      .notNull()
+      .references(() => infraPages.id, { onDelete: "cascade" }),
+    profileId: text("profile_id")
+      .notNull()
+      .references(() => infraProfiles.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.pageId, t.profileId] })],
+);
+
+/**
+ * Status and verification history. Records old -> new AND the acting user, which is what makes "how
+ * long has this been banned" and "how many suspensions this quarter" answerable at all.
+ *
+ * `entity_id` is plain text with NO foreign key, deliberately: the history of a deleted asset is
+ * exactly when you most want to read it.
+ */
+export const infraStatusEvents = pgTable(
+  "infra_status_events",
+  {
+    id: text("id").primaryKey(),
+    kind: text("kind").notNull(), // InfraKind
+    entityId: text("entity_id").notNull(),
+    event: text("event").notNull(), // "status_change" | "verify"
+    fromStatus: text("from_status"),
+    toStatus: text("to_status"),
+    reason: text("reason"),
+    actorEmail: text("actor_email").notNull(),
+    at: timestamp("at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("infra_status_events_entity_idx").on(t.kind, t.entityId, t.at)],
+);
