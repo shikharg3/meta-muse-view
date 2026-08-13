@@ -67,19 +67,24 @@ export function brandTitles(raw: unknown): string[] {
  */
 export function boardRows(
   raw: unknown,
-): { pageId: string; title: string; status: string | null }[] {
+): { pageId: string; title: string; status: string | null; ownerIds: string[] }[] {
   if (!Array.isArray(raw)) return [];
   const rows: unknown[] = raw;
-  const out: { pageId: string; title: string; status: string | null }[] = [];
+  const out: { pageId: string; title: string; status: string | null; ownerIds: string[] }[] = [];
   for (const p of rows) {
     if (!p || typeof p !== "object") continue;
     if (!("pageId" in p) || typeof p.pageId !== "string") continue;
     const title = "title" in p ? p.title : undefined;
     const status = "status" in p ? p.status : undefined;
+    const owners = "ownerIds" in p ? p.ownerIds : undefined;
     out.push({
       pageId: p.pageId,
       title: typeof title === "string" ? title : "",
       status: typeof status === "string" ? status : null,
+      // Rows stored before owners were captured have none; the next Notion sync fills them in.
+      ownerIds: Array.isArray(owners)
+        ? owners.filter((x): x is string => typeof x === "string")
+        : [],
     });
   }
   return out;
@@ -92,6 +97,8 @@ export interface ParsedCampaignRow {
   activeIds: string[];
   otherIds: string[];
   status: string | null;
+  /** Notion `Owners` person ids for this row — the daily check-in's recipient list. */
+  ownerIds: string[];
   budget: number | null;
   startDate: string | null;
   endDate: string | null;
@@ -105,7 +112,14 @@ export interface ClubbedClient {
   activeAccountIds: string[]; // subset from the "Active Account ID" column ("Other ad accounts" excluded)
   /** Contributing Notion rows. Each keeps ITS OWN account mapping so a brand/engagement can be
    * reported at row grain (not just merged client totals). */
-  pages: { pageId: string; title: string; status: string | null; accountIds: string[] }[];
+  pages: {
+    pageId: string;
+    title: string;
+    status: string | null;
+    accountIds: string[];
+    /** Notion `Owners` person ids for this row — the daily check-in's recipient list. */
+    ownerIds: string[];
+  }[];
   budget: number | null;
   startDate: string | null;
   endDate: string | null;
@@ -116,6 +130,11 @@ const plain = (p: NotionProp | undefined): string =>
 
 const relationIds = (p: NotionProp | undefined): string[] =>
   ((p?.relation as { id: string }[] | undefined) ?? []).map((r) => r.id);
+
+const peopleIds = (p: NotionProp | undefined): string[] =>
+  ((p?.people as { id?: string }[] | undefined) ?? [])
+    .map((x) => x.id)
+    .filter((id): id is string => typeof id === "string" && id.length > 0);
 
 /**
  * The board column holding the delivery/lifecycle status. Named here because the READ side owns the
@@ -143,6 +162,8 @@ export function parseCampaignRow(page: NotionPage): ParsedCampaignRow | null {
     // exact-name miss here would return null for every row — making them all non-live, which stops
     // every other column, nulls `clients.status` and leaves STATUS_PRIORITY scoring every row 0.
     status: statusOf(page),
+    // The board's `Owners` people column. Person ids, not names: names drift, ids do not.
+    ownerIds: peopleIds(page.properties?.["Owners"]),
     budget: (page.properties?.["Budget ($)"]?.number as number | null) ?? null,
     startDate:
       (page.properties?.["Actual Start Date"]?.date as { start?: string } | null)?.start ??
@@ -235,6 +256,7 @@ export function clubClients(
       title: row.title,
       status: row.status,
       accountIds: [...new Set([...row.activeIds, ...row.otherIds])],
+      ownerIds: row.ownerIds,
     });
     if ((STATUS_PRIORITY[row.status ?? ""] ?? 0) > (STATUS_PRIORITY[c.status ?? ""] ?? 0)) {
       c.status = row.status;

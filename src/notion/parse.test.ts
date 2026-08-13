@@ -57,8 +57,8 @@ test("boardRows keeps page ids and each row's own status", () => {
       null,
     ]),
   ).toEqual([
-    { pageId: "p1", title: "Slots.lv", status: "Live" },
-    { pageId: "p2", title: "No status", status: null },
+    { pageId: "p1", title: "Slots.lv", status: "Live", ownerIds: [] },
+    { pageId: "p2", title: "No status", status: null, ownerIds: [] },
   ]);
   expect(boardRows(null)).toEqual([]);
   expect(boardRows("not-an-array")).toEqual([]);
@@ -93,6 +93,7 @@ test("clubClients groups differently-titled campaigns under their linked client 
         budget: 5000,
         startDate: "2026-05-01",
         endDate: "2026-06-30",
+        ownerIds: [],
       },
       {
         pageId: "p2",
@@ -104,6 +105,7 @@ test("clubClients groups differently-titled campaigns under their linked client 
         budget: 7000,
         startDate: "2026-06-01",
         endDate: "2026-07-31",
+        ownerIds: [],
       },
       {
         pageId: "p3",
@@ -115,6 +117,7 @@ test("clubClients groups differently-titled campaigns under their linked client 
         budget: null,
         startDate: null,
         endDate: null,
+        ownerIds: [],
       },
     ],
     clientNames,
@@ -157,6 +160,7 @@ test("clubClients takes the active account from the winning-status row, not fini
         budget: null,
         startDate: null,
         endDate: "2026-07-31",
+        ownerIds: [],
       },
       {
         pageId: "p2",
@@ -168,6 +172,7 @@ test("clubClients takes the active account from the winning-status row, not fini
         budget: null,
         startDate: null,
         endDate: "2026-04-30",
+        ownerIds: [],
       },
     ],
     new Map(),
@@ -217,6 +222,7 @@ test("a Budget Finished - Top Up row outranks other statuses and keeps its activ
         budget: null,
         startDate: null,
         endDate: "2026-08-31",
+        ownerIds: [],
       },
       {
         pageId: "p2",
@@ -228,6 +234,7 @@ test("a Budget Finished - Top Up row outranks other statuses and keeps its activ
         budget: null,
         startDate: null,
         endDate: "2026-09-30",
+        ownerIds: [],
       },
     ],
     new Map(),
@@ -349,4 +356,100 @@ test("parseCampaignRow still finds Account Status once the marker is stamped on 
     properties: { Campaign: { type: "title", title: [{ plain_text: "Slots.lv" }] } },
   } as unknown as NotionPage;
   expect(parseCampaignRow(absent)!.status).toBeNull();
+});
+
+const VLAD = "2cbd872b-594c-8119-9649-0002845d8d9c";
+const SHIKHAR = "254d872b-594c-8154-9479-000271904e5b";
+
+test("parseCampaignRow reads Owners person ids", () => {
+  const row = parseCampaignRow({
+    id: "page-1",
+    properties: {
+      Campaign: { type: "title", title: [{ plain_text: "Slots.lv" }] },
+      Owners: {
+        type: "people",
+        people: [
+          { id: SHIKHAR, name: "Shikhar Gupta" },
+          { id: VLAD, name: "Vladyslav Istrati" },
+        ],
+      },
+    },
+  } as never);
+
+  expect(row?.ownerIds).toEqual([SHIKHAR, VLAD]);
+});
+
+test("a row with no Owners cell parses to an empty owner list", () => {
+  const row = parseCampaignRow({
+    id: "page-2",
+    properties: { Campaign: { type: "title", title: [{ plain_text: "Farside" }] } },
+  } as never);
+
+  expect(row?.ownerIds).toEqual([]);
+});
+
+test("owner ids survive clubbing and the clients.raw round-trip", () => {
+  // clubClients output is written verbatim to clients.raw, and boardRows reads it back. If either
+  // side drops ownerIds the check-in silently prompts nobody.
+  const clubbed = clubClients(
+    [
+      {
+        pageId: "page-1",
+        title: "Slots.lv",
+        clientRelationIds: [],
+        activeIds: ["act_1"],
+        otherIds: [],
+        status: "Live",
+        budget: null,
+        startDate: null,
+        endDate: null,
+        ownerIds: [SHIKHAR],
+      },
+    ],
+    new Map(),
+  );
+
+  expect(clubbed[0].pages[0].ownerIds).toEqual([SHIKHAR]);
+  expect(boardRows(clubbed[0].pages)).toEqual([
+    { pageId: "page-1", title: "Slots.lv", status: "Live", ownerIds: [SHIKHAR] },
+  ]);
+});
+
+test("boardRows tolerates rows stored before owners existed", () => {
+  // Existing clients.raw rows have no ownerIds. They must read back as [] rather than undefined.
+  expect(boardRows([{ pageId: "p", title: "t", status: "Live" }])).toEqual([
+    { pageId: "p", title: "t", status: "Live", ownerIds: [] },
+  ]);
+});
+
+test("parseCampaignRow ignores owner entries with no usable person id", () => {
+  // Notion can return a people entry the integration cannot see (no id at all). Such an entry must
+  // vanish rather than land in ownerIds as undefined/"" — planPrompts would then match a buyer whose
+  // own telegram mapping is blank.
+  const row = parseCampaignRow({
+    id: "page-3",
+    properties: {
+      Campaign: { type: "title", title: [{ plain_text: "Slots.lv" }] },
+      Owners: {
+        type: "people",
+        people: [{ name: "Nick" }, { id: "" }, { id: SHIKHAR, name: "Shikhar Gupta" }],
+      },
+    },
+  } as never);
+
+  expect(row?.ownerIds).toEqual([SHIKHAR]);
+});
+
+test("boardRows keeps only string owner ids out of jsonb", () => {
+  // `clients.raw` is jsonb: anything can come back. Non-strings must be dropped and a non-array
+  // ownerIds must degrade to [], never leak into the recipient list.
+  expect(
+    boardRows([{ pageId: "p", title: "t", status: "Live", ownerIds: [SHIKHAR, 7, null] }])[0],
+  ).toEqual({ pageId: "p", title: "t", status: "Live", ownerIds: [SHIKHAR] });
+  expect(boardRows([{ pageId: "p", title: "t", status: "Live", ownerIds: SHIKHAR }])[0]).toEqual({
+    pageId: "p",
+    title: "t",
+    status: "Live",
+    ownerIds: [],
+  });
 });
