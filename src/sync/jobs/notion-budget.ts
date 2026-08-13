@@ -88,7 +88,7 @@ export const AUTO_BUDGET_REMAINING_COLUMN = `${AUTO_MARKER} ${BUDGET_REMAINING_C
 export const AUTO_ACCOUNT_STATUS_COLUMN = `${AUTO_MARKER} ${ACCOUNT_STATUS_COLUMN}`;
 /**
  * Where delivered spend actually landed. A SEPARATE column from the board's `Geo's`, which records
- * the brief - prose, ranked preferences, even budget splits - and stays human-owned forever.
+ * the brief — prose, ranked preferences, even budget splits — and stays human-owned forever.
  *
  * The name is load-bearing. `ensureColumn` resolves by `keyShape`, which strips punctuation and the
  * emoji marker, and it RENAMES whatever it matches. `keyShape("Geo's") === keyShape("🤖 Geo's")`, so
@@ -568,7 +568,7 @@ export function planDestinations(input: {
  *
  * Deliberately NOT the cascade the dollar columns use. That one also refuses a foreign account
  * currency (`COLUMN_CURRENCY`), because summing money across currencies needs an FX rate. A
- * percentage split does not, so a row whose accounts are denominated elsewhere still gets a cell -
+ * percentage split does not, so a row whose accounts are denominated elsewhere still gets a cell —
  * and currency is therefore absent from this signature rather than merely unused in it.
  */
 export function geoSkipReason(input: {
@@ -586,9 +586,10 @@ export function geoSkipReason(input: {
 /**
  * The geo cell for one row: where its delivered spend actually landed.
  *
- * Non-live rows are never written, like every other machine column - their accounts get recycled and
- * the recorded value is history. A live row with nothing delivered has its cell cleared, for the
- * reason `planDestinations` clears.
+ * Non-live rows are never written, like the other numeric and text columns — their accounts get
+ * recycled and the recorded value is history. (`Account Status` is the exception: its gate is
+ * ownership of the current value, not liveness. See `statusForRow`.) A live row with nothing
+ * delivered has its cell cleared, for the reason `planDestinations` clears.
  *
  * The case that must NOT clear is spend in the window with no breakdown rows behind it. Breakdowns
  * refresh on the daily `full` pass only (`sync/cycle.ts`) while `insights_daily` refreshes hourly, so
@@ -611,6 +612,8 @@ export function planGeo(input: {
   const text = geoCell(rows);
   if (!text) {
     if (windowSpend > 0) return { text: null, skip: "breakdown data not caught up" };
+    // A leftover geo reads as "we are running here" when nothing delivered; with nothing recorded
+    // there is nothing to correct.
     return current.trim()
       ? { text: "", skip: null }
       : { text: null, skip: "nothing delivered in the window" };

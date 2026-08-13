@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { forecastBudgetEnd } from "@/lib/budget-forecast";
+import { forecastBudgetEnd, PACE_DAYS } from "@/lib/budget-forecast";
 import type { GeoSpend } from "@/lib/geo-cell";
 import {
   sumDailyBudget,
@@ -455,12 +455,17 @@ test("the budget-remaining column carries the machine-written marker", () => {
 
 test("the geo column cannot collide with the human `Geo's` brief", () => {
   // ensureColumn resolves by keyShape and RENAMES what it finds. keyShape strips punctuation and the
-  // emoji, so keyShape("Geo's") === keyShape("🤖 Geo's") - passing "Geo's" would rename the team's
+  // emoji, so keyShape("Geo's") === keyShape("🤖 Geo's") — passing "Geo's" would rename the team's
   // brief column and begin overwriting 79 rows of prose that no code can regenerate.
   expect(resolvePropertyKey(["Geo's", "Campaign"], GEO_COLUMN)).toBeNull();
   expect(resolvePropertyKey(["Geo's", "Campaign"], AUTO_GEO_COLUMN)).toBeNull();
   // It must still find its own column once the marker has been stamped on it.
   expect(resolvePropertyKey([AUTO_GEO_COLUMN], GEO_COLUMN)).toBe(AUTO_GEO_COLUMN);
+  // Pinned as a literal like every other machine column: once the board carries this column, a
+  // rename that still avoids the collision would silently orphan it. The `14d` is not decoration —
+  // it names the window `paceWindow()` measures, so the two must move together.
+  expect(AUTO_GEO_COLUMN).toBe("🤖 Geo Delivered 14d");
+  expect(GEO_COLUMN).toContain(String(PACE_DAYS));
 });
 
 test("geo skips what it cannot attribute, but never for currency", () => {
@@ -516,9 +521,22 @@ test("spend with no breakdown rows behind it is a data gap, and must never blank
 });
 
 test("a row too new for a pace window is skipped, not cleared", () => {
+  // `rows: usOnly`, not an empty set: with no rows this passes even if the guard is moved below the
+  // geoCell call, because the empty-cell path reaches the same place. Breakdown rows present is the
+  // case only this guard answers — a two-day-old engagement must not get a cell labelled `14d`.
   expect(
-    planGeo({ status: "Live", current: "US 100%", rows: [], windowSpend: null, skip: null }),
+    planGeo({ status: "Live", current: "US 100%", rows: usOnly, windowSpend: null, skip: null }),
   ).toEqual({ text: null, skip: "engagement too new to measure" });
+  // The caller's reason outranks the missing window, so these two guards cannot be swapped.
+  expect(
+    planGeo({
+      status: "Live",
+      current: "US 100%",
+      rows: usOnly,
+      windowSpend: null,
+      skip: "no ad accounts on this row",
+    }),
+  ).toEqual({ text: null, skip: "no ad accounts on this row" });
 });
 
 test("liveness outranks every other geo skip reason", () => {
