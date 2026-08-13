@@ -84,9 +84,18 @@ test("malformed callback data is rejected rather than guessed", () => {
 
 test("the daily list numbers campaigns and pairs each with two buttons", () => {
   const { text, keyboard } = renderList("Thu 13 Aug", items);
-  expect(text).toContain("🕔 Daily check-in — Thu 13 Aug");
-  expect(text).toContain("1. Slots.lv — Live");
-  expect(text).toContain("2. Lucky Rebel — Ad Account Blocked");
+  // Asserted whole, not by `toContain`: a containment check cannot see an ADDED line, so the
+  // marker branch that suppresses the question line under closed campaigns would be undefended.
+  // This pins the header, the blank line, the numbering, the em-dash separator and the 3-space
+  // question indent together.
+  expect(text).toBe(
+    "🕔 Daily check-in — Thu 13 Aug\n" +
+      "\n" +
+      "1. Slots.lv — Live\n" +
+      "   Any changes today?\n" +
+      "2. Lucky Rebel — Ad Account Blocked\n" +
+      "   Funding/top-up status?",
+  );
   expect(keyboard).toEqual([
     [
       { text: "✅ No changes · 1", callback_data: "nc:7" },
@@ -103,9 +112,16 @@ test("closed campaigns keep their number, show a marker and lose their buttons",
   const { text, keyboard } = renderList("Thu 13 Aug", [
     { ...items[0], state: "no_changes" },
     { ...items[1], state: "answered" },
+    { ...items[0], promptId: 9, title: "Palmluck", state: "escalated" },
   ]);
-  expect(text).toContain("1. ✅ Slots.lv");
-  expect(text).toContain("2. ✍️ Lucky Rebel");
+  // Whole-text again: a closed campaign must LOSE its question line, which `toContain` cannot see.
+  expect(text).toBe(
+    "🕔 Daily check-in — Thu 13 Aug\n" +
+      "\n" +
+      "1. ✅ Slots.lv — Live\n" +
+      "2. ✍️ Lucky Rebel — Ad Account Blocked\n" +
+      "3. ⏭️ Palmluck — Live",
+  );
   expect(keyboard).toEqual([]);
 });
 
@@ -147,10 +163,58 @@ test("a long answer splits into chunks instead of being truncated", () => {
     answer,
   });
   expect(chunks.length).toBe(2);
-  for (const c of chunks) expect(c.length).toBeLessThanOrEqual(NOTION_TEXT_LIMIT);
+  // The bound is the LITERAL 2000, not NOTION_TEXT_LIMIT: slicing and asserting with the same
+  // constant is tautological, so raising the limit to 2048 or 2500 — the plausible "round it up"
+  // regression that makes Notion 400 the request — would otherwise still pass.
+  expect(NOTION_TEXT_LIMIT).toBe(2000);
+  for (const c of chunks) expect(c.length).toBeLessThanOrEqual(2000);
   // Nothing is lost: every character of the answer survives the split.
   expect(chunks.join("").endsWith("x".repeat(50))).toBe(true);
   expect(chunks.join("").match(/x/g)?.length).toBe(2500);
+});
+
+/** The comment for a fixed prompt, varying only the answer, so a test can size it to a boundary. */
+const bodyFor = (answer: string) =>
+  commentBody({
+    date: "2026-08-13",
+    buyerName: "Vladyslav Istrati",
+    status: "Live",
+    question: "Any changes today?",
+    answer,
+  });
+
+test("a body of exactly the limit is one chunk, with no empty chunk after it", () => {
+  // The off-by-one boundary: `i < full.length` must stop here rather than emitting a trailing "".
+  const head = bodyFor("")[0].length;
+  const chunks = bodyFor("y".repeat(2000 - head));
+  expect(chunks).toHaveLength(1);
+  expect(chunks[0].length).toBe(2000);
+  expect(chunks.some((c) => c.length === 0)).toBe(false);
+});
+
+test("an answer at Telegram's own 4096 cap is chunked losslessly", () => {
+  // 4096 is the longest answer that can ever arrive, so this is the real worst case.
+  const answer = "z".repeat(4096);
+  const chunks = bodyFor(answer);
+  for (const c of chunks) expect(c.length).toBeLessThanOrEqual(2000);
+  expect(chunks.join("")).toBe(bodyFor("")[0] + answer);
+  expect(chunks.join("").match(/z/g)?.length).toBe(4096);
+});
+
+test("a chunk boundary never splits an emoji into lone surrogates", () => {
+  // Buyers answer from Telegram and do type emoji. A cut on a UTF-16 code unit can end a chunk on
+  // a high surrogate and open the next with its orphan; Notion then stores an ill-formed rich_text
+  // item and the card renders U+FFFD.
+  const chunks = bodyFor("😀".repeat(2000));
+  for (const c of chunks) {
+    const first = c.charCodeAt(0);
+    const last = c.charCodeAt(c.length - 1);
+    expect(first >= 0xdc00 && first <= 0xdfff).toBe(false); // no leading orphan low surrogate
+    expect(last >= 0xd800 && last <= 0xdbff).toBe(false); // no trailing orphan high surrogate
+    expect(c.length).toBeLessThanOrEqual(2000);
+  }
+  expect(chunks.join("")).toBe(bodyFor("")[0] + "😀".repeat(2000));
+  expect(chunks.join("").match(/😀/gu)?.length).toBe(2000);
 });
 
 test("the escalation message groups unanswered campaigns by buyer and names binding gaps", () => {
@@ -161,4 +225,14 @@ test("the escalation message groups unanswered campaigns by buyer and names bind
   expect(text).toContain("⚠️ Check-in 2026-08-13 — 3 campaigns unanswered");
   expect(text).toContain("Shikhar Gupta: Slots.lv, Lucky Rebel");
   expect(text).toContain("Vladyslav Istrati (no Telegram binding): CasinOK.com");
+});
+
+test("a single unanswered campaign reads '1 campaign', not '1 campaigns'", () => {
+  // This goes to the shared alert channel every morning; the plural branch is the only one the
+  // three-campaign case above exercises.
+  const text = escalationText("2026-08-13", [
+    { buyerName: "Shikhar Gupta", titles: ["Slots.lv"], unroutable: false },
+  ]);
+  expect(text).toContain("⚠️ Check-in 2026-08-13 — 1 campaign unanswered");
+  expect(text).not.toContain("1 campaigns");
 });

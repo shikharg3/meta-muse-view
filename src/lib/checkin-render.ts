@@ -120,6 +120,11 @@ export function dayLabel(date: string): string {
  *
  * The buyer's name is in the body because the comment's AUTHOR is the integration, not the human —
  * without this the board would show a wall of identical robot authorship.
+ *
+ * Splits, never truncates: losing text a buyer typed is the worst failure this module has. The cut
+ * is nudged off a surrogate pair, because `slice` counts UTF-16 code units and buyers answering from
+ * Telegram do type emoji — a naive cut ends one chunk on a lone high surrogate and opens the next
+ * with its orphan, which Notion stores as an ill-formed `rich_text` item that renders as U+FFFD.
  */
 export function commentBody(input: {
   date: string;
@@ -134,8 +139,12 @@ export function commentBody(input: {
     `Q: ${input.question}\n` +
     `A: ${input.answer}`;
   const chunks: string[] = [];
-  for (let i = 0; i < full.length; i += NOTION_TEXT_LIMIT) {
-    chunks.push(full.slice(i, i + NOTION_TEXT_LIMIT));
+  for (let i = 0; i < full.length; ) {
+    let end = Math.min(i + NOTION_TEXT_LIMIT, full.length);
+    const last = full.charCodeAt(end - 1);
+    if (end < full.length && last >= 0xd800 && last <= 0xdbff) end -= 1;
+    chunks.push(full.slice(i, end));
+    i = end;
   }
   return chunks;
 }
