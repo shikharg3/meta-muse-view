@@ -17,8 +17,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { and, eq, inArray, isNotNull, isNull, lt, sql } from "drizzle-orm";
 import { db, schema } from "@/db/client";
-import { env } from "@/lib/env";
-import { getNotionCredentials } from "@/lib/credentials";
+import { getNotionCredentials, getTelegramCredentials } from "@/lib/credentials";
 import { boardRows } from "@/notion/parse";
 import { NotionApiError, NotionClient } from "@/notion/client";
 import { TelegramClient } from "@/telegram/client";
@@ -80,10 +79,17 @@ const COMMENT_ID_UNKNOWN = "unknown";
  */
 const UNANSWERED_AT_ESCALATION: PromptState[] = ["pending", "awaiting_reply", "unroutable"];
 
-/** Null when the bot token is unset — the whole feature is then inert, which Settings surfaces. */
-export function telegram(): TelegramClient | null {
-  const token = env().TELEGRAM_BOT_TOKEN;
-  return token ? new TelegramClient(token) : null;
+/**
+ * Null when no bot token is configured — the whole feature is then inert, which Settings surfaces.
+ *
+ * Reads through `getTelegramCredentials()` rather than `env()` directly, because the Settings page
+ * stores the token in `meta_credentials.telegram_token_enc` and only falls back to the environment.
+ * Reading `env()` here would leave the check-in silently dead for any operator who configured the
+ * bot through the UI — alerts would deliver and the daily prompt never would.
+ */
+export async function telegram(): Promise<TelegramClient | null> {
+  const creds = await getTelegramCredentials();
+  return creds ? new TelegramClient(creds.token) : null;
 }
 
 /** Media buyers as the planner needs them; `planPrompts` is what drops the inactive ones. */
@@ -119,8 +125,9 @@ async function loadBoardRows(): Promise<CheckinBoardRow[]> {
  * the same minute cannot double-prompt, and a day with zero in-scope rows is recorded as planned
  * rather than re-planned on every 30s poll ("no prompts exist" is otherwise indistinguishable from
  * "not planned"). The unconfigured check comes before the claim on purpose — claiming a day the bot
- * cannot send on would burn it, and since `env()` caches its parse, setting the token takes a worker
- * restart, i.e. a fresh iteration that must still find the day claimable.
+ * cannot send on would burn it. The token is read per call through `getTelegramCredentials()`, so an
+ * admin who sets it in Settings at 17:30 is picked up by the next 30s iteration with the day still
+ * claimable, without a worker restart.
  *
  * Claim and prompts share ONE transaction, committed before anything is sent. Without it the claim
  * autocommits on its own statement and a death in the window before the inserts (deploy restart,
@@ -146,7 +153,7 @@ async function loadBoardRows(): Promise<CheckinBoardRow[]> {
 export async function runDailyCheckin(
   now: Date,
 ): Promise<{ created: number; sent: number; failed: number } | null> {
-  const tg = telegram();
+  const tg = await telegram();
   if (!tg) return null;
   const local = berlinNow(now);
 
@@ -240,7 +247,7 @@ export async function runDailyCheckin(
  * nothing, so a quiet 30s tick cannot clobber the day's real note.
  */
 export async function sendDailyLists(date: string): Promise<{ sent: number; failed: number }> {
-  const tg = telegram();
+  const tg = await telegram();
   if (!tg) return { sent: 0, failed: 0 }; // inert, not unhealthy: Settings surfaces the missing token
   const prompts = await db
     .select()
@@ -321,7 +328,7 @@ function toListItem(p: PromptRecord): ListItem {
 
 /** Re-render one buyer's daily list after a state change. Failure is non-fatal: the DB is the truth. */
 export async function rerenderList(chatId: string, listMessageId: string): Promise<void> {
-  const tg = telegram();
+  const tg = await telegram();
   if (!tg) return;
   const prompts = await db
     .select()
@@ -492,7 +499,7 @@ function buildDeps(tg: TelegramClient): UpdateDeps {
  * every other buyer being served. The 09:00 escalation is the backstop for an update lost this way.
  */
 export async function pollTelegramOnce(): Promise<number> {
-  const tg = telegram();
+  const tg = await telegram();
   if (!tg) return 0;
   const [state] = await db
     .select()
