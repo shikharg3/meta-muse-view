@@ -1,6 +1,7 @@
 import { createFileRoute, useRouter, redirect } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { PageHeader } from "@/components/dashboard/PageHeader";
+import { MediaBuyerPanel } from "@/components/settings/MediaBuyerPanel";
 import {
   getSettings,
   resetAndResync,
@@ -506,6 +507,7 @@ function Settings() {
           {telegramMsg && <span className="text-xs text-muted-foreground">{telegramMsg}</span>}
         </div>
       </section>
+      <MediaBuyerPanel />
 
       <section className="rounded-xl border border-destructive/40 bg-card p-6 space-y-4">
         <div className="flex items-center gap-3">
