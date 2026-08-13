@@ -96,9 +96,73 @@
     color: var(--color-foreground);
     font-family: var(--font-sans);
   }
-  .font-mono, .tabular {
+  .font-mono,
+  .tabular {
     font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
+  }
+}
+
+/*
+ * Tactile press feedback.
+ *
+ * Applied to elements rather than to `buttonVariants`, because app code hand-rolls ~114 raw
+ * <button>s and only one non-shadcn file imports the shared Button — a variant-level fix would miss
+ * almost every control a user actually clicks.
+ *
+ * Uses `scale` (the independent transform property) rather than `transform`, so a press composes
+ * with whatever translate/transform an element already carries instead of clobbering it — the
+ * sidebar sub-button's `-translate-x-px` and the portal button's hover lift both survive.
+ *
+ * The selector's specificity is one step above a single utility class, so it can widen
+ * `transition-property` past what `transition-colors` sets (48 call sites) without `!important`.
+ * Colours keep animating; `scale` joins them.
+ *
+ * `.no-press` is an exclusion inside the selector rather than a separate override rule: the press
+ * selector scores 0-5-1, so a standalone `.no-press:active` (0-2-0) would silently lose the
+ * specificity race. Excluding it here cannot.
+ */
+@layer base {
+  button:not(:disabled):not([aria-disabled="true"]),
+  [role="button"]:not([aria-disabled="true"]),
+  summary {
+    transition-property: color, background-color, border-color, box-shadow, opacity, scale;
+    transition-duration: 110ms;
+    transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+  }
+
+  /*
+   * Sidebar nav rows and the drag rail opt out. The rows already carry shadcn's `active:` background
+   * and scaling a full-width row reads as a wobble; the rail is an invisible drag strip. The sidebar
+   * *trigger* is deliberately NOT excluded — it is an ordinary icon button and should press like one.
+   *
+   * `.no-press` is the escape hatch for anything else wide enough that shrinking looks wrong.
+   */
+  button:not(:disabled):not([aria-disabled="true"]):not([data-sidebar="menu-button"]):not(
+      [data-sidebar="menu-sub-button"]
+    ):not([data-sidebar="rail"]):not(.no-press):active,
+  [role="button"]:not([aria-disabled="true"]):not([data-sidebar="menu-button"]):not(
+      [data-sidebar="menu-sub-button"]
+    ):not([data-sidebar="rail"]):not(.no-press):active,
+  summary:not(.no-press):active {
+    scale: 0.96;
+  }
+}
+
+/*
+ * Reduced motion still gets feedback, just not movement — the press cue becomes a dim instead of a
+ * shrink. Removing it outright would leave those users with no confirmation that a click landed.
+ */
+@media (prefers-reduced-motion: reduce) {
+  button:not(:disabled):not([aria-disabled="true"]):not([data-sidebar="menu-button"]):not(
+      [data-sidebar="menu-sub-button"]
+    ):not([data-sidebar="rail"]):not(.no-press):active,
+  [role="button"]:not([aria-disabled="true"]):not([data-sidebar="menu-button"]):not(
+      [data-sidebar="menu-sub-button"]
+    ):not([data-sidebar="rail"]):not(.no-press):active,
+  summary:not(.no-press):active {
+    scale: 1;
+    opacity: 0.75;
   }
 }
 
