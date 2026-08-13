@@ -8,7 +8,7 @@ const styles: Record<string, string> = {
   DISABLED: "bg-destructive/10 text-destructive ring-destructive/20",
   PENDING: "bg-warning/10 text-warning ring-warning/20",
   // Infrastructure registry — profile status set.
-  VIDEO_SELFIE: "bg-warning/10 text-warning ring-warning/20",
+  VIDEO_SELFIE: "bg-destructive/10 text-destructive ring-destructive/20",
   IN_REVIEW: "bg-warning/10 text-warning ring-warning/20",
   SUSPENDED: "bg-destructive/10 text-destructive ring-destructive/20",
   CANNOT_USE_PAGE: "bg-destructive/10 text-destructive ring-destructive/20",
@@ -34,7 +34,7 @@ const dots: Record<string, string> = {
   COMPLETED: "bg-primary",
   DISABLED: "bg-destructive",
   PENDING: "bg-warning",
-  VIDEO_SELFIE: "bg-warning",
+  VIDEO_SELFIE: "bg-destructive",
   IN_REVIEW: "bg-warning",
   SUSPENDED: "bg-destructive",
   CANNOT_USE_PAGE: "bg-destructive",

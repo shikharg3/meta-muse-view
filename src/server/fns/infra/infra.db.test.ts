@@ -181,13 +181,13 @@ describe("buildRiskMap", () => {
     expect(row?.detail).toBe("0 usable profiles");
   });
 
-  test("a profile marked active with only a pending video selfie still counts", async () => {
+  test("a selfie-pending profile is not an access path", async () => {
     const bm = await makeBm("selfie-pending");
     const p = await makeProfile("awaiting-selfie", ["active", "video_selfie"]);
     await db.insert(schema.infraProfileBm).values({ profileId: p, bmId: bm });
 
     const map = await buildRiskMap();
-    expect(map.bms.find((r) => r.name === "selfie-pending")?.risk.level).toBe("warning");
+    expect(map.bms.find((r) => r.name === "selfie-pending")?.risk.level).toBe("critical");
   });
 
   test("an ad account reachable only through a suspended BM is critical", async () => {

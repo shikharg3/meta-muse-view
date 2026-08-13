@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { BM_STATUSES, type PageStatus, type PixelStatus, type ProfileStatus } from "./infra-status";
+import {
+  BM_STATUSES,
+  PROFILE_STATUSES,
+  type PageStatus,
+  type PixelStatus,
+  type ProfileStatus,
+} from "./infra-status";
 import {
   VERIFICATION_OVERDUE_DAYS,
   isVerificationOverdue,
@@ -34,18 +40,14 @@ describe("usableProfile", () => {
     expect(usableProfile(["active"])).toBe(true);
   });
 
-  test("active plus video_selfie stays usable — a pending selfie is not lost access", () => {
-    expect(usableProfile(["active", "video_selfie"])).toBe(true);
+  test("active plus video_selfie is NOT usable — an unmet selfie request costs access", () => {
+    expect(usableProfile(["active", "video_selfie"])).toBe(false);
   });
 
   test("every blocking status defeats active, even when active is also set", () => {
-    const blocking: ProfileStatus[] = [
-      "suspended",
-      "in_review",
-      "cannot_use_page",
-      "cannot_use_ads_manager",
-      "read_only",
-    ];
+    // Exhaustive by construction: every status except `active` must defeat it.
+    const blocking = PROFILE_STATUSES.filter((s) => s !== "active");
+    expect(blocking.length).toBe(6);
     for (const s of blocking) {
       expect(usableProfile(["active", s])).toBe(false);
     }
@@ -81,10 +83,18 @@ describe("BM access paths", () => {
   });
 
   test("two clean profiles is redundant", () => {
-    const profiles: ProfileStatus[][] = [["active"], ["active", "video_selfie"]];
+    const profiles: ProfileStatus[][] = [["active"], ["active"]];
     expect(redundancy(profiles.filter(usableProfile).length)).toEqual({
       level: "safe",
       label: "Redundant",
+    });
+  });
+
+  test("a selfie-pending profile no longer counts toward redundancy", () => {
+    const profiles: ProfileStatus[][] = [["active"], ["active", "video_selfie"]];
+    expect(redundancy(profiles.filter(usableProfile).length)).toEqual({
+      level: "warning",
+      label: "Single access",
     });
   });
 });

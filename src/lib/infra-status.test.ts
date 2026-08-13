@@ -59,9 +59,16 @@ describe("vocabularies", () => {
 });
 
 describe("PROFILE_BLOCKING_STATUSES", () => {
-  test("every profile status except active and video_selfie blocks access", () => {
+  test("every profile status except active blocks access", () => {
     expect([...PROFILE_BLOCKING_STATUSES].map(String).sort()).toEqual(
-      ["cannot_use_ads_manager", "cannot_use_page", "in_review", "read_only", "suspended"].sort(),
+      [
+        "cannot_use_ads_manager",
+        "cannot_use_page",
+        "in_review",
+        "read_only",
+        "suspended",
+        "video_selfie",
+      ].sort(),
     );
   });
 
@@ -69,8 +76,15 @@ describe("PROFILE_BLOCKING_STATUSES", () => {
     expect((PROFILE_BLOCKING_STATUSES as readonly string[]).includes("active")).toBe(false);
   });
 
-  test("video_selfie is not blocking — it is a pending verification prompt, not lost access", () => {
-    expect((PROFILE_BLOCKING_STATUSES as readonly string[]).includes("video_selfie")).toBe(false);
+  test("video_selfie blocks: an unmet verification request costs the profile its access", () => {
+    expect((PROFILE_BLOCKING_STATUSES as readonly string[]).includes("video_selfie")).toBe(true);
+  });
+
+  test("active is the only non-blocking status", () => {
+    const nonBlocking = PROFILE_STATUSES.filter(
+      (s) => !(PROFILE_BLOCKING_STATUSES as readonly string[]).includes(s),
+    );
+    expect(nonBlocking).toEqual(["active"]);
   });
 
   test("blocking is a strict subset of the vocabulary", () => {

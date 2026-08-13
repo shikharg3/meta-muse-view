@@ -29,11 +29,16 @@ export const PROFILE_STATUSES = [
 /**
  * Statuses that cost a profile its access, even alongside `active`.
  *
- * `video_selfie` is deliberately absent: it records that Meta has asked for a selfie verification,
- * which is a pending prompt rather than a loss of access. Everything else here names a capability the
- * profile has actually lost, so it cannot be counted as a way back into a BM.
+ * This is every status except `active` — a profile is an access path only when nothing at all is
+ * flagged against it. `video_selfie` is included because an unmet verification request does gate the
+ * profile in practice: Meta will keep prompting until the selfie is recorded, so the profile cannot be
+ * relied on as the way back into a BM.
+ *
+ * Kept as its own list rather than derived from `PROFILE_STATUSES` so that adding a genuinely benign
+ * status later is a deliberate omission here, not an accidental promotion to blocking.
  */
 export const PROFILE_BLOCKING_STATUSES = [
+  "video_selfie",
   "suspended",
   "in_review",
   "cannot_use_page",
