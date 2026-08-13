@@ -85,6 +85,18 @@ export const AUTO_BUDGET_REMAINING_COLUMN = `${AUTO_MARKER} ${BUDGET_REMAINING_C
  * here means "machine-maintained", not "hands off". See `src/lib/delivery-status.ts` for the split.
  */
 export const AUTO_ACCOUNT_STATUS_COLUMN = `${AUTO_MARKER} ${ACCOUNT_STATUS_COLUMN}`;
+/**
+ * Where delivered spend actually landed. A SEPARATE column from the board's `Geo's`, which records
+ * the brief - prose, ranked preferences, even budget splits - and stays human-owned forever.
+ *
+ * The name is load-bearing. `ensureColumn` resolves by `keyShape`, which strips punctuation and the
+ * emoji marker, and it RENAMES whatever it matches. `keyShape("Geo's") === keyShape("🤖 Geo's")`, so
+ * naming this column after the brief would rename the brief and start overwriting it. The window is
+ * in the name for the same reason it is in `Avg Daily Spend 7d ($)`: a percentage split is
+ * meaningless without one.
+ */
+export const GEO_COLUMN = "Geo Delivered 14d";
+export const AUTO_GEO_COLUMN = `${AUTO_MARKER} ${GEO_COLUMN}`;
 
 /** Notion rejects a rich_text value over 2000 characters. */
 const TEXT_CELL_LIMIT = 2000;

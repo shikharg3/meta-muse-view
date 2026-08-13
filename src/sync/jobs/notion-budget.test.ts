@@ -23,6 +23,8 @@ import {
   type ActiveAdSet,
   statusForRow,
   AUTO_ACCOUNT_STATUS_COLUMN,
+  GEO_COLUMN,
+  AUTO_GEO_COLUMN,
 } from "./notion-budget";
 import { ACCOUNT_STATUS_COLUMN, resolvePropertyKey } from "@/notion/parse";
 
@@ -446,4 +448,14 @@ test("planBudgetRemainingRow writes live rows, skips unchanged, and never touche
 
 test("the budget-remaining column carries the machine-written marker", () => {
   expect(AUTO_BUDGET_REMAINING_COLUMN).toBe("🤖 Budget Remaining ($)");
+});
+
+test("the geo column cannot collide with the human `Geo's` brief", () => {
+  // ensureColumn resolves by keyShape and RENAMES what it finds. keyShape strips punctuation and the
+  // emoji, so keyShape("Geo's") === keyShape("🤖 Geo's") - passing "Geo's" would rename the team's
+  // brief column and begin overwriting 79 rows of prose that no code can regenerate.
+  expect(resolvePropertyKey(["Geo's", "Campaign"], GEO_COLUMN)).toBeNull();
+  expect(resolvePropertyKey(["Geo's", "Campaign"], AUTO_GEO_COLUMN)).toBeNull();
+  // It must still find its own column once the marker has been stamped on it.
+  expect(resolvePropertyKey([AUTO_GEO_COLUMN], GEO_COLUMN)).toBe(AUTO_GEO_COLUMN);
 });
