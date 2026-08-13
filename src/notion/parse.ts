@@ -92,6 +92,19 @@ export function boardRows(
   return out;
 }
 
+/**
+ * The same board rows with the owner ids stripped, for callers that ship them off the server.
+ * `boardRows` carries each row's Notion `Owners` person UUIDs, and `ClientDetail.notionRows` is
+ * serialised verbatim by a `createServerFn` with no output schema — those ids exist for the daily
+ * check-in and have no business on the wire to every authenticated viewer. Derived from `boardRows`
+ * so the two shapes cannot drift apart.
+ */
+export function boardRowsWithoutOwners(
+  raw: unknown,
+): { pageId: string; title: string; status: string | null }[] {
+  return boardRows(raw).map(({ pageId, title, status }) => ({ pageId, title, status }));
+}
+
 export interface ParsedCampaignRow {
   pageId: string;
   title: string;

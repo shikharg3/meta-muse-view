@@ -12,7 +12,7 @@ import { fetchCampaigns, objectiveResults, disabledSinceMap } from "./dashboard"
 import { effectiveAccountIds, getClientRow } from "@/sync/jobs/clients";
 import type { Campaign, Kpis, AccountStatus } from "@/lib/types";
 import { disableReasonLabel } from "@/lib/format";
-import { brandTitles, boardRows } from "@/notion/parse";
+import { brandTitles, boardRowsWithoutOwners } from "@/notion/parse";
 import { currentUser, audit } from "@/server/fns/auth";
 import { isAdmin } from "@/lib/auth/users";
 import {
@@ -228,7 +228,7 @@ export async function fetchClientDetail(
       campaigns: [],
       events: [],
       unattributed: { campaigns: [], spend: 0, candidates: {} },
-      notionRows: adminBoardRows(row.raw),
+      notionRows: boardRowsWithoutOwners(row.raw),
       budget: budgetOf(row, 0, 0, todayYmd()),
     };
   }
@@ -387,21 +387,11 @@ export async function fetchClientDetail(
     campaigns,
     events: canonicalEvents(insightRows),
     unattributed,
-    notionRows: adminBoardRows(row.raw),
+    notionRows: boardRowsWithoutOwners(row.raw),
     // Divide by the whole window, not by the days that happened to have rows: a day with no
     // insights row is a real zero-spend day and must pull the pace down.
     budget: budgetOf(row, budgetSpent, paceSpend / PACE_DAYS, today),
   };
-}
-
-/**
- * The board rows for the admin status-override UI. `boardRows` also carries each row's Notion
- * `Owners` person ids (the daily check-in's recipient list); this response has no output schema and
- * serialises verbatim to any authenticated viewer, so the owners are projected away here rather than
- * shipped to a client that has no use for them.
- */
-function adminBoardRows(raw: unknown): ClientDetail["notionRows"] {
-  return boardRows(raw).map(({ pageId, title, status }) => ({ pageId, title, status }));
 }
 
 function budgetOf(

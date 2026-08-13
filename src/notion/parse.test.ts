@@ -8,6 +8,7 @@ import {
   parseClientName,
   brandTitles,
   boardRows,
+  boardRowsWithoutOwners,
   resolvePropertyKey,
   LIVE_STATUSES,
   STATUS_PRIORITY,
@@ -460,4 +461,19 @@ test("boardRows drops empty-string owner ids, exactly as peopleIds does on the w
   expect(
     boardRows([{ pageId: "p", title: "t", status: "Live", ownerIds: ["", SHIKHAR] }])[0],
   ).toEqual({ pageId: "p", title: "t", status: "Live", ownerIds: [SHIKHAR] });
+});
+
+test("boardRowsWithoutOwners returns exactly pageId, title and status", () => {
+  // Asserted on the key set, not with toEqual: toEqual passes an extra `ownerIds: []` on a subset
+  // match, which would leave this guard unkillable. The point of the function is the ABSENCE of the
+  // owner UUIDs, because ClientDetail.notionRows is serialised verbatim to any authenticated viewer.
+  const rows = boardRowsWithoutOwners([
+    { pageId: "p1", title: "Slots.lv", status: "Live", ownerIds: [SHIKHAR, VLAD] },
+    { pageId: "p2", title: "Farside" },
+  ]);
+
+  expect(rows).toHaveLength(2);
+  for (const row of rows) expect(Object.keys(row).sort()).toEqual(["pageId", "status", "title"]);
+  expect(rows[0]).toEqual({ pageId: "p1", title: "Slots.lv", status: "Live" });
+  expect(rows[1]).toEqual({ pageId: "p2", title: "Farside", status: null });
 });
