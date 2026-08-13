@@ -227,7 +227,7 @@ export class NotionClient {
    * `chunks` are pre-split by the caller because Notion rejects a rich_text item over 2000 chars.
    */
   async createComment(pageId: string, chunks: string[]): Promise<string> {
-    if (chunks.length === 0) throw new Error("refusing to post an empty comment");
+    if (chunks.length === 0) throw new Error(`refusing to post an empty comment on ${pageId}`);
     const body = await this.req(`/comments`, {
       method: "POST",
       body: JSON.stringify({
@@ -235,7 +235,11 @@ export class NotionClient {
         rich_text: chunks.map((content) => ({ type: "text", text: { content } })),
       }),
     });
-    return typeof body.id === "string" ? body.id : "";
+    const id = body.id;
+    if (typeof id !== "string" || !id) {
+      throw new Error(`Notion accepted the comment on ${pageId} but returned no id`);
+    }
+    return id;
   }
 }
 

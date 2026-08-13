@@ -211,6 +211,26 @@ test("createComment rejects an empty body instead of posting a blank comment", a
   const { calls, impl } = recorder([{}]);
   const client = new NotionClient("tok", impl);
 
-  await expect(client.createComment("page-1", [])).rejects.toThrow("empty");
+  // The page id must be in the message: the worker posts many comments per run, so a bare
+  // "empty comment" log line could not be correlated back to a campaign.
+  await expect(client.createComment("page-1", [])).rejects.toThrow(/empty comment on page-1/);
   expect(calls).toHaveLength(0);
+});
+
+test("createComment throws when the accepted response carries no comment id", async () => {
+  // Task 11 stores this id and treats NULL as "a retry is owed"; returning "" would mark the prompt
+  // durably commented with an unusable id, so it would never be retried nor flagged.
+  const { impl } = recorder([{ object: "comment" }]);
+  const client = new NotionClient("tok", impl);
+
+  await expect(client.createComment("page-1", ["hi"])).rejects.toThrow("returned no id");
+});
+
+test("createComment throws when the returned comment id is blank", async () => {
+  // A falsy-but-present id is the same unusable value as none at all; a `typeof` check alone
+  // would let "" through and store it as a real comment id.
+  const { impl } = recorder([{ object: "comment", id: "" }]);
+  const client = new NotionClient("tok", impl);
+
+  await expect(client.createComment("page-1", ["hi"])).rejects.toThrow("returned no id");
 });
