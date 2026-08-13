@@ -28,6 +28,9 @@ import {
   AUTO_GEO_COLUMN,
   geoSkipReason,
   planGeo,
+  AUTO_FUNDS_COLUMN,
+  FUNDS_COLUMN,
+  BUDGET_REMAINING_COLUMN,
 } from "./notion-budget";
 import { ACCOUNT_STATUS_COLUMN, resolvePropertyKey } from "@/notion/parse";
 
@@ -206,9 +209,21 @@ test("planSpendRow follows the same live-only rule and skips unchanged values", 
   );
 });
 
-test("both auto-updated columns carry the marker the plain lookup still resolves", () => {
+test("every auto-updated column name matches what is actually on the board", () => {
+  // These are not decoration. `ensureColumn` resolves by shape and CREATES when it finds nothing, so
+  // a constant that has drifted from the board silently stops maintaining the real column and grows
+  // a duplicate beside it. That is exactly what happened to the funds column when the team renamed
+  // it, which is why its name is spelled out here rather than assumed.
   expect(AUTO_BUDGET_COLUMN).toBe("🤖 Daily Budget ($)");
   expect(AUTO_SPEND_COLUMN).toBe("🤖 Avg Daily Spend 7d ($)");
+  expect(AUTO_FUNDS_COLUMN).toBe("🤖 Ad Account Funds Remaining ($)");
+  expect(AUTO_BUDGET_REMAINING_COLUMN).toBe("🤖 Budget Remaining ($)");
+  expect(AUTO_PROJECTED_END_COLUMN).toBe("🤖 Projected End Date");
+  expect(AUTO_DESTINATION_COLUMN).toBe("🤖 Destination URL");
+  // The two remaining-money columns must stay distinguishable by shape, or one would resolve to the
+  // other's column and the job would write the contract figure into the ad-account balance.
+  expect(resolvePropertyKey([AUTO_FUNDS_COLUMN], BUDGET_REMAINING_COLUMN)).toBeNull();
+  expect(resolvePropertyKey([AUTO_BUDGET_REMAINING_COLUMN], FUNDS_COLUMN)).toBeNull();
 });
 
 test("planEndDate writes a projection only for live rows, and never rewrites the same date", () => {

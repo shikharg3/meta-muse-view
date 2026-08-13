@@ -68,7 +68,16 @@ import { geoCell, type GeoSpend } from "@/lib/geo-cell";
  *  them — the first records what was planned, the second what was contracted. Both are human-owned. */
 export const BUDGET_COLUMN = "Daily Budget ($)";
 export const SPEND_COLUMN = "Avg Daily Spend 7d ($)";
-export const FUNDS_COLUMN = "Funds Remaining ($)";
+/**
+ * Renamed on the board to disambiguate it from `Budget Remaining ($)`: this one is money actually
+ * sitting in the ad accounts, that one is what is left of the contract.
+ *
+ * The constant MUST track the board. `resolvePropertyKey` matches on shape, so the old name
+ * `"Funds Remaining ($)"` resolved to nothing against the renamed column — the job silently stopped
+ * maintaining it, and the next non-dry run would have created a duplicate beside it. The team kept
+ * the `🤖` marker when they renamed, so the column is still machine-owned.
+ */
+export const FUNDS_COLUMN = "Ad Account Funds Remaining ($)";
 export const PROJECTED_END_COLUMN = "Projected End Date";
 export const DESTINATION_COLUMN = "Destination URL";
 export const BUDGET_REMAINING_COLUMN = "Budget Remaining ($)";
