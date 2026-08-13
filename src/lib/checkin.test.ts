@@ -58,3 +58,85 @@ test("the gate hours are the agreed ones", () => {
   expect(CHECKIN_HOUR).toBe(17);
   expect(ESCALATION_HOUR).toBe(9);
 });
+
+import { planPrompts, type CheckinBoardRow, type CheckinBuyer } from "./checkin";
+
+const VLAD = "2cbd872b-594c-8119-9649-0002845d8d9c";
+const SHIKHAR = "254d872b-594c-8154-9479-000271904e5b";
+const SOFIA = "28cd872b-594c-81ff-af89-0002cb38d0f7";
+
+const buyers: CheckinBuyer[] = [
+  { personId: SHIKHAR, displayName: "Shikhar Gupta", chatId: "111", active: true },
+  { personId: VLAD, displayName: "Vladyslav Istrati", chatId: "222", active: true },
+];
+
+const row = (o: Partial<CheckinBoardRow> = {}): CheckinBoardRow => ({
+  pageId: o.pageId ?? "p1",
+  title: o.title ?? "Slots.lv",
+  // `o.status ?? "Live"` would turn an explicit `status: null` back into "Live" and make the
+  // out-of-scope test assert nothing. Only an absent key takes the default.
+  status: "status" in o ? (o.status ?? null) : "Live",
+  ownerIds: o.ownerIds ?? [SHIKHAR],
+});
+
+test("a live row owned by a buyer produces one prompt", () => {
+  const plans = planPrompts([row()], buyers);
+  expect(plans).toHaveLength(1);
+  expect(plans[0]).toEqual({
+    notionPageId: "p1",
+    campaignTitle: "Slots.lv",
+    status: "Live",
+    buyerPersonId: SHIKHAR,
+    chatId: "111",
+    question: "Any changes today — budget, creatives, targeting?",
+  });
+});
+
+test("out-of-scope statuses produce nothing", () => {
+  expect(planPrompts([row({ status: "Full Budget Finished" })], buyers)).toEqual([]);
+  expect(planPrompts([row({ status: null })], buyers)).toEqual([]);
+});
+
+test("non-buyer owners are ignored", () => {
+  // Sofia, Nick, Abel and Elad own rows but are not media buyers.
+  expect(planPrompts([row({ ownerIds: [SOFIA] })], buyers)).toEqual([]);
+});
+
+test("a row with no owners produces nothing", () => {
+  expect(planPrompts([row({ ownerIds: [] })], buyers)).toEqual([]);
+});
+
+test("a row owned by both buyers prompts both", () => {
+  const plans = planPrompts([row({ ownerIds: [SHIKHAR, VLAD] })], buyers);
+  expect(plans.map((p) => p.buyerPersonId).sort()).toEqual([SHIKHAR, VLAD].sort());
+});
+
+test("an inactive buyer is skipped", () => {
+  const inactive = [{ ...buyers[0], active: false }, buyers[1]];
+  expect(planPrompts([row({ ownerIds: [SHIKHAR] })], inactive)).toEqual([]);
+});
+
+test("a buyer with no bound chat is still planned, with a null chat", () => {
+  // Planned rather than dropped so the 09:00 escalation can name the binding gap.
+  const unbound = [{ ...buyers[0], chatId: null }];
+  const plans = planPrompts([row()], unbound);
+  expect(plans).toHaveLength(1);
+  expect(plans[0].chatId).toBeNull();
+});
+
+test("the same page listed twice yields one prompt per buyer", () => {
+  // A page can appear under more than one client snapshot; a duplicate prompt would double-comment.
+  const plans = planPrompts([row(), row()], buyers);
+  expect(plans).toHaveLength(1);
+});
+
+test("prompts are ordered by campaign title so the message is stable", () => {
+  const plans = planPrompts(
+    [
+      row({ pageId: "p2", title: "Zebra", ownerIds: [SHIKHAR] }),
+      row({ pageId: "p3", title: "Alpha", ownerIds: [SHIKHAR] }),
+    ],
+    buyers,
+  );
+  expect(plans.map((p) => p.campaignTitle)).toEqual(["Alpha", "Zebra"]);
+});

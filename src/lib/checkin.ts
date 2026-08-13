@@ -55,3 +55,68 @@ export function isCheckinStatus(status: string | null | undefined): status is Ch
 export function questionFor(status: string | null | undefined): string | null {
   return isCheckinStatus(status) ? CHECKIN_QUESTIONS[status] : null;
 }
+
+/** One board row as the planner needs it: its own status and its Notion `Owners` person ids. */
+export interface CheckinBoardRow {
+  pageId: string;
+  title: string;
+  status: string | null;
+  ownerIds: string[];
+}
+
+/** A media buyer. Membership in this list is what makes someone a media buyer — it is DB data. */
+export interface CheckinBuyer {
+  personId: string;
+  displayName: string;
+  /** Null until an admin binds their Telegram chat. */
+  chatId: string | null;
+  active: boolean;
+}
+
+export interface PlannedPrompt {
+  notionPageId: string;
+  campaignTitle: string;
+  /** Narrowed by `isCheckinStatus`, so a prompt can only ever carry an in-scope status. */
+  status: CheckinStatus;
+  buyerPersonId: string;
+  chatId: string | null;
+  question: string;
+}
+
+/**
+ * One prompt per (row, media-buyer owner) for rows whose status is in scope.
+ *
+ * Rows are de-duplicated by page id: the same board page can appear in more than one client
+ * snapshot, and a duplicate would write two comments for one answer. An unbound buyer is still
+ * planned (with `chatId: null`) so the escalation can name the missing binding instead of the row
+ * disappearing silently.
+ */
+export function planPrompts(rows: CheckinBoardRow[], buyers: CheckinBuyer[]): PlannedPrompt[] {
+  const byPerson = new Map(buyers.filter((b) => b.active).map((b) => [b.personId, b]));
+  const seen = new Set<string>();
+  const out: PlannedPrompt[] = [];
+
+  const ordered = [...rows].sort((a, b) => a.title.localeCompare(b.title));
+  for (const row of ordered) {
+    // Narrow rather than lookup-then-null-check: this is what lets `PlannedPrompt.status` be the
+    // `CheckinStatus` union instead of bare `string`, all the way through to the database write.
+    if (!isCheckinStatus(row.status)) continue;
+    const question = CHECKIN_QUESTIONS[row.status];
+    for (const ownerId of row.ownerIds) {
+      const buyer = byPerson.get(ownerId);
+      if (!buyer) continue;
+      const key = `${row.pageId}:${ownerId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({
+        notionPageId: row.pageId,
+        campaignTitle: row.title,
+        status: row.status,
+        buyerPersonId: buyer.personId,
+        chatId: buyer.chatId,
+        question,
+      });
+    }
+  }
+  return out;
+}
