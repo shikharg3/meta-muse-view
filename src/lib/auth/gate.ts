@@ -257,6 +257,11 @@ export async function handleAuth(request: Request): Promise<Response | null> {
   const path = url.pathname;
   // Legal pages are public in EVERY mode (incl. basic-auth test mode) — App Review opens them.
   if (path === "/privacy" || path === "/terms") return legalPage(path);
+  // Client-portal design preview (roadmap Track A) — public in EVERY mode, including basic-auth
+  // test mode. It renders only from src/portal/mock.ts: generated numbers, no database, no server
+  // functions, so there is nothing to gate. Remove this the moment the portal reads real data
+  // behind a `client` role and a scope boundary.
+  if (path === "/portal" || path.startsWith("/portal/")) return null;
   const basic = basicAuthCreds();
   if (basic) return handleBasicAuth(request, url, path, basic);
   if (path.startsWith("/auth/")) return authEndpoint(request, path);

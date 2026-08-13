@@ -182,7 +182,8 @@ function RootComponent() {
   const { queryClient } = Route.useRouteContext();
   const { user, business, accounts, filterClients } = Route.useLoaderData();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
-  const bare = pathname === "/login" || pathname === "/signup";
+  // The client portal and the auth screens bring their own full-page chrome.
+  const bare = pathname === "/login" || pathname === "/signup" || pathname.startsWith("/portal");
 
   return (
     <QueryClientProvider client={queryClient}>

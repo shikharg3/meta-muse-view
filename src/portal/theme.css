@@ -1,0 +1,293 @@
+/*
+ * Client portal — its own visual language, scoped to `.dot-portal`.
+ *
+ * Deliberately NOT the internal dashboard's look. The internal tool is a dense operations console;
+ * this is a document a client reads, so it borrows from a private-banking statement: deep ink,
+ * champagne accent, an editorial serif for headings, tabular mono for every figure, hairlines
+ * instead of boxes, and one orchestrated entrance rather than scattered motion.
+ *
+ * Tailwind utilities still apply (styles.css scans all of src/); this file owns the tokens, the
+ * atmosphere and the few components utilities cannot express.
+ */
+
+.dot-portal {
+  --pf-bg: oklch(0.142 0.009 264);
+  --pf-bg-2: oklch(0.176 0.011 264);
+  --pf-panel: oklch(1 0 0 / 0.028);
+  --pf-panel-2: oklch(1 0 0 / 0.055);
+  --pf-line: oklch(1 0 0 / 0.085);
+  --pf-line-strong: oklch(1 0 0 / 0.18);
+  --pf-text: oklch(0.966 0.006 90);
+  --pf-dim: oklch(0.735 0.012 264);
+  --pf-faint: oklch(0.56 0.014 264);
+  --pf-gold: oklch(0.845 0.115 82);
+  --pf-gold-deep: oklch(0.63 0.11 70);
+  --pf-mint: oklch(0.8 0.13 168);
+  --pf-rose: oklch(0.68 0.17 22);
+  --pf-violet: oklch(0.73 0.13 302);
+
+  --pf-serif: "Fraunces", "Iowan Old Style", Georgia, serif;
+  --pf-sans: "Manrope", ui-sans-serif, system-ui, sans-serif;
+  --pf-mono: "IBM Plex Mono", ui-monospace, monospace;
+
+  position: relative;
+  min-height: 100vh;
+  background-color: var(--pf-bg);
+  color: var(--pf-text);
+  font-family: var(--pf-sans);
+  font-feature-settings: "ss01", "cv11";
+  -webkit-font-smoothing: antialiased;
+}
+
+/* The app sets a global `* { border-color: … }`; the portal's hairlines must win. */
+.dot-portal *,
+.dot-portal *::before,
+.dot-portal *::after {
+  border-color: var(--pf-line);
+}
+
+.dot-portal ::selection {
+  background: oklch(0.845 0.115 82 / 0.28);
+}
+
+.dot-portal :focus-visible {
+  outline: 2px solid var(--pf-gold);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+/* ---------------------------------------------------------------- atmosphere */
+
+/* Warm light bleeding in from the top edge, so the page has a direction. */
+.pf-glow::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 620px;
+  pointer-events: none;
+  background:
+    radial-gradient(115% 100% at 22% -12%, oklch(0.845 0.115 82 / 0.11), transparent 62%),
+    radial-gradient(85% 80% at 88% -20%, oklch(0.73 0.13 302 / 0.09), transparent 60%);
+}
+
+/* Film grain — kills the flat-digital feel that makes dark dashboards look cheap. */
+.pf-grain::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  pointer-events: none;
+  opacity: 0.055;
+  mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* ---------------------------------------------------------------- type */
+
+.pf-display {
+  font-family: var(--pf-serif);
+  font-optical-sizing: auto;
+  font-weight: 400;
+  letter-spacing: -0.018em;
+  line-height: 1.02;
+}
+.pf-display-em {
+  font-family: var(--pf-serif);
+  font-style: italic;
+  font-weight: 300;
+}
+.pf-num {
+  font-family: var(--pf-mono);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.03em;
+}
+.pf-eyebrow {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--pf-faint);
+}
+
+/* ---------------------------------------------------------------- surfaces */
+
+.pf-panel {
+  background:
+    linear-gradient(180deg, var(--pf-panel-2), var(--pf-panel)),
+    linear-gradient(0deg, var(--pf-bg), var(--pf-bg));
+  border: 1px solid var(--pf-line);
+  border-radius: 14px;
+}
+/* A hairline that fades out, used to separate bands of content. */
+.pf-rule {
+  height: 1px;
+  border: 0;
+  background: linear-gradient(90deg, var(--pf-line-strong), var(--pf-line) 45%, transparent);
+}
+
+.pf-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid var(--pf-line);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--pf-dim);
+  background: oklch(1 0 0 / 0.02);
+  transition:
+    color 0.16s,
+    border-color 0.16s,
+    background 0.16s;
+  cursor: pointer;
+}
+.pf-chip:hover {
+  color: var(--pf-text);
+  border-color: var(--pf-line-strong);
+}
+.pf-chip[data-on="true"] {
+  color: var(--pf-bg);
+  background: var(--pf-gold);
+  border-color: var(--pf-gold);
+  font-weight: 600;
+}
+
+.pf-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  height: 38px;
+  padding: 0 16px;
+  border-radius: 10px;
+  border: 1px solid var(--pf-line-strong);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--pf-text);
+  background: oklch(1 0 0 / 0.03);
+  transition:
+    transform 0.14s,
+    background 0.16s,
+    border-color 0.16s;
+  cursor: pointer;
+}
+.pf-btn:hover {
+  background: oklch(1 0 0 / 0.07);
+  transform: translateY(-1px);
+}
+.pf-btn-gold {
+  color: oklch(0.18 0.02 80);
+  background: linear-gradient(180deg, var(--pf-gold), var(--pf-gold-deep));
+  border-color: transparent;
+  box-shadow: 0 8px 24px -12px oklch(0.845 0.115 82 / 0.7);
+}
+.pf-btn-gold:hover {
+  background: linear-gradient(180deg, oklch(0.885 0.12 84), var(--pf-gold));
+}
+
+/* ---------------------------------------------------------------- tables */
+
+.pf-row {
+  transition: background 0.16s;
+}
+.pf-row:hover {
+  background: oklch(1 0 0 / 0.025);
+}
+/*
+ * The gold hover sliver hangs off the row's FIRST CELL, not the row itself. A pseudo-element on a
+ * `<tr>` is not a table-cell, so the table fixup wraps it in an anonymous cell and pushes every real
+ * cell one column right — head and body then disagree about where each column starts.
+ */
+.pf-row > :first-child {
+  position: relative;
+}
+.pf-row > :first-child::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 2px;
+  background: var(--pf-gold);
+  opacity: 0;
+  transition: opacity 0.18s;
+}
+.pf-row:hover > :first-child::before {
+  opacity: 0.95;
+}
+
+/* ---------------------------------------------------------------- motion */
+
+@keyframes pf-rise {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+/* One staggered page entrance: each element sets its own --d. */
+.pf-rise {
+  animation: pf-rise 0.62s cubic-bezier(0.16, 0.84, 0.24, 1) both;
+  animation-delay: var(--d, 0ms);
+}
+
+@keyframes pf-sweep {
+  from {
+    transform: translateX(-120%);
+  }
+  to {
+    transform: translateX(320%);
+  }
+}
+.pf-sweep {
+  animation: pf-sweep 2.4s ease-in-out infinite;
+}
+
+@keyframes pf-draw {
+  from {
+    stroke-dashoffset: 1;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+.pf-draw {
+  stroke-dasharray: 1;
+  pathlength: 1;
+  animation: pf-draw 1.1s ease-out both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pf-rise,
+  .pf-sweep,
+  .pf-draw {
+    animation: none;
+  }
+}
+
+/* ---------------------------------------------------------------- misc */
+
+.dot-portal ::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.dot-portal ::-webkit-scrollbar-thumb {
+  background: oklch(1 0 0 / 0.13);
+  border-radius: 999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+.dot-portal ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Recharts paints an SVG focus outline on hover; suppress it inside the portal. */
+.dot-portal .recharts-wrapper:focus,
+.dot-portal .recharts-surface:focus {
+  outline: none;
+}
