@@ -34,8 +34,8 @@ test("inherited Object members are not mistaken for statuses", () => {
 });
 
 test("isCheckinStatus recognises exactly the six in-scope statuses", () => {
-  expect(Object.keys(CHECKIN_QUESTIONS).every(isCheckinStatus)).toBe(true);
-  expect(Object.keys(CHECKIN_QUESTIONS)).toHaveLength(6);
+  // `Object.keys(X).every(isCheckinStatus)` would be tautological — isCheckinStatus IS hasOwn over
+  // that same object — and the six-value assertion lives in the next test.
   expect(isCheckinStatus("Live")).toBe(true);
   expect(isCheckinStatus("Not started")).toBe(false);
   expect(isCheckinStatus(null)).toBe(false);

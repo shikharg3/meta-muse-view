@@ -19,7 +19,7 @@ export const ESCALATION_HOUR = 9;
  *
  * `as const satisfies Record<MachineStatus | "On Boarding", string>` earns three things a
  * `Record<string, string>` annotation cannot: the compiler rejects a missing machine status, the
- * catalogue cannot be mutated by a consumer (this is imported into a long-lived sync worker), and
+ * compiler rejects mutating it (`as const` is compile-time only; nothing is frozen at runtime), and
  * `CheckinStatus` below becomes a usable union instead of bare `string`.
  *
  * A status absent from this map is NOT prompted (see `questionFor`) — a default question would ask a

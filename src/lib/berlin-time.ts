@@ -13,23 +13,24 @@ export interface LocalNow {
 }
 
 /**
- * `hourCycle: "h23"` asks ICU for the 0-23 cycle explicitly.
+ * Formatter options. The formatter itself is constructed per call inside `berlinNow`, NOT hoisted:
+ * an import-time formatter cannot observe a `process.env.TZ` change, which makes the hostile-timezone
+ * test inert (mutation-proven: the dropped-`timeZone` mutant survived 7 of 7). This runs about twice
+ * a minute, so the construction cost is irrelevant, and `format.ts` already builds `Intl` per call.
  *
- * Do NOT swap it for `hour12: false`: ECMA-402 lets `hour12` override `hourCycle`, and an `h24`
- * cycle renders Berlin midnight as hour "24" (measured) with the date already rolled forward, which
- * would leave an `hour >= CHECKIN_HOUR` gate true all night.
+ * `hourCycle: "h23"` asks ICU for the 0-23 cycle explicitly. Do NOT swap it for `hour12: false`:
+ * ECMA-402 lets `hour12` override `hourCycle`, and an `h24` cycle renders Berlin midnight as hour
+ * "24" (measured) with the date already rolled forward, which would leave an
+ * `hour >= CHECKIN_HOUR` gate true all night.
  */
-const BERLIN = new Intl.DateTimeFormat("en-CA", {
+const BERLIN_OPTIONS: Intl.DateTimeFormatOptions = {
   timeZone: "Europe/Berlin",
   year: "numeric",
   month: "2-digit",
   day: "2-digit",
   hour: "2-digit",
   hourCycle: "h23",
-});
-
-const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+};
 
 /**
  * Berlin wall-clock date and hour for an instant. "17:00 CET" means 17:00 local, so this follows
@@ -44,7 +45,7 @@ export function berlinNow(at: Date): LocalNow {
   let month: string | undefined;
   let day: string | undefined;
   let hour: string | undefined;
-  for (const p of BERLIN.formatToParts(at)) {
+  for (const p of new Intl.DateTimeFormat("en-CA", BERLIN_OPTIONS).formatToParts(at)) {
     if (p.type === "year") year = p.value;
     else if (p.type === "month") month = p.value;
     else if (p.type === "day") day = p.value;
@@ -54,17 +55,4 @@ export function berlinNow(at: Date): LocalNow {
     throw new Error("berlinNow: Intl returned no Berlin date parts");
   }
   return { date: `${year}-${month}-${day}`, hour: Number(hour) };
-}
-
-/**
- * "Thu 13 Aug" from a YYYY-MM-DD date, for the top of the buyer's daily Telegram message.
- *
- * Table lookup on UTC fields rather than a locale format: `en-GB` returns "Thu, 13 Aug" and would
- * need its comma stripped, which buys a dependency on ICU never reordering the fields. Same approach
- * as `shortDay` in `src/portal/mock.ts`.
- */
-export function dayLabel(date: string): string {
-  const d = new Date(`${date}T00:00:00Z`);
-  const day = String(d.getUTCDate()).padStart(2, "0");
-  return `${DAYS[d.getUTCDay()]} ${day} ${MONTHS[d.getUTCMonth()]}`;
 }

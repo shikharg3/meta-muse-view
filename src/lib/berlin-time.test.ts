@@ -1,9 +1,19 @@
 import { test, expect } from "bun:test";
-import { berlinNow, dayLabel } from "./berlin-time";
+import { berlinNow } from "./berlin-time";
 
-/** Run `fn` as if the process were in `tz`, then restore. Bun applies a mid-run TZ change at once. */
+/**
+ * Run `fn` as if the process were in `tz`, then restore.
+ *
+ * Restores a CONCRETE zone name. `process.env.TZ` is unset by default under `bun test`, and
+ * assigning `undefined` to a `process.env` key stores the literal string `"undefined"` instead of
+ * deleting it, which leaves ICU pinned to the hostile zone for the rest of the process — measured
+ * leaking across test files. `delete process.env.TZ` clears the key but also leaves ICU hostile.
+ *
+ * Only objects constructed AFTER the flip observe it, so the function under test must build its own
+ * `Date`/`Intl` internally for a probe like this to mean anything.
+ */
 function withTZ<T>(tz: string, fn: () => T): T {
-  const prev = process.env.TZ;
+  const prev = process.env.TZ ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
   process.env.TZ = tz;
   try {
     return fn();
@@ -35,20 +45,8 @@ test("does not reach the prompt hour one minute early", () => {
 });
 
 test("berlinNow ignores the process timezone", () => {
-  // Fails if the formatter's `timeZone: "Europe/Berlin"` is ever dropped — the sync worker's host
-  // timezone must not decide when the prompt fires.
+  // Bites only because berlinNow builds its formatter per call: an import-time formatter cannot
+  // observe this flip, and a dropped `timeZone: "Europe/Berlin"` would survive the mutation.
   const hostile = withTZ("Pacific/Kiritimati", () => berlinNow(new Date("2026-08-13T15:30:00Z")));
   expect(hostile).toEqual({ date: "2026-08-13", hour: 17 });
-});
-
-test("dayLabel formats a date as 'Thu 13 Aug'", () => {
-  expect(dayLabel("2026-08-13")).toBe("Thu 13 Aug");
-  expect(dayLabel("2026-08-03")).toBe("Mon 03 Aug");
-  expect(dayLabel("2026-01-01")).toBe("Thu 01 Jan");
-});
-
-test("dayLabel ignores the process timezone", () => {
-  // A UTC+14 runner must not shift the label onto the next day.
-  expect(withTZ("Pacific/Kiritimati", () => dayLabel("2026-08-13"))).toBe("Thu 13 Aug");
-  expect(withTZ("Pacific/Midway", () => dayLabel("2026-08-13"))).toBe("Thu 13 Aug");
 });
