@@ -2834,6 +2834,42 @@ git commit -m "feat(checkin): run the check-in loop independently of the sync cy
 
 ## Task 13: Settings panel for buyer binding
 
+> **Corrected 2026-08-13 during implementation.** Eleven defects in the task as written below; the
+> shipped code is authoritative. The three that matter most:
+>
+> 1. **A failed load rendered as "No buyers bound yet".** With the sketched structure, a dead tunnel
+>    or a missing relation still rendered the normal body, so "the bindings are unknown" was
+>    indistinguishable from "nobody is a media buyer" — the one wrong answer this panel must never
+>    give. Observed verbatim while `media_buyers` was absent from `meta`: `Loading…`, `Unbind`, a raw
+>    `Failed query:` dump, `BOUND BUYERS (0)` and `No media buyers yet — nobody will be prompted.`
+>    all on screen at once. Replace the body entirely on a failed FIRST load with a distinct error
+>    state, the raw reason, and a Retry; on a failed RELOAD, keep the last-known data behind a
+>    "showing the last successful read" banner. (`DrizzleQueryError.message` omits its cause, so the
+>    UI showed the SQL but never the reason — surface the cause chain.)
+> 2. **`upsertMediaBuyer` had no `23505` handling**, because the sketch predates
+>    `media_buyers_chat_idx` being load-bearing. A duplicate chat surfaced a raw SQL dump in the UI.
+>    Walk the cause chain, look the current holder up, and return a sentence naming them and telling
+>    the admin to unbind them first.
+> 3. **The form initialised `chatId` to `""`**, so selecting an already-bound buyer and pressing the
+>    button silently UNBOUND them. Track "untouched" as null so the select mirrors the stored binding
+>    until the admin actually changes it.
+>
+> The rest, briefly: export a named `CheckinAdminView` rather than inferring it; `reload()` needs a
+> `.catch` or it is an unhandled rejection every time the DB is unreachable; the `today` field
+> actually holds up to 50 rows across several days, so rename it, carry `promptDate`, and key on `id`
+> rather than the array index; add `id` as a tie-break in the prompts `ORDER BY` or two rows for one
+> campaign with two owners reorder between reloads; `setMediaBuyerActive` returned `{ok:true}`
+> unconditionally, so a stale panel got "success" for a buyer that no longer exists and the audit log
+> grew a phantom entry — guard with `.returning()`; the panel offered only two hardcoded buyers with
+> no way to add a third, contradicting "a third buyer must be a Settings action, not a deploy", so add
+> an "Other…" escape hatch and union in existing rows; resolve `buyerPersonId` to a display name with
+> a raw-id fallback, because a bare UUID is useless to an admin; and mount the panel BEFORE the
+> destructive "Reset synced data" card — that file deliberately keeps its danger zone last, so
+> "immediately before the container's closing tag" puts an ordinary panel after it.
+>
+> Also add an explicit empty state for `TELEGRAM_BOT_TOKEN` being unset: without it the panel tells an
+> admin to go send `/start` when no `/start` can ever be received.
+
 **Files:**
 - Create: `src/server/fns/checkin.ts`
 - Create: `src/lib/api/checkin.ts`
