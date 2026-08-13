@@ -581,7 +581,8 @@ export interface CheckinBuyer {
 export interface PlannedPrompt {
   notionPageId: string;
   campaignTitle: string;
-  status: string;
+  /** Narrowed by `isCheckinStatus`, so a prompt can only ever carry an in-scope status. */
+  status: CheckinStatus;
   buyerPersonId: string;
   chatId: string | null;
   question: string;
@@ -602,8 +603,10 @@ export function planPrompts(rows: CheckinBoardRow[], buyers: CheckinBuyer[]): Pl
 
   const ordered = [...rows].sort((a, b) => a.title.localeCompare(b.title));
   for (const row of ordered) {
-    const question = questionFor(row.status);
-    if (!question || !row.status) continue;
+    // Narrow rather than lookup-then-null-check: this is what lets `PlannedPrompt.status` be the
+    // `CheckinStatus` union instead of bare `string`, all the way through to the database write.
+    if (!isCheckinStatus(row.status)) continue;
+    const question = CHECKIN_QUESTIONS[row.status];
     for (const ownerId of row.ownerIds) {
       const buyer = byPerson.get(ownerId);
       if (!buyer) continue;
