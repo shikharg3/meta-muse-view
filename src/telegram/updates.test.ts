@@ -82,6 +82,9 @@ function fakeDeps(overrides: Partial<UpdateDeps> = {}) {
     markAwaitingReply: async (id, messageId) => {
       log.push(`awaiting:${id}:${messageId}`);
     },
+    noteFailure: async (id, note) => {
+      log.push(`note:${id}:${note}`);
+    },
     saveAnswer: async (id, text) => {
       log.push(`answer:${id}:${text}`);
     },
@@ -133,6 +136,9 @@ test("tapping Update sends a force-reply prompt and records the message id", asy
   // The force-reply message id is what binds a later typed answer to THIS campaign.
   expect(log).toContain("awaiting:7:900");
   expect(log.filter((l) => l.startsWith("ack:"))).toEqual(["ack:cb:"]);
+  // An armed prompt is not a failure: `note` holds the LAST error, so writing one here would leave a
+  // stale cause on a row that worked.
+  expect(log.some((l) => l.startsWith("note:"))).toBe(false);
 });
 
 test("a reply to the force-reply message is saved against that campaign", async () => {
@@ -171,33 +177,53 @@ test("a reply to the force-reply message is saved against that campaign", async 
   expect(log.some((l) => l.startsWith("lookup:open"))).toBe(false);
 });
 
-test("a reply to a CLOSED prompt's force-reply box is refused, not written", async () => {
-  // The callback path refuses these three states via OPEN; the reply path must too. Task 11's
-  // `loadPromptByReply` matches on (chatId, replyMessageId) only, so it WILL hand back a closed row
-  // when the buyer replies to an old force-reply message. Re-writing an `answered` prompt overwrites
-  // `answerText` while `notionCommentId` is already set, so the correction never reaches Notion.
-  for (const state of ["answered", "no_changes", "escalated"] as const) {
-    const { log, sent, deps } = fakeDeps({ loadPromptByReply: async () => prompt({ state }) });
+test("a late reply to an ESCALATED prompt is still saved", async () => {
+  // The 09:00 escalation is a nag, not a close. A buyer who answers yesterday's prompt at 09:05 --
+  // precisely the behaviour the escalation is designed to provoke -- must still have it land.
+  // This is why the reply path must NOT simply reuse the callback path's OPEN set.
+  const { log, deps } = fakeDeps({
+    loadPromptByReply: async () => prompt({ state: "escalated" }),
+  });
+
+  await handleUpdate(
+    {
+      update_id: 20,
+      message: {
+        message_id: 980,
+        chat: { id: 111 },
+        text: "sorry - paused it yesterday",
+        reply_to_message: { message_id: 900 },
+      },
+    },
+    deps,
+  );
+
+  expect(log).toContain("answer:7:sorry - paused it yesterday");
+});
+
+test("a reply correcting an already-CLOSED prompt is still saved", async () => {
+  // The other half of the same rule, and the reason the fix for a re-answered prompt belongs in
+  // Task 11's `saveAnswer` (which clears `notionCommentId` when the text changes) and NOT in a gate
+  // here: `PromptRow` does not carry `notionCommentId`, so the dispatcher cannot see the fact that
+  // decides whether a correction is safe. Refusing these would discard "actually, we paused it"
+  // outright — the reply id is conclusive evidence that the buyer means THIS campaign.
+  for (const state of ["answered", "no_changes"] as const) {
+    const { log, deps } = fakeDeps({ loadPromptByReply: async () => prompt({ state }) });
 
     await handleUpdate(
       {
-        update_id: 16,
+        update_id: 21,
         message: {
-          message_id: 970,
+          message_id: 981,
           chat: { id: 111 },
-          text: "actually ignore that",
+          text: "correction: we paused it",
           reply_to_message: { message_id: 900 },
         },
       },
       deps,
     );
 
-    expect(log.some((l) => l.startsWith("answer:"))).toBe(false);
-    // And it must NOT fall through to the single-awaiting rule: an explicit reply naming a closed
-    // prompt is conclusive evidence that this is not an answer to some OTHER campaign.
-    expect(log.some((l) => l.startsWith("lookup:open"))).toBe(false);
-    // The buyer is told which campaign was refused, so the silence is not mistaken for a save.
-    expect(sent[0].text).toContain("Slots.lv");
+    expect(log).toContain("answer:7:correction: we paused it");
   }
 });
 
@@ -417,10 +443,14 @@ test("a callback with malformed data is acknowledged and dropped", async () => {
   expect(bare.log).toEqual(["ack:cb2:Unrecognised action"]);
 });
 
-test("a force-reply that failed to send is never recorded as awaiting a reply", async () => {
+test("a force-reply that failed to send records the reason and is never marked awaiting", async () => {
   // Marking awaiting_reply with no reply box in the chat would make the buyer's NEXT unrelated
-  // message get attributed to this campaign by the single-awaiting rule.
-  const failed = fakeDeps({ sendMessage: async () => ({ ok: false }) });
+  // message get attributed to this campaign by the single-awaiting rule. The prompt stays open and
+  // escalates at 09:00, so `note` is the only place the cause survives — a revoked token and a
+  // genuinely quiet day are otherwise indistinguishable.
+  const failed = fakeDeps({
+    sendMessage: async () => ({ ok: false, error: "403 bot was blocked by the user" }),
+  });
 
   await handleUpdate(
     { update_id: 11, callback_query: { id: "cb", data: "up:7", from: { id: 111 } } },
@@ -429,8 +459,18 @@ test("a force-reply that failed to send is never recorded as awaiting a reply", 
 
   expect(failed.log.some((l) => l.startsWith("awaiting:"))).toBe(false);
   expect(failed.log).toContain("ack:cb:Could not open the reply box");
+  expect(failed.log).toContain("note:7:force reply failed: 403 bot was blocked by the user");
 
-  // Sent, but Telegram's envelope carried no message_id: there is nothing to bind a reply to.
+  // A failure with no reason still records that it failed, rather than writing "undefined".
+  const bare = fakeDeps({ sendMessage: async () => ({ ok: false }) });
+  await handleUpdate(
+    { update_id: 112, callback_query: { id: "cb", data: "up:7", from: { id: 111 } } },
+    bare.deps,
+  );
+  expect(bare.log).toContain("note:7:force reply failed: unknown error");
+
+  // Sent, but Telegram's envelope carried no message_id: there is nothing to bind a reply to, so the
+  // ack must not imply success either.
   const idless = fakeDeps({ sendMessage: async () => ({ ok: true }) });
 
   await handleUpdate(
@@ -439,6 +479,8 @@ test("a force-reply that failed to send is never recorded as awaiting a reply", 
   );
 
   expect(idless.log.some((l) => l.startsWith("awaiting:"))).toBe(false);
+  expect(idless.log).toContain("note:7:force reply sent but Telegram returned no message_id");
+  expect(idless.log).toContain("ack:cb:Could not open the reply box");
 });
 
 test("a callback on a prompt with no stored chat or list message uses the sender and skips the re-render", async () => {

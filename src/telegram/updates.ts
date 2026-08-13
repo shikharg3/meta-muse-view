@@ -23,19 +23,24 @@ export interface PromptRow {
  * with fakes — no database and no Telegram in the tests.
  */
 export interface UpdateDeps {
+  /**
+   * Mirrors `TelegramClient.sendMessage`'s result, `error` included: a force-reply that never
+   * arrived leaves the prompt open to escalate at 09:00, and the reason has to reach
+   * `checkin_prompts.note` or a revoked token looks identical to a quiet day.
+   */
   sendMessage(
     chatId: string,
     text: string,
     forceReply?: boolean,
-  ): Promise<{ ok: boolean; messageId?: number }>;
+  ): Promise<{ ok: boolean; messageId?: number; error?: string }>;
   answerCallback(id: string, text?: string): Promise<void>;
   recordChat(chatId: string, username?: string, firstName?: string): Promise<void>;
   isBoundChat(chatId: string): Promise<boolean>;
   loadPrompt(id: number): Promise<PromptRow | null>;
   /**
    * Look up by the id of the `force_reply` message the buyer replied to. Matches on the message id
-   * ALONE and does NOT filter by state — the dispatcher applies the `OPEN` gate itself, because a
-   * closed prompt named by an explicit reply must be refused rather than silently re-written.
+   * ALONE and does NOT filter by state, which is what lets a late answer to an `escalated` prompt
+   * land. The dispatcher deliberately does not re-gate it either — see rule (1).
    */
   loadPromptByReply(chatId: string, replyMessageId: number): Promise<PromptRow | null>;
   /**
@@ -45,6 +50,11 @@ export interface UpdateDeps {
   openPromptsForChat(chatId: string): Promise<PromptRow[]>;
   markNoChanges(id: number): Promise<void>;
   markAwaitingReply(id: number, replyMessageId: number): Promise<void>;
+  /**
+   * Record why a prompt could not be armed, into `checkin_prompts.note`. The prompt stays open and
+   * escalates at 09:00 regardless; this is the only place the reason survives.
+   */
+  noteFailure(id: number, note: string): Promise<void>;
   saveAnswer(id: number, text: string): Promise<void>;
   rerenderList(chatId: string, listMessageId: string): Promise<void>;
 }
@@ -120,9 +130,21 @@ export async function handleUpdate(update: TelegramUpdate, deps: UpdateDeps): Pr
       );
       // Only a delivered force-reply message may mark the prompt as awaiting: otherwise the buyer's
       // next unrelated message would be attributed to this campaign by the single-awaiting rule.
-      if (sent.ok && sent.messageId != null)
+      if (sent.ok && sent.messageId != null) {
         await deps.markAwaitingReply(prompt.id, sent.messageId);
-      await deps.answerCallback(cb.id, sent.ok ? undefined : "Could not open the reply box");
+        await deps.answerCallback(cb.id);
+      } else {
+        // The prompt stays open and escalates at 09:00. Record WHY: a revoked token, or a buyer who
+        // blocked the bot, otherwise looks exactly like a quiet day with nothing to report.
+        await deps.noteFailure(
+          prompt.id,
+          sent.ok
+            ? "force reply sent but Telegram returned no message_id"
+            : `force reply failed: ${sent.error ?? "unknown error"}`,
+        );
+        // Truthful either way: nothing was armed, so the reply box the buyer may see leads nowhere.
+        await deps.answerCallback(cb.id, "Could not open the reply box");
+      }
     }
     // Last, because re-rendering is another round trip and the button should stop spinning first.
     await rerender(deps, chatId, prompt);
@@ -161,27 +183,13 @@ export async function handleUpdate(update: TelegramUpdate, deps: UpdateDeps): Pr
     await rerender(deps, chatId, prompt);
   };
 
-  // (1) The reply id is conclusive: it names the exact force-reply message the bot sent.
+  // (1) The reply id is conclusive: it names the exact force-reply message the bot sent. Deliberately
+  // NOT gated by OPEN, unlike the callback path above: the 09:00 escalation is a nag, not a close, so
+  // a buyer answering yesterday's prompt at 09:05 must still land. Revising an already-flushed answer
+  // is Task 11's problem — `saveAnswer` clears `notionCommentId` when the text actually changes.
   const replyTo = msg.reply_to_message?.message_id;
   const target = replyTo != null ? await deps.loadPromptByReply(chatId, replyTo) : null;
-  if (target) {
-    // `loadPromptByReply` matches on the message id alone, so this is the one write path with no
-    // state filter behind it. Scrolling up and replying again to an old force-reply box is ordinary
-    // Telegram behaviour, and `saveAnswer` does not clear `notionCommentId` — so a second answer to
-    // an already-flushed prompt would overwrite the stored text, re-render as answered, and never be
-    // picked up by the flush again. The buyer's correction would vanish silently.
-    //
-    // This must NOT fall through to rule (2): a named prompt that is closed is conclusive too — it
-    // is conclusively NOT open. Falling through would downgrade explicit evidence into a heuristic.
-    if (!OPEN.includes(target.state)) {
-      await deps.sendMessage(
-        chatId,
-        `${target.campaignTitle} is already closed for today — nothing was changed.`,
-      );
-      return;
-    }
-    return answer(target);
-  }
+  if (target) return answer(target);
 
   // (2) A prompt is only a candidate once the buyer tapped Update on it; a `pending` prompt has no
   // reply box in the chat, so a bare message cannot be an answer to it.
