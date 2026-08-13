@@ -1,5 +1,5 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { ArrowRight, Quote } from "lucide-react";
+import { ArrowRight } from "lucide-react";
 
 import { fmtCurrency, fmtNumber } from "@/lib/format";
 import { CampaignTable } from "@/portal/components/CampaignTable";
@@ -13,15 +13,7 @@ import {
 } from "@/portal/components/panels";
 import { FreshnessNote, PageIntro } from "@/portal/components/Shell";
 import { usd2 } from "@/portal/format";
-import {
-  ACCOUNT_NOTE,
-  campaignRows,
-  derive,
-  EVENT,
-  pacingFor,
-  rangeDays,
-  totalsFor,
-} from "@/portal/mock";
+import { campaignRows, derive, EVENT, pacingFor, rangeDays, totalsFor } from "@/portal/mock";
 import { usePortalView } from "@/portal/state";
 
 export const Route = createFileRoute("/portal/")({
@@ -64,12 +56,7 @@ function Overview() {
           <FunnelPanel range={range} brand={brand} delay={260} />
         </div>
 
-        <div className="grid gap-4 xl:grid-cols-3">
-          <div className="xl:col-span-2">
-            <PacingPanel pacing={pacingFor(brand)} delay={300} />
-          </div>
-          <AccountNote delay={340} />
-        </div>
+        <PacingPanel pacing={pacingFor(brand)} delay={300} />
 
         <BreakdownPanel range={range} brand={brand} delay={380} />
 
@@ -90,33 +77,5 @@ function Overview() {
         </Panel>
       </div>
     </>
-  );
-}
-
-/**
- * The account team's read on the period. Without this the portal is a data dump — this is where the
- * account manager explains the dip a client would otherwise email about.
- */
-function AccountNote({ delay }: { delay: number }) {
-  return (
-    <Panel delay={delay} className="flex flex-col">
-      <SectionHead eyebrow="From your account team" title="What happened, and why" />
-      <div className="flex-1 px-5 pb-5 md:px-6">
-        <Quote className="mb-2 size-4 text-[color:var(--pf-gold)]" />
-        <p className="text-[13px] leading-[1.72] text-[color:var(--pf-dim)]">{ACCOUNT_NOTE.body}</p>
-      </div>
-      <div className="flex items-center gap-3 border-t px-5 py-3.5 md:px-6">
-        <span
-          className="pf-num grid size-8 place-items-center rounded-full text-[11px] font-semibold"
-          style={{ color: "oklch(0.2 0.02 80)", background: "var(--pf-gold)" }}
-        >
-          PR
-        </span>
-        <div className="leading-tight">
-          <p className="text-[12.5px] font-semibold">{ACCOUNT_NOTE.author}</p>
-          <p className="text-[11px] text-[color:var(--pf-faint)]">{ACCOUNT_NOTE.role}</p>
-        </div>
-      </div>
-    </Panel>
   );
 }

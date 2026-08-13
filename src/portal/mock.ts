@@ -125,7 +125,6 @@ export const CLIENT = {
   id: "northwind-group",
   name: "Northwind Group",
   contact: "Priya Raman",
-  contactRole: "Account Director, DOT",
   since: "March 2026",
 } as const;
 
@@ -818,14 +817,4 @@ export const STATUS_LABEL: Record<CampaignStatus, string> = {
   paused: "Paused",
   finished: "Finished",
   scheduled: "Scheduled",
-};
-
-/**
- * The account team's note for the period. In the real portal this is a short field an account
- * manager fills in — it is what stops the portal feeling like a raw data dump.
- */
-export const ACCOUNT_NOTE = {
-  author: CLIENT.contact,
-  role: CLIENT.contactRole,
-  body: `Northwind's accounts were in review from ${longDay(dayIso(8))} to ${longDay(dayIso(6))}, so spend and registrations dip in that window and cost per registration reads high. Delivery recovered fully on ${longDay(dayIso(5))}. Retargeting — Unfinished Sign-ups is now the cheapest source of registrations across the group, so we are shifting budget into it this week. Aurora Bets is still in its learning phase; judge it from next Monday.`,
 };
