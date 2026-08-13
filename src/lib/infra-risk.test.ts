@@ -8,6 +8,7 @@ import {
   redundancy,
   usableBm,
   usableProfile,
+  type Risk,
 } from "./infra-risk";
 
 describe("redundancy", () => {
@@ -107,7 +108,7 @@ describe("pixelRisk precedence", () => {
   });
 
   test("every pixel status is classified — a new status cannot become dead", () => {
-    const expected: Record<PixelStatus, { level: string; label: string }> = {
+    const expected: Record<PixelStatus, Risk> = {
       active: { level: "safe", label: "Shared" },
       inactive: { level: "warning", label: "Inactive" },
       restricted: { level: "warning", label: "Restricted" },
@@ -140,7 +141,7 @@ describe("pageRisk precedence", () => {
   });
 
   test("every page status is classified — a new status cannot become dead", () => {
-    const expected: Record<PageStatus, { level: string; label: string }> = {
+    const expected: Record<PageStatus, Risk> = {
       active: { level: "safe", label: "Added" },
       in_review: { level: "warning", label: "In review" },
       restricted: { level: "warning", label: "Restricted" },

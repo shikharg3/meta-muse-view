@@ -96,7 +96,9 @@ export async function fetchBmDetail(id: string): Promise<BmDetail | null> {
     db
       .select()
       .from(schema.infraStatusEvents)
-      .where(and(eq(schema.infraStatusEvents.kind, "bm"), eq(schema.infraStatusEvents.entityId, id)))
+      .where(
+        and(eq(schema.infraStatusEvents.kind, "bm"), eq(schema.infraStatusEvents.entityId, id)),
+      )
       .orderBy(desc(schema.infraStatusEvents.at))
       .limit(100),
   ]);

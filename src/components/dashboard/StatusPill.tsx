@@ -43,10 +43,12 @@ const dots: Record<string, string> = {
 export function StatusPill({ status }: { status: string }) {
   const s = status.toUpperCase();
   return (
-    <span className={cn(
-      "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-semibold ring-1 uppercase tracking-wider",
-      styles[s] ?? styles.PAUSED
-    )}>
+    <span
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-semibold ring-1 uppercase tracking-wider",
+        styles[s] ?? styles.PAUSED,
+      )}
+    >
       <span className={cn("size-1.5 rounded-full", dots[s] ?? dots.PAUSED)} />
       {s.toLowerCase()}
     </span>

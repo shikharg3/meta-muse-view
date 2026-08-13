@@ -16,6 +16,12 @@ import {
   LogOut,
   DollarSign,
   MessagesSquare,
+  Network,
+  IdCard,
+  Building,
+  CreditCard,
+  Crosshair,
+  Flag,
   Loader2,
   type LucideIcon,
 } from "lucide-react";
@@ -55,6 +61,16 @@ const main = [
   { title: "Activity", url: "/activity", icon: Activity },
 ];
 
+/** Operator-owned asset registry. Admin-only: ban state and the rented supply chain are sensitive. */
+const infrastructure = [
+  { title: "Risk Map", url: "/infrastructure", icon: Network },
+  { title: "Profiles", url: "/infrastructure/profiles", icon: IdCard },
+  { title: "Business Managers", url: "/infrastructure/business-managers", icon: Building },
+  { title: "Ad Accounts", url: "/infrastructure/ad-accounts", icon: CreditCard },
+  { title: "Pixels", url: "/infrastructure/pixels", icon: Crosshair },
+  { title: "Pages", url: "/infrastructure/pages", icon: Flag },
+];
+
 /**
  * Nav row with instant click feedback. TanStack `Link` sets
  * `data-transitioning="transitioning"` inside a `flushSync` on click and clears
@@ -88,7 +104,10 @@ function NavLink({ item, active }: { item: NavItem; active: boolean }) {
 
 export function AppSidebar({ user }: { user: PublicUser }) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
-  const isActive = (url: string) => (url === "/" ? pathname === "/" : pathname.startsWith(url));
+  // Exact match for section roots, prefix match otherwise: `/infrastructure` would otherwise stay lit
+  // on every child route alongside the child's own entry.
+  const isActive = (url: string) =>
+    url === "/" || url === "/infrastructure" ? pathname === url : pathname.startsWith(url);
   // System nav: Users/Sync/Settings for admins (+ superadmins); Finance/Chat History superadmin-only.
   const systemItems = [
     ...(isAdmin(user.role)
@@ -132,6 +151,18 @@ export function AppSidebar({ user }: { user: PublicUser }) {
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
+        {isAdmin(user.role) && (
+          <SidebarGroup>
+            <SidebarGroupLabel>Infrastructure</SidebarGroupLabel>
+            <SidebarGroupContent>
+              <SidebarMenu>
+                {infrastructure.map((item) => (
+                  <NavLink key={item.url} item={item} active={isActive(item.url)} />
+                ))}
+              </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        )}
         {systemItems.length > 0 && (
           <SidebarGroup>
             <SidebarGroupLabel>System</SidebarGroupLabel>

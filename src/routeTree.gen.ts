@@ -26,14 +26,21 @@ import { Route as AlertsRouteImport } from './routes/alerts'
 import { Route as ActivityRouteImport } from './routes/activity'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as PortalIndexRouteImport } from './routes/portal.index'
+import { Route as InfrastructureIndexRouteImport } from './routes/infrastructure.index'
 import { Route as ClientsIndexRouteImport } from './routes/clients.index'
 import { Route as AccountsIndexRouteImport } from './routes/accounts.index'
 import { Route as PortalLoginRouteImport } from './routes/portal_.login'
 import { Route as PortalReportsRouteImport } from './routes/portal.reports'
 import { Route as PortalCreativesRouteImport } from './routes/portal.creatives'
 import { Route as PortalCampaignsRouteImport } from './routes/portal.campaigns'
+import { Route as InfrastructureProfilesRouteImport } from './routes/infrastructure.profiles'
+import { Route as InfrastructurePixelsRouteImport } from './routes/infrastructure.pixels'
+import { Route as InfrastructurePagesRouteImport } from './routes/infrastructure.pages'
+import { Route as InfrastructureAdAccountsRouteImport } from './routes/infrastructure.ad-accounts'
 import { Route as ClientsIdRouteImport } from './routes/clients.$id'
 import { Route as AccountsIdRouteImport } from './routes/accounts.$id'
+import { Route as InfrastructureBusinessManagersIndexRouteImport } from './routes/infrastructure.business-managers.index'
+import { Route as InfrastructureBusinessManagersIdRouteImport } from './routes/infrastructure.business-managers.$id'
 
 const UsersRoute = UsersRouteImport.update({
   id: '/users',
@@ -120,6 +127,11 @@ const PortalIndexRoute = PortalIndexRouteImport.update({
   path: '/',
   getParentRoute: () => PortalRoute,
 } as any)
+const InfrastructureIndexRoute = InfrastructureIndexRouteImport.update({
+  id: '/infrastructure/',
+  path: '/infrastructure/',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ClientsIndexRoute = ClientsIndexRouteImport.update({
   id: '/clients/',
   path: '/clients/',
@@ -150,6 +162,27 @@ const PortalCampaignsRoute = PortalCampaignsRouteImport.update({
   path: '/campaigns',
   getParentRoute: () => PortalRoute,
 } as any)
+const InfrastructureProfilesRoute = InfrastructureProfilesRouteImport.update({
+  id: '/infrastructure/profiles',
+  path: '/infrastructure/profiles',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const InfrastructurePixelsRoute = InfrastructurePixelsRouteImport.update({
+  id: '/infrastructure/pixels',
+  path: '/infrastructure/pixels',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const InfrastructurePagesRoute = InfrastructurePagesRouteImport.update({
+  id: '/infrastructure/pages',
+  path: '/infrastructure/pages',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const InfrastructureAdAccountsRoute =
+  InfrastructureAdAccountsRouteImport.update({
+    id: '/infrastructure/ad-accounts',
+    path: '/infrastructure/ad-accounts',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 const ClientsIdRoute = ClientsIdRouteImport.update({
   id: '/clients/$id',
   path: '/clients/$id',
@@ -160,6 +193,18 @@ const AccountsIdRoute = AccountsIdRouteImport.update({
   path: '/accounts/$id',
   getParentRoute: () => rootRouteImport,
 } as any)
+const InfrastructureBusinessManagersIndexRoute =
+  InfrastructureBusinessManagersIndexRouteImport.update({
+    id: '/infrastructure/business-managers/',
+    path: '/infrastructure/business-managers/',
+    getParentRoute: () => rootRouteImport,
+  } as any)
+const InfrastructureBusinessManagersIdRoute =
+  InfrastructureBusinessManagersIdRouteImport.update({
+    id: '/infrastructure/business-managers/$id',
+    path: '/infrastructure/business-managers/$id',
+    getParentRoute: () => rootRouteImport,
+  } as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
@@ -180,13 +225,20 @@ export interface FileRoutesByFullPath {
   '/users': typeof UsersRoute
   '/accounts/$id': typeof AccountsIdRoute
   '/clients/$id': typeof ClientsIdRoute
+  '/infrastructure/ad-accounts': typeof InfrastructureAdAccountsRoute
+  '/infrastructure/pages': typeof InfrastructurePagesRoute
+  '/infrastructure/pixels': typeof InfrastructurePixelsRoute
+  '/infrastructure/profiles': typeof InfrastructureProfilesRoute
   '/portal/campaigns': typeof PortalCampaignsRoute
   '/portal/creatives': typeof PortalCreativesRoute
   '/portal/reports': typeof PortalReportsRoute
   '/portal/login': typeof PortalLoginRoute
   '/accounts/': typeof AccountsIndexRoute
   '/clients/': typeof ClientsIndexRoute
+  '/infrastructure/': typeof InfrastructureIndexRoute
   '/portal/': typeof PortalIndexRoute
+  '/infrastructure/business-managers/$id': typeof InfrastructureBusinessManagersIdRoute
+  '/infrastructure/business-managers/': typeof InfrastructureBusinessManagersIndexRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -206,13 +258,20 @@ export interface FileRoutesByTo {
   '/users': typeof UsersRoute
   '/accounts/$id': typeof AccountsIdRoute
   '/clients/$id': typeof ClientsIdRoute
+  '/infrastructure/ad-accounts': typeof InfrastructureAdAccountsRoute
+  '/infrastructure/pages': typeof InfrastructurePagesRoute
+  '/infrastructure/pixels': typeof InfrastructurePixelsRoute
+  '/infrastructure/profiles': typeof InfrastructureProfilesRoute
   '/portal/campaigns': typeof PortalCampaignsRoute
   '/portal/creatives': typeof PortalCreativesRoute
   '/portal/reports': typeof PortalReportsRoute
   '/portal/login': typeof PortalLoginRoute
   '/accounts': typeof AccountsIndexRoute
   '/clients': typeof ClientsIndexRoute
+  '/infrastructure': typeof InfrastructureIndexRoute
   '/portal': typeof PortalIndexRoute
+  '/infrastructure/business-managers/$id': typeof InfrastructureBusinessManagersIdRoute
+  '/infrastructure/business-managers': typeof InfrastructureBusinessManagersIndexRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -234,13 +293,20 @@ export interface FileRoutesById {
   '/users': typeof UsersRoute
   '/accounts/$id': typeof AccountsIdRoute
   '/clients/$id': typeof ClientsIdRoute
+  '/infrastructure/ad-accounts': typeof InfrastructureAdAccountsRoute
+  '/infrastructure/pages': typeof InfrastructurePagesRoute
+  '/infrastructure/pixels': typeof InfrastructurePixelsRoute
+  '/infrastructure/profiles': typeof InfrastructureProfilesRoute
   '/portal/campaigns': typeof PortalCampaignsRoute
   '/portal/creatives': typeof PortalCreativesRoute
   '/portal/reports': typeof PortalReportsRoute
   '/portal_/login': typeof PortalLoginRoute
   '/accounts/': typeof AccountsIndexRoute
   '/clients/': typeof ClientsIndexRoute
+  '/infrastructure/': typeof InfrastructureIndexRoute
   '/portal/': typeof PortalIndexRoute
+  '/infrastructure/business-managers/$id': typeof InfrastructureBusinessManagersIdRoute
+  '/infrastructure/business-managers/': typeof InfrastructureBusinessManagersIndexRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -263,13 +329,20 @@ export interface FileRouteTypes {
     | '/users'
     | '/accounts/$id'
     | '/clients/$id'
+    | '/infrastructure/ad-accounts'
+    | '/infrastructure/pages'
+    | '/infrastructure/pixels'
+    | '/infrastructure/profiles'
     | '/portal/campaigns'
     | '/portal/creatives'
     | '/portal/reports'
     | '/portal/login'
     | '/accounts/'
     | '/clients/'
+    | '/infrastructure/'
     | '/portal/'
+    | '/infrastructure/business-managers/$id'
+    | '/infrastructure/business-managers/'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -289,13 +362,20 @@ export interface FileRouteTypes {
     | '/users'
     | '/accounts/$id'
     | '/clients/$id'
+    | '/infrastructure/ad-accounts'
+    | '/infrastructure/pages'
+    | '/infrastructure/pixels'
+    | '/infrastructure/profiles'
     | '/portal/campaigns'
     | '/portal/creatives'
     | '/portal/reports'
     | '/portal/login'
     | '/accounts'
     | '/clients'
+    | '/infrastructure'
     | '/portal'
+    | '/infrastructure/business-managers/$id'
+    | '/infrastructure/business-managers'
   id:
     | '__root__'
     | '/'
@@ -316,13 +396,20 @@ export interface FileRouteTypes {
     | '/users'
     | '/accounts/$id'
     | '/clients/$id'
+    | '/infrastructure/ad-accounts'
+    | '/infrastructure/pages'
+    | '/infrastructure/pixels'
+    | '/infrastructure/profiles'
     | '/portal/campaigns'
     | '/portal/creatives'
     | '/portal/reports'
     | '/portal_/login'
     | '/accounts/'
     | '/clients/'
+    | '/infrastructure/'
     | '/portal/'
+    | '/infrastructure/business-managers/$id'
+    | '/infrastructure/business-managers/'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -344,9 +431,16 @@ export interface RootRouteChildren {
   UsersRoute: typeof UsersRoute
   AccountsIdRoute: typeof AccountsIdRoute
   ClientsIdRoute: typeof ClientsIdRoute
+  InfrastructureAdAccountsRoute: typeof InfrastructureAdAccountsRoute
+  InfrastructurePagesRoute: typeof InfrastructurePagesRoute
+  InfrastructurePixelsRoute: typeof InfrastructurePixelsRoute
+  InfrastructureProfilesRoute: typeof InfrastructureProfilesRoute
   PortalLoginRoute: typeof PortalLoginRoute
   AccountsIndexRoute: typeof AccountsIndexRoute
   ClientsIndexRoute: typeof ClientsIndexRoute
+  InfrastructureIndexRoute: typeof InfrastructureIndexRoute
+  InfrastructureBusinessManagersIdRoute: typeof InfrastructureBusinessManagersIdRoute
+  InfrastructureBusinessManagersIndexRoute: typeof InfrastructureBusinessManagersIndexRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -470,6 +564,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof PortalIndexRouteImport
       parentRoute: typeof PortalRoute
     }
+    '/infrastructure/': {
+      id: '/infrastructure/'
+      path: '/infrastructure'
+      fullPath: '/infrastructure/'
+      preLoaderRoute: typeof InfrastructureIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/clients/': {
       id: '/clients/'
       path: '/clients'
@@ -512,6 +613,34 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof PortalCampaignsRouteImport
       parentRoute: typeof PortalRoute
     }
+    '/infrastructure/profiles': {
+      id: '/infrastructure/profiles'
+      path: '/infrastructure/profiles'
+      fullPath: '/infrastructure/profiles'
+      preLoaderRoute: typeof InfrastructureProfilesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/infrastructure/pixels': {
+      id: '/infrastructure/pixels'
+      path: '/infrastructure/pixels'
+      fullPath: '/infrastructure/pixels'
+      preLoaderRoute: typeof InfrastructurePixelsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/infrastructure/pages': {
+      id: '/infrastructure/pages'
+      path: '/infrastructure/pages'
+      fullPath: '/infrastructure/pages'
+      preLoaderRoute: typeof InfrastructurePagesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/infrastructure/ad-accounts': {
+      id: '/infrastructure/ad-accounts'
+      path: '/infrastructure/ad-accounts'
+      fullPath: '/infrastructure/ad-accounts'
+      preLoaderRoute: typeof InfrastructureAdAccountsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/clients/$id': {
       id: '/clients/$id'
       path: '/clients/$id'
@@ -524,6 +653,20 @@ declare module '@tanstack/react-router' {
       path: '/accounts/$id'
       fullPath: '/accounts/$id'
       preLoaderRoute: typeof AccountsIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/infrastructure/business-managers/': {
+      id: '/infrastructure/business-managers/'
+      path: '/infrastructure/business-managers'
+      fullPath: '/infrastructure/business-managers/'
+      preLoaderRoute: typeof InfrastructureBusinessManagersIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/infrastructure/business-managers/$id': {
+      id: '/infrastructure/business-managers/$id'
+      path: '/infrastructure/business-managers/$id'
+      fullPath: '/infrastructure/business-managers/$id'
+      preLoaderRoute: typeof InfrastructureBusinessManagersIdRouteImport
       parentRoute: typeof rootRouteImport
     }
   }
@@ -565,9 +708,17 @@ const rootRouteChildren: RootRouteChildren = {
   UsersRoute: UsersRoute,
   AccountsIdRoute: AccountsIdRoute,
   ClientsIdRoute: ClientsIdRoute,
+  InfrastructureAdAccountsRoute: InfrastructureAdAccountsRoute,
+  InfrastructurePagesRoute: InfrastructurePagesRoute,
+  InfrastructurePixelsRoute: InfrastructurePixelsRoute,
+  InfrastructureProfilesRoute: InfrastructureProfilesRoute,
   PortalLoginRoute: PortalLoginRoute,
   AccountsIndexRoute: AccountsIndexRoute,
   ClientsIndexRoute: ClientsIndexRoute,
+  InfrastructureIndexRoute: InfrastructureIndexRoute,
+  InfrastructureBusinessManagersIdRoute: InfrastructureBusinessManagersIdRoute,
+  InfrastructureBusinessManagersIndexRoute:
+    InfrastructureBusinessManagersIndexRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
