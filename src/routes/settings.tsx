@@ -7,12 +7,15 @@ import {
   saveChatSettings,
   saveCredentialsForm,
   saveNotionSettings,
+  saveTelegramSettings,
   syncNotionNow,
   syncNow,
   testConnection,
+  verifyTelegram,
 } from "@/lib/api/settings";
 import { getCurrentUser } from "@/lib/api/auth";
 import { isAdmin } from "@/lib/auth/roles";
+import { sendTestAlert } from "@/lib/api/alerts";
 import { CHAT_MODELS, CHAT_EFFORTS } from "@/lib/chat-options";
 import {
   Activity,
@@ -22,6 +25,7 @@ import {
   Database,
   KeyRound,
   RefreshCw,
+  Send,
   Trash2,
   XCircle,
 } from "lucide-react";
@@ -54,6 +58,8 @@ function Settings() {
   const [notionMsg, setNotionMsg] = useState<string | null>(null);
   const [chat, setChat] = useState({ token: "", model: s.chat.model, effort: s.chat.effort });
   const [chatMsg, setChatMsg] = useState<string | null>(null);
+  const [telegram, setTelegram] = useState({ token: "", chatId: s.telegram.chatId });
+  const [telegramMsg, setTelegramMsg] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
 
@@ -146,6 +152,31 @@ function Settings() {
     setChat((f) => ({ ...f, token: "" }));
     setChatMsg("Saved.");
     await router.invalidate();
+  };
+  const onTelegramSave = async () => {
+    setTelegramMsg("Saving…");
+    const r = await saveTelegramSettings({ data: telegram });
+    if (!r.ok) {
+      setTelegramMsg(r.error ?? "Save failed");
+      return;
+    }
+    setTelegram((f) => ({ ...f, token: "" }));
+    setTelegramMsg("Saved.");
+    await router.invalidate();
+  };
+  const onTelegramVerify = async () => {
+    setTelegramMsg("Checking…");
+    const r = await verifyTelegram();
+    setTelegramMsg(
+      r.ok
+        ? `Reaches ${r.title ?? "this chat"}${r.type ? ` (${r.type})` : ""}.`
+        : `Cannot reach that chat: ${r.error}`,
+    );
+  };
+  const onTelegramTest = async () => {
+    setTelegramMsg("Sending…");
+    const r = await sendTestAlert();
+    setTelegramMsg(r.ok ? "Test message sent." : `Failed: ${r.error}`);
   };
 
   return (
@@ -418,6 +449,61 @@ function Settings() {
           <span className="text-xs text-muted-foreground">
             {notionMsg ?? (s.notion.lastSync ? `Last sync: ${s.notion.lastSync}` : "")}
           </span>
+        </div>
+      </section>
+
+      <section className="rounded-xl border border-border bg-card p-6 space-y-4">
+        <div className="flex items-center gap-3">
+          <div className="size-9 rounded-md bg-primary/10 grid place-items-center">
+            <Send className="size-4 text-primary" />
+          </div>
+          <h3 className="text-sm font-semibold flex-1">Telegram · Alert delivery</h3>
+          {s.telegram.configured && (
+            <span className="inline-flex items-center gap-1 text-xs font-medium text-success">
+              <CheckCircle2 className="size-3.5" /> Configured
+            </span>
+          )}
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Exception-driven alerts only — spend collapse, low prepaid funds, unassigned spend. The
+          chat id is the numeric channel id, not a <code>t.me/+…</code> invite link: add the bot to
+          the channel as an admin first, then verify below.
+        </p>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <Input
+            label={`Bot token ${s.telegram.configured ? "(set — leave blank to keep)" : ""}`}
+            type="password"
+            value={telegram.token}
+            onChange={(v) => setTelegram({ ...telegram, token: v })}
+          />
+          <Input
+            label="Alert chat id"
+            value={telegram.chatId}
+            onChange={(v) => setTelegram({ ...telegram, chatId: v })}
+          />
+        </div>
+        <div className="flex items-center gap-3 pt-1">
+          <button
+            onClick={onTelegramSave}
+            className="h-9 px-4 rounded-md bg-primary text-primary-foreground text-xs font-medium"
+          >
+            Save
+          </button>
+          <button
+            onClick={onTelegramVerify}
+            disabled={!s.telegram.configured}
+            className="h-9 px-4 rounded-md border border-border text-xs font-medium disabled:opacity-50"
+          >
+            Verify chat
+          </button>
+          <button
+            onClick={onTelegramTest}
+            disabled={!s.telegram.configured}
+            className="h-9 px-4 rounded-md border border-border text-xs font-medium disabled:opacity-50"
+          >
+            Send test message
+          </button>
+          {telegramMsg && <span className="text-xs text-muted-foreground">{telegramMsg}</span>}
         </div>
       </section>
 

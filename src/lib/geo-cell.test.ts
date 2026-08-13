@@ -8,7 +8,12 @@ test("a single delivering country drills into its regions", () => {
   // 79 of 93 spending campaigns deliver to one country, so without this the cell reads "US 100%"
   // on most rows and says nothing the brief did not already say.
   expect(
-    geoCell([country("US", 1000), region("California", 500), region("Texas", 300), region("Florida", 200)]),
+    geoCell([
+      country("US", 1000),
+      region("California", 500),
+      region("Texas", 300),
+      region("Florida", 200),
+    ]),
   ).toBe("US 100%\nCalifornia 50% · Texas 30% · Florida 20%");
 });
 
@@ -41,7 +46,12 @@ test("`unknown` counts toward the split but never blocks or enters the drill", (
   // Meta's bucket for spend it could not place. It is real money, so it belongs in the denominator,
   // but it is not a country and must not stop the drill from firing on the one that is.
   expect(
-    geoCell([country("US", 996), country(UNKNOWN_GEO, 4), region("California", 600), region("Texas", 400)]),
+    geoCell([
+      country("US", 996),
+      country(UNKNOWN_GEO, 4),
+      region("California", 600),
+      region("Texas", 400),
+    ]),
   ).toBe("US 100% · +1 more\nCalifornia 60% · Texas 40%");
 });
 
@@ -80,7 +90,9 @@ test("exactly eight material entries get no `+0 more` suffix", () => {
 test("when every share is sub-threshold the leader is still named", () => {
   // A worldwide campaign spread over 100+ buckets puts every entry under 1%, and a bare "+101 more"
   // is a cell with no content.
-  expect(geoCell(Array.from({ length: 101 }, (_, i) => country(`C${i}`, 1)))).toBe("C0 1% · +100 more");
+  expect(geoCell(Array.from({ length: 101 }, (_, i) => country(`C${i}`, 1)))).toBe(
+    "C0 1% · +100 more",
+  );
 });
 
 test("equal spends order by value, so the cell text is a function of the data alone", () => {

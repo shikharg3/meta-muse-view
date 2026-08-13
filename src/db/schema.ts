@@ -244,6 +244,10 @@ export const metaCredentials = pgTable("meta_credentials", {
   anthropicTokenEnc: text("anthropic_token_enc"),
   chatModel: text("chat_model").default("claude-opus-4-8"),
   chatEffort: text("chat_effort").default("xhigh"),
+  // Telegram alert delivery. The token is encrypted like every other secret here; the chat id is
+  // not a secret (it is visible to anyone in the channel) so it stays readable for the settings UI.
+  telegramTokenEnc: text("telegram_token_enc"),
+  telegramChatId: text("telegram_chat_id"),
   updatedAt: timestamp("updated_at", { withTimezone: true }),
 });
 
