@@ -100,8 +100,13 @@ export async function detectSpendDropAlerts(): Promise<number> {
   return inserted;
 }
 
-/** Send a message to the configured Telegram channel; returns ok/error (never throws). */
-async function sendTelegram(text: string): Promise<{ ok: boolean; error?: string }> {
+/**
+ * Send a message to the configured Telegram channel; returns ok/error (never throws). Exported so
+ * the check-in escalation reuses one Telegram path.
+ */
+export async function sendAlertChannelMessage(
+  text: string,
+): Promise<{ ok: boolean; error?: string }> {
   const e = env();
   if (!e.TELEGRAM_BOT_TOKEN || !e.TELEGRAM_ALERT_CHAT_ID)
     return {
@@ -115,9 +120,6 @@ async function sendTelegram(text: string): Promise<{ ok: boolean; error?: string
   return res.ok ? { ok: true } : { ok: false, error: res.error };
 }
 
-/** Same channel, exported so the check-in escalation reuses one Telegram path. */
-export { sendTelegram as sendAlertChannelMessage };
-
 /** Push new alerts to the configured Telegram channel (no-op if unconfigured). */
 async function notifyTelegram(
   alerts: { name: string; message: string }[],
@@ -126,7 +128,7 @@ async function notifyTelegram(
   const text =
     `${heading}${alerts.length > 1 ? ` (${alerts.length})` : ""}:\n` +
     alerts.map((a) => `• ${a.message}`).join("\n");
-  const r = await sendTelegram(text);
+  const r = await sendAlertChannelMessage(text);
   if (!r.ok) console.error("[alerts] telegram notify failed:", r.error);
 }
 
@@ -386,7 +388,7 @@ export function alertSettings(): AlertSettings {
 
 /** Send a test message to verify Telegram delivery. */
 export function sendTestAlert(): Promise<{ ok: boolean; error?: string }> {
-  return sendTelegram("✅ Test alert from MetaConsole — Telegram delivery is working.");
+  return sendAlertChannelMessage("✅ Test alert from MetaConsole — Telegram delivery is working.");
 }
 
 /**
