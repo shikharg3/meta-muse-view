@@ -2,7 +2,11 @@ import { type PromptState } from "@/lib/checkin";
 import { forceReplyText, parseCallback } from "@/lib/checkin-render";
 import type { TelegramUpdate } from "./client";
 
-/** A prompt row as the dispatcher needs it. */
+/**
+ * A prompt row as the dispatcher needs it. Dispatch-only: it is a projection of `checkin_prompts`
+ * for routing decisions, not a mirror of the table — the comment/escalation columns are absent
+ * because no decision here reads them.
+ */
 export interface PromptRow {
   id: number;
   promptDate: string;
@@ -28,7 +32,16 @@ export interface UpdateDeps {
   recordChat(chatId: string, username?: string, firstName?: string): Promise<void>;
   isBoundChat(chatId: string): Promise<boolean>;
   loadPrompt(id: number): Promise<PromptRow | null>;
+  /**
+   * Look up by the id of the `force_reply` message the buyer replied to. Matches on the message id
+   * ALONE and does NOT filter by state — the dispatcher applies the `OPEN` gate itself, because a
+   * closed prompt named by an explicit reply must be refused rather than silently re-written.
+   */
   loadPromptByReply(chatId: string, replyMessageId: number): Promise<PromptRow | null>;
+  /**
+   * Every prompt for the chat still in an open state (`pending` or `awaiting_reply`). The dispatcher
+   * narrows this to `awaiting_reply` itself, so this dep must not pre-filter to that.
+   */
   openPromptsForChat(chatId: string): Promise<PromptRow[]>;
   markNoChanges(id: number): Promise<void>;
   markAwaitingReply(id: number, replyMessageId: number): Promise<void>;
@@ -45,6 +58,19 @@ async function rerender(deps: UpdateDeps, chatId: string, prompt: PromptRow): Pr
 }
 
 /**
+ * The slash command a message carries, or null if it is prose.
+ *
+ * Telegram sends `/start`, `/start@botname`, `/start payload` and `/start@botname payload`, so the
+ * command is the first whitespace-delimited token with any `@botname` suffix removed. Matching this
+ * exactly rather than with `startsWith("/start")` is what keeps `/startle` from being treated as a
+ * greeting — and gives the answer path one predicate for "this is a command, not an update".
+ */
+function commandOf(text: string): string | null {
+  if (!text.startsWith("/")) return null;
+  return text.split(/\s+/)[0].split("@")[0];
+}
+
+/**
  * Route one Telegram update.
  *
  * The ordering rule that matters: an answer is attributed by `reply_to_message` first, and only then
@@ -52,8 +78,10 @@ async function rerender(deps: UpdateDeps, chatId: string, prompt: PromptRow): Pr
  * would land one client's update on another client's Notion card, and nothing downstream could ever
  * detect it — so there is deliberately no "most recent prompt" fallback.
  *
- * The deps are database calls and may throw; the poll loop catches per update so that one poison
- * update cannot stall a whole batch.
+ * The deps are database calls and may throw. The poll loop catches per update and advances its
+ * offset regardless, so a throwing dep DROPS that update permanently — Telegram never redelivers
+ * it. That is deliberate: retrying a poison update forever would wedge the loop, and the 09:00
+ * escalation is the backstop that surfaces a check-in this lost.
  */
 export async function handleUpdate(update: TelegramUpdate, deps: UpdateDeps): Promise<void> {
   if (update.callback_query) {
@@ -104,13 +132,16 @@ export async function handleUpdate(update: TelegramUpdate, deps: UpdateDeps): Pr
   const msg = update.message;
   if (!msg) return;
   const chatId = String(msg.chat.id);
+  // Deliberately message-only: `recordChat` exists so an admin can find an unbound chat to bind, and
+  // a callback can only come from a chat that was already bound and listed. The `lastSeenAt`
+  // asymmetry that follows is intentional, not an oversight.
   await deps.recordChat(chatId, msg.chat.username, msg.chat.first_name);
 
   const text = (msg.text ?? "").trim();
   if (!(await deps.isBoundChat(chatId))) {
     // Unbound chats get NO campaign data — only their own id, so an admin can bind them in Settings.
     // Nothing below this branch reads a prompt, which is what makes the leak impossible.
-    if (text.startsWith("/start")) {
+    if (commandOf(text) === "/start") {
       await deps.sendMessage(
         chatId,
         `👋 MetaConsole check-in bot.\nYour chat id is ${chatId} — send it to your admin to be bound as a media buyer.`,
@@ -120,7 +151,10 @@ export async function handleUpdate(update: TelegramUpdate, deps: UpdateDeps): Pr
   }
 
   // Stickers, photos and whitespace carry no answer, and an empty Notion comment is worse than none.
-  if (!text) return;
+  // No slash command is ever an answer either: Telegram offers a START button whenever a chat is
+  // cleared, and `/start` reaching rule (2) would write the literal text "/start" onto a client's
+  // Notion card. Silence is deliberate — the daily list is the buyer's entry point, not a command.
+  if (!text || commandOf(text)) return;
 
   const answer = async (prompt: PromptRow) => {
     await deps.saveAnswer(prompt.id, text);
@@ -130,7 +164,24 @@ export async function handleUpdate(update: TelegramUpdate, deps: UpdateDeps): Pr
   // (1) The reply id is conclusive: it names the exact force-reply message the bot sent.
   const replyTo = msg.reply_to_message?.message_id;
   const target = replyTo != null ? await deps.loadPromptByReply(chatId, replyTo) : null;
-  if (target) return answer(target);
+  if (target) {
+    // `loadPromptByReply` matches on the message id alone, so this is the one write path with no
+    // state filter behind it. Scrolling up and replying again to an old force-reply box is ordinary
+    // Telegram behaviour, and `saveAnswer` does not clear `notionCommentId` — so a second answer to
+    // an already-flushed prompt would overwrite the stored text, re-render as answered, and never be
+    // picked up by the flush again. The buyer's correction would vanish silently.
+    //
+    // This must NOT fall through to rule (2): a named prompt that is closed is conclusive too — it
+    // is conclusively NOT open. Falling through would downgrade explicit evidence into a heuristic.
+    if (!OPEN.includes(target.state)) {
+      await deps.sendMessage(
+        chatId,
+        `${target.campaignTitle} is already closed for today — nothing was changed.`,
+      );
+      return;
+    }
+    return answer(target);
+  }
 
   // (2) A prompt is only a candidate once the buyer tapped Update on it; a `pending` prompt has no
   // reply box in the chat, so a bare message cannot be an answer to it.
@@ -138,11 +189,13 @@ export async function handleUpdate(update: TelegramUpdate, deps: UpdateDeps): Pr
   if (open.length === 1) return answer(open[0]);
 
   // (3) More than one candidate: ask, and write nothing. Plain text, not a force reply — the next
-  // typed message would be exactly as ambiguous, so the buyer has to tap the campaign.
+  // typed message would be exactly as ambiguous. It must point at the reply box and NOT at a button:
+  // every candidate here is `awaiting_reply`, and `renderList` emits ✍️ Update only for `pending`,
+  // so "tap Update" would send the buyer hunting for a button that is not on their screen.
   if (open.length > 1) {
     await deps.sendMessage(
       chatId,
-      `Which campaign is that for? Tap ✍️ Update on the campaign in today's list, then reply.\nOpen: ${open
+      `Which campaign is that for? Reply directly to the ✍️ Update message for that campaign.\nOpen: ${open
         .map((p) => p.campaignTitle)
         .join(", ")}`,
     );

@@ -6,6 +6,7 @@
 // it. So attribution is: (1) the `reply_to_message` id, (2) exactly one prompt awaiting a reply,
 // (3) otherwise ASK. There is deliberately no "most recent" fallback.
 import { test, expect } from "bun:test";
+import { renderList } from "@/lib/checkin-render";
 import { handleUpdate, type UpdateDeps, type PromptRow } from "./updates";
 
 /**
@@ -101,12 +102,16 @@ test("tapping No changes closes the prompt, writes nothing and re-renders", asyn
   );
 
   expect(log).toContain("nochanges:7");
-  expect(log).toContain("ack:cb:Logged — no changes");
   expect(log).toContain("rerender:111:500");
   // "No changes" is the operator's chosen filter: the button is the only way to say "nothing
   // happened", and it must never reach Notion.
   expect(log.some((l) => l.startsWith("answer:"))).toBe(false);
-  // The ack precedes the two-call list re-render, so the button stops spinning first.
+  // Exactly one ack, with the text the buyer sees. A second ack would be rejected by Telegram as a
+  // stale query and log noise for a tap that in fact worked.
+  expect(log.filter((l) => l.startsWith("ack:"))).toEqual(["ack:cb:Logged — no changes"]);
+  // The write precedes the ack, so "Logged" can never be claimed for a write that failed...
+  expect(log.indexOf("nochanges:7")).toBeLessThan(log.indexOf("ack:cb:Logged — no changes"));
+  // ...and the ack precedes the two-call list re-render, so the button stops spinning first.
   expect(log.indexOf("ack:cb:Logged — no changes")).toBeLessThan(log.indexOf("rerender:111:500"));
 });
 
@@ -166,6 +171,54 @@ test("a reply to the force-reply message is saved against that campaign", async 
   expect(log.some((l) => l.startsWith("lookup:open"))).toBe(false);
 });
 
+test("a reply to a CLOSED prompt's force-reply box is refused, not written", async () => {
+  // The callback path refuses these three states via OPEN; the reply path must too. Task 11's
+  // `loadPromptByReply` matches on (chatId, replyMessageId) only, so it WILL hand back a closed row
+  // when the buyer replies to an old force-reply message. Re-writing an `answered` prompt overwrites
+  // `answerText` while `notionCommentId` is already set, so the correction never reaches Notion.
+  for (const state of ["answered", "no_changes", "escalated"] as const) {
+    const { log, sent, deps } = fakeDeps({ loadPromptByReply: async () => prompt({ state }) });
+
+    await handleUpdate(
+      {
+        update_id: 16,
+        message: {
+          message_id: 970,
+          chat: { id: 111 },
+          text: "actually ignore that",
+          reply_to_message: { message_id: 900 },
+        },
+      },
+      deps,
+    );
+
+    expect(log.some((l) => l.startsWith("answer:"))).toBe(false);
+    // And it must NOT fall through to the single-awaiting rule: an explicit reply naming a closed
+    // prompt is conclusive evidence that this is not an answer to some OTHER campaign.
+    expect(log.some((l) => l.startsWith("lookup:open"))).toBe(false);
+    // The buyer is told which campaign was refused, so the silence is not mistaken for a save.
+    expect(sent[0].text).toContain("Slots.lv");
+  }
+});
+
+test("a slash command from a bound chat is never written as an answer", async () => {
+  // Telegram shows a START button whenever a chat is cleared, and a bound buyer with one prompt
+  // awaiting a reply would otherwise get the literal text "/start" commented onto a client's card.
+  const { log, deps } = fakeDeps({
+    openPromptsForChat: async () => [prompt({ state: "awaiting_reply" })],
+  });
+
+  for (const text of ["/start", "/start@mc_bot", "/start deep-link", "/help"]) {
+    await handleUpdate(
+      { update_id: 17, message: { message_id: 971, chat: { id: 111 }, text } },
+      deps,
+    );
+  }
+
+  // Recorded four times and attributed zero times: no lookup, no write, no reply.
+  expect(log).toEqual(["chat:111", "chat:111", "chat:111", "chat:111"]);
+});
+
 test("a plain message is attributed when exactly one prompt is awaiting a reply", async () => {
   const { log, deps } = fakeDeps({
     openPromptsForChat: async () => [prompt({ state: "awaiting_reply" })],
@@ -201,8 +254,33 @@ test("an ambiguous plain message asks which campaign instead of guessing", async
   // Both candidates are named, otherwise the buyer cannot tell which two are open.
   expect(sent[0].text).toContain("Slots.lv");
   expect(sent[0].text).toContain("Lucky Rebel");
-  // Not a force reply: the next typed message would be just as ambiguous. The buyer must tap.
+  // Not a force reply: the next typed message would be just as ambiguous.
   expect(sent[0].forceReply).toBe(false);
+
+  // The instruction must be one the buyer can actually carry out. Every candidate in this branch is
+  // `awaiting_reply` by construction, and renderList emits ✍️ Update only for `pending` — so the
+  // list on the buyer's screen has NO Update button to tap. Cross-checked against the real renderer
+  // rather than asserted from memory, so re-adding that button forces this copy to be re-read.
+  const { keyboard } = renderList("Thu 13 Aug", [
+    {
+      promptId: 7,
+      title: "Slots.lv",
+      status: "Live",
+      question: "Any changes today?",
+      state: "awaiting_reply",
+    },
+    {
+      promptId: 8,
+      title: "Lucky Rebel",
+      status: "Live",
+      question: "Any changes today?",
+      state: "awaiting_reply",
+    },
+  ]);
+  expect(keyboard.flat().some((b) => b.text.includes("Update"))).toBe(false);
+  expect(sent[0].text).not.toContain("Tap");
+  // The escape that does work: reply to the campaign's own ✍️ message, which rule (1) resolves.
+  expect(sent[0].text).toContain("Reply directly to the ✍️ Update message");
 });
 
 test("a plain message with nothing open is answered politely and stored nowhere", async () => {
@@ -253,11 +331,27 @@ test("/start from an unknown chat records it and returns the chat id, and leaks 
     },
     deps,
   );
+  // A deep-link payload follows the command after a space.
+  await handleUpdate(
+    {
+      update_id: 72,
+      message: { message_id: 3, chat: { id: 777, username: "someone" }, text: "/start bind-me" },
+    },
+    deps,
+  );
+  // ...but `/startle` is a different command, not a greeting with a suffix.
+  await handleUpdate(
+    {
+      update_id: 73,
+      message: { message_id: 4, chat: { id: 777, username: "someone" }, text: "/startle" },
+    },
+    deps,
+  );
 
   expect(log).toContain("chat:777");
   // The username is what lets an admin recognise the chat in Settings.
   expect(chats[0]).toEqual({ chatId: "777", username: "someone", firstName: undefined });
-  expect(sent).toHaveLength(2);
+  expect(sent).toHaveLength(3);
   for (const m of sent) {
     expect(m.text).toContain("777");
     // An unbound chat is not a media buyer. It gets its own id and nothing else.
