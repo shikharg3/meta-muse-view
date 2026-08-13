@@ -2051,24 +2051,36 @@ git commit -m "feat(checkin): plan the day's prompts and send one list per buyer
 
 ## Task 10: Handle taps and replies
 
-> **Corrected 2026-08-13 during implementation.** Four defects in the task as written below — the
-> shipped code is authoritative where they disagree:
-> 1. **Test 2's assertion cannot match.** It expects the log to contain
->    `"send:111:force:✍️ Update for Slots.lv (L"`, which is 25 UTF-16 code units, while the fake logs
->    `text.slice(0, 24)` — and `✍️` is U+270D + U+FE0F, i.e. **two** units, so the trailing `L` is
->    unreachable. Assert the full `forceReplyText` output instead of a truncated log line.
-> 2. **Test 5's assertion cannot match.** It greps for lowercase `"which campaign"` against a message
->    that begins `"Which campaign is that for?"`, and only the first 24 characters are logged anyway.
-> 3. **Tests 5 and 7 are vacuous as written** — they assert on a truncated prefix that can never
->    contain the substring being sought, so they would pass no matter what the dispatcher did.
-> 4. **The `handleUpdate` docstring's "Never throws" claim is false and should not be made true.**
->    There is no try/catch and the deps are database calls; Task 11 already wraps each update in
->    try/catch so one poison update cannot stall a batch. Adding a silent catch here would swallow DB
->    failures. The truthful contract is: deps may throw, and the poll loop catches per update.
+> **Corrected 2026-08-13 during implementation, then re-corrected after review.** Three of the ten
+> tests below are defective, but the first explanation of *why* was itself partly wrong. These
+> descriptions were verified by extracting the original ten tests and replaying them against the
+> shipped implementation: **8 pass, 2 fail.** The shipped code is authoritative where they disagree.
 >
-> Ship 15 tests rather than 10 — the extra five defend branches the ten leave open, including the
-> attribution ORDER (a mutant making the plain-message path win over `reply_to_message`) and the
-> unbound-chat data boundary.
+> 1. **Test 2 FAILS — a UTF-16 off-by-one.** It expects the log to contain
+>    `"send:111:force:✍️ Update for Slots.lv (L"`. After the 15-unit `send:111:force:` prefix the
+>    remainder is 25 UTF-16 units, because `✍️` is U+270D + U+FE0F (**two** units) — but the fake logs
+>    `text.slice(0, 24)`, which yields `"✍️ Update for Slots.lv ("`. The trailing `L` is unreachable.
+>    Assert the full `forceReplyText` output instead of a truncated log line.
+> 2. **Test 5 FAILS — a case mismatch, and nothing else.** It greps lowercase `"which campaign"`
+>    against a message beginning `"Which campaign is that for?"`. Truncation plays **no part**: the
+>    slice is `"Which campaign is that f"` and `"Which campaign"` is 14 units, comfortably inside it.
+>    (An earlier version of this note blamed truncation here. It does not apply, and a `.toBe(true)`
+>    on an unfindable substring would FAIL rather than pass — so test 5 is broken, not vacuous.)
+> 3. **Test 7 is genuinely VACUOUS, for a different reason than first recorded.** Blanking the
+>    `/start` reply entirely still leaves it passing. Not because the sought substring is unreachable —
+>    the logged line `"send:777:plain:👋 MetaConsole check-in "` does contain `"777"` — but because the
+>    fake's own `send:777:` prefix and the `chat:777` entry carry the chat id no matter what the
+>    message body says. Assert the message body, not the id.
+> 4. **The `handleUpdate` docstring's "Never throws" claim is false and must not be made true.**
+>    There is no try/catch and every dep is a database round trip. Making it true would be worse: a
+>    swallowed `markNoChanges` leaves the prompt `pending` while the buyer is told "Logged", and 09:00
+>    then escalates a campaign they already closed. The truthful contract is that deps may throw and
+>    the poll loop catches per update — and note the update is then **dropped, not retried**, because
+>    Task 11 advances the offset outside its catch. Escalation is the backstop for a lost answer.
+>
+> Ship 15+ tests rather than 10. The extra ones defend branches the ten leave open — the attribution
+> ORDER (a mutant making the plain-message path win over `reply_to_message`), the unbound-chat data
+> boundary, a force-reply whose envelope carried no `message_id`, and a callback query with no `data`.
 
 **Files:**
 - Create: `src/telegram/updates.ts`
