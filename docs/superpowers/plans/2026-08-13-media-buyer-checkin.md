@@ -1821,6 +1821,19 @@ git commit -m "feat(notion): capture Owners person ids on board rows"
 
 ## Task 9: Plan and send the daily prompts
 
+> **Corrected 2026-08-13 during implementation.** Two fixes; the shipped code is authoritative:
+> 1. **`sort((a, b) => a.campaignTitle.localeCompare(b.campaignTitle))` is unstable for equal titles**
+>    and this list is re-rendered after every tap. Measured with two same-titled campaigns returned in
+>    opposite row orders, the bare comparator yields ids `12,31,30,20` one way and `12,30,31,20` the
+>    other — so the campaign a buyer sees as "2." becomes "3." after their first tap. Add an id
+>    tie-break. It is a display bug only, never a misroute: `callback_data` is id-addressed
+>    (`nc:12`/`up:12`), confirmed against the real `renderList`.
+> 2. **Cap the `retryAfter` sleep.** Telegram can name a very large `retry_after`; uncapped, one
+>    rate-limited send would park the whole check-in loop. `Math.min(retryAfter * 1000, 60_000)`.
+>
+> The `"en"` collation on that comparator is load-bearing, not decoration: `"ätna.io Campaign"` sorts
+> before `"Zebra.io Campaign"` under `en` and after it under `sv`.
+
 **Files:**
 - Create: `src/sync/jobs/checkin.ts`
 
@@ -2037,6 +2050,25 @@ git commit -m "feat(checkin): plan the day's prompts and send one list per buyer
 ---
 
 ## Task 10: Handle taps and replies
+
+> **Corrected 2026-08-13 during implementation.** Four defects in the task as written below — the
+> shipped code is authoritative where they disagree:
+> 1. **Test 2's assertion cannot match.** It expects the log to contain
+>    `"send:111:force:✍️ Update for Slots.lv (L"`, which is 25 UTF-16 code units, while the fake logs
+>    `text.slice(0, 24)` — and `✍️` is U+270D + U+FE0F, i.e. **two** units, so the trailing `L` is
+>    unreachable. Assert the full `forceReplyText` output instead of a truncated log line.
+> 2. **Test 5's assertion cannot match.** It greps for lowercase `"which campaign"` against a message
+>    that begins `"Which campaign is that for?"`, and only the first 24 characters are logged anyway.
+> 3. **Tests 5 and 7 are vacuous as written** — they assert on a truncated prefix that can never
+>    contain the substring being sought, so they would pass no matter what the dispatcher did.
+> 4. **The `handleUpdate` docstring's "Never throws" claim is false and should not be made true.**
+>    There is no try/catch and the deps are database calls; Task 11 already wraps each update in
+>    try/catch so one poison update cannot stall a batch. Adding a silent catch here would swallow DB
+>    failures. The truthful contract is: deps may throw, and the poll loop catches per update.
+>
+> Ship 15 tests rather than 10 — the extra five defend branches the ten leave open, including the
+> attribution ORDER (a mutant making the plain-message path win over `reply_to_message`) and the
+> unbound-chat data boundary.
 
 **Files:**
 - Create: `src/telegram/updates.ts`
@@ -3108,6 +3140,41 @@ git push origin feat/meta-integration
 git push droplet feat/meta-integration
 git push madsmonitor
 ```
+
+- [ ] **Step 2b: Pre-flight — prove the tables exist in `meta`, not just `meta_test`**
+
+Do NOT skip this on the assumption that Task 4 applied them. It happened during this build that the
+five tables were present in `meta_test` but **absent from `meta`**, because a scratch DB-mutation
+script died before restoring what it had dropped. The deploy would then have shipped a feature that
+`42P01`s on every prompt cycle.
+
+```bash
+ssh -i C:/Users/shikh/.ssh/id_ed25519 root@159.65.110.111 \
+  'cd /opt/meta-dashboard && set -a && . ./.env && set +a \
+   && psql "$DATABASE_URL" -At -c "select tablename from pg_tables where schemaname='"'"'public'"'"' and (tablename like '"'"'checkin%'"'"' or tablename like '"'"'telegram%'"'"' or tablename='"'"'media_buyers'"'"') order by 1" \
+   && psql "$DATABASE_URL" -At -c "select indexname from pg_indexes where tablename in ('"'"'checkin_prompts'"'"','"'"'media_buyers'"'"') order by 1"'
+```
+
+Expected: five tables (`checkin_prompts`, `checkin_runs`, `media_buyers`, `telegram_chats`,
+`telegram_state`) and six indexes, including `checkin_prompts_day_page_buyer_idx` and
+`media_buyers_chat_idx`.
+
+If anything is missing, copy it from the database that has it rather than hand-writing DDL:
+
+```bash
+sudo -u postgres pg_dump -d meta_test --schema-only --no-owner --no-privileges \
+  -t checkin_prompts -t checkin_runs -t media_buyers -t telegram_chats -t telegram_state \
+  > /tmp/checkin_schema.sql
+grep -nE '^(DROP|DELETE|TRUNCATE|ALTER TABLE .* DROP)' /tmp/checkin_schema.sql   # must print nothing
+psql "$DATABASE_URL" -1 -v ON_ERROR_STOP=1 -f /tmp/checkin_schema.sql
+```
+
+`-1` wraps it in one transaction and `ON_ERROR_STOP=1` aborts on the first error, so a partial apply
+rolls back rather than leaving half a schema.
+
+**Never mutation-test a shared database.** Dropping an index to prove a test dies is legitimate on a
+private database and reckless on this one: the script that does it becomes the only thing standing
+between production and a missing relation, and if it dies mid-run nothing restores the schema.
 
 - [ ] **Step 3: Deploy (no schema step)**
 
