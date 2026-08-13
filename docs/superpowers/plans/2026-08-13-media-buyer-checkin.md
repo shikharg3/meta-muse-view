@@ -184,6 +184,14 @@ test("the status set is exactly the six agreed values", () => {
   expect(Object.keys(CHECKIN_QUESTIONS)).toHaveLength(6);
 });
 
+test("inherited Object members are not mistaken for statuses", () => {
+  // Record<string, string> index access walks the prototype chain: without an own-property check
+  // these return functions, breaking the declared string | null contract.
+  expect(questionFor("toString")).toBeNull();
+  expect(questionFor("constructor")).toBeNull();
+  expect(questionFor("hasOwnProperty")).toBeNull();
+});
+
 test("berlinNow converts UTC to Berlin wall clock in summer", () => {
   // 2026-08-13 15:30Z is 17:30 CEST.
   expect(berlinNow(new Date("2026-08-13T15:30:00Z"))).toEqual({
@@ -273,7 +281,10 @@ export const CHECKIN_STATUSES: readonly string[] = Object.keys(CHECKIN_QUESTIONS
 /** The question for a status, or null when the status is out of scope for the check-in. */
 export function questionFor(status: string | null | undefined): string | null {
   if (!status) return null;
-  return CHECKIN_QUESTIONS[status] ?? null;
+  // Own-property check, not `?? null`: `Record<string, string>` index access walks the prototype
+  // chain, so "toString" or "constructor" would hand back an inherited function and break the
+  // declared `string | null` return type.
+  return Object.hasOwn(CHECKIN_QUESTIONS, status) ? CHECKIN_QUESTIONS[status] : null;
 }
 
 export interface LocalNow {
@@ -334,7 +345,7 @@ export function dayLabel(date: string): string {
 
 Run: `bun test src/lib/checkin.test.ts`
 
-Expected: PASS, 9 tests. If `dayLabel` returns `Thu 13 Aug` with a comma or a different order, adjust
+Expected: PASS, 11 tests. If `dayLabel` returns `Thu 13 Aug` with a comma or a different order, adjust
 the `.replace()` — do not change the expected string, the format is what appears in the buyer's
 message every day.
 
@@ -517,7 +528,7 @@ export function planPrompts(rows: CheckinBoardRow[], buyers: CheckinBuyer[]): Pl
 
 Run: `bun test src/lib/checkin.test.ts`
 
-Expected: PASS, 18 tests.
+Expected: PASS, 20 tests.
 
 - [ ] **Step 5: Commit**
 
@@ -805,7 +816,7 @@ export function escalationText(
 
 Run: `bun test src/lib/checkin.test.ts`
 
-Expected: PASS, 27 tests.
+Expected: PASS, 29 tests.
 
 - [ ] **Step 5: Commit**
 
