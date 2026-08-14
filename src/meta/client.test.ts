@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { MetaClient, MetaAuthError } from "./client";
+import { MetaClient, MetaAuthError, MetaCircuitOpenError } from "./client";
 import type { MetaApiEvent } from "./types";
 
 function jsonResponse(body: unknown, headers: Record<string, string> = {}) {
@@ -309,4 +309,76 @@ test("throws MetaAuthError on a #190 (invalid/expired token) and does not retry 
     MetaAuthError,
   );
   expect(n).toBe(1); // auth failure is fatal — not retried, not swallowed
+});
+test("the breaker trips after sustained Meta-side failure and stops spending calls", async () => {
+  // The measured failure mode: ~920 `Meta error 2` responses a day, each already retried, ground
+  // through account after account. Past the threshold the client must refuse to keep asking.
+  let calls = 0;
+  const client = new MetaClient(
+    { appId: "1", appSecret: "s", token: "t", version: "v25.0" },
+    {
+      fetchImpl: (async () => {
+        calls += 1;
+        return jsonResponse({ error: { code: 2, message: "Service temporarily unavailable" } });
+      }) as unknown as typeof fetch,
+      sleep: async () => {},
+    },
+  );
+
+  let opened = 0;
+  for (let i = 0; i < 200; i++) {
+    try {
+      await client.getChildren("act_1", "campaigns", ["id"]);
+    } catch (e) {
+      if (e instanceof MetaCircuitOpenError) opened += 1;
+    }
+  }
+  expect(opened).toBeGreaterThan(0);
+  // Once open it costs nothing: the later iterations must not reach fetch at all.
+  const before = calls;
+  await client.getChildren("act_1", "campaigns", ["id"]).catch(() => {});
+  expect(calls).toBe(before);
+});
+
+test("a success resets the breaker, so an isolated bad patch is not fatal", async () => {
+  let n = 0;
+  const client = new MetaClient(
+    { appId: "1", appSecret: "s", token: "t", version: "v25.0" },
+    {
+      // Fail, fail, then succeed — repeatedly. A flaky Meta must never accumulate to a trip.
+      fetchImpl: (async () => {
+        n += 1;
+        return n % 3 === 0
+          ? jsonResponse({ data: [{ id: "a" }], paging: {} })
+          : jsonResponse({ error: { code: 2, message: "Service temporarily unavailable" } });
+      }) as unknown as typeof fetch,
+      sleep: async () => {},
+    },
+  );
+
+  for (let i = 0; i < 60; i++) {
+    await client.getChildren("act_1", "campaigns", ["id"]).catch((e) => {
+      if (e instanceof MetaCircuitOpenError) throw e; // would mean a success failed to reset
+    });
+  }
+});
+
+test("a rejected field does not trip the breaker — that is our bug, not Meta being unwell", async () => {
+  // Only #1/#2/is_transient and 5xx count. Field and permission errors must stay non-tripping or a
+  // single bad fieldset would stop the whole cycle.
+  const client = new MetaClient(
+    { appId: "1", appSecret: "s", token: "t", version: "v25.0" },
+    {
+      fetchImpl: (async () =>
+        jsonResponse({
+          error: { code: 100, message: "(#100) Tried accessing nonexisting field" },
+        })) as unknown as typeof fetch,
+      sleep: async () => {},
+    },
+  );
+
+  for (let i = 0; i < 60; i++) {
+    const err = await client.getChildren("act_1", "campaigns", ["id"]).catch((e) => e);
+    expect(err).not.toBeInstanceOf(MetaCircuitOpenError);
+  }
 });

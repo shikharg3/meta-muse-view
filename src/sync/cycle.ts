@@ -1,4 +1,4 @@
-import { MetaClient } from "@/meta/client";
+import { MetaClient, MetaAuthError, MetaCircuitOpenError } from "@/meta/client";
 import type { InsightsClient } from "@/meta/types";
 import { db, schema } from "@/db/client";
 import { eq } from "drizzle-orm";
@@ -27,6 +27,7 @@ import {
   recordObservedTier,
   getStoredTier,
   recordServiceHealth,
+  msSinceLastCycle,
 } from "./state";
 import { runOnce, type Jobs } from "./run";
 import { syncCreativeSpecs } from "./jobs/creative-specs";
@@ -258,18 +259,47 @@ export function isCycleRunning(): boolean {
 }
 
 /**
+ * Minimum spacing between cycles that actually call Meta, enforced ACROSS process restarts.
+ *
+ * `running` only guards one process. Every deploy restarts the worker, and the loop below refreshes
+ * immediately on boot, so a run of deployments used to fire one full sweep of every account each
+ * time: on 2026-08-13 six restarts inside 2.5 hours produced six sweeps on top of the hourly
+ * schedule. Persisting the last start closes that, because the clock survives the restart.
+ */
+export const MIN_CYCLE_GAP_MS = 45 * 60_000;
+
+/** Service key under which the cycle records its own start/finish, doubling as the cooldown clock. */
+const CYCLE_SERVICE = "sync-cycle";
+
+/**
  * One full sync cycle (token health → per-account structure/insights/breakdowns).
  * Re-entrant safe within a process: overlapping calls are skipped. The hourly
  * worker and the web server are separate processes, so a concurrent run there is
  * possible but harmless — every job is an idempotent upsert.
+ *
+ * `force` bypasses the restart cooldown for deliberate human action — Settings → "Sync now" and
+ * `--once`. Automatic paths must never pass it.
  */
-export async function runCycle(opts: { full?: boolean } = {}): Promise<void> {
+export async function runCycle(opts: { full?: boolean; force?: boolean } = {}): Promise<void> {
   if (running) {
     console.warn("[sync] previous cycle still running; skipping this tick");
     return;
   }
+  if (!opts.force) {
+    const since = await msSinceLastCycle(CYCLE_SERVICE);
+    if (since !== null && since < MIN_CYCLE_GAP_MS) {
+      console.log(
+        `[sync] last cycle started ${Math.round(since / 60_000)}m ago; ` +
+          `within the ${MIN_CYCLE_GAP_MS / 60_000}m floor — skipping (restart or duplicate tick)`,
+      );
+      return;
+    }
+  }
   running = true;
   try {
+    // Stamped BEFORE any Meta call so the cooldown measures spacing between bursts, not between
+    // completions — a 4h full pass must not license a second sweep the moment it ends.
+    await recordServiceHealth(CYCLE_SERVICE, true, opts.full ? "full: running" : "core: running");
     // Notion client board first: independent of Meta credentials and non-fatal.
     try {
       const n = await syncClients();
@@ -287,6 +317,7 @@ export async function runCycle(opts: { full?: boolean } = {}): Promise<void> {
       console.warn(
         "[sync] no credentials configured — set them on the Settings page; skipping cycle",
       );
+      await recordServiceHealth(CYCLE_SERVICE, false, "no Meta credentials configured");
       return;
     }
     // Size pacing from the last observed access tier (persisted). Unknown/dev → conservative.
@@ -303,6 +334,9 @@ export async function runCycle(opts: { full?: boolean } = {}): Promise<void> {
       console.error(
         "[sync] token invalid/expired — aborting cycle (fix Meta credentials on Settings). No data was refreshed.",
       );
+      // Recorded as a service failure, not just a log line: a token that dies overnight otherwise
+      // shows up only as data quietly going stale. This is what a 15h outage looked like.
+      await recordServiceHealth(CYCLE_SERVICE, false, "Meta token invalid/expired or app blocked");
       return;
     }
     // Keep the API event log bounded — it's a recent-activity view, not an audit trail.
@@ -343,7 +377,19 @@ export async function runCycle(opts: { full?: boolean } = {}): Promise<void> {
       `[sync] ${opts.full ? "full" : "core"} refresh: ${refreshIds.length} accounts ` +
         `(${fresh} never synced → first${skipped ? `, ${skipped} disabled skipped` : ""})`,
     );
-    await runOnce({ client, accountIds: refreshIds, jobs: buildRefreshJobs(opts.full ?? false) });
+    try {
+      await runOnce({ client, accountIds: refreshIds, jobs: buildRefreshJobs(opts.full ?? false) });
+    } catch (e) {
+      // Meta is failing everything, or the token died mid-cycle. Stop here rather than continuing
+      // into alert detection and the Notion push on data we know is incomplete.
+      if (e instanceof MetaAuthError || e instanceof MetaCircuitOpenError) {
+        console.error("[sync] cycle stopped early:", e.message);
+        await recordServiceHealth(CYCLE_SERVICE, false, e.message);
+        await recordObservedTier(client.observedTier());
+        return;
+      }
+      throw e;
+    }
     // Persist the tier seen on this cycle's live headers so the next cycle sizes pacing correctly
     // (a downgrade after an app swap pulls concurrency back down automatically).
     await recordObservedTier(client.observedTier());
@@ -407,40 +453,74 @@ export async function runCycle(opts: { full?: boolean } = {}): Promise<void> {
       }
     }
     console.log("[sync] cycle done");
+    await recordServiceHealth(CYCLE_SERVICE, true, `${opts.full ? "full" : "core"}: completed`);
   } finally {
     running = false;
   }
 }
 
 /**
- * Advance the historical backfill for every known account in bounded parallel
- * (tier-sized concurrency). Runs separately from the hourly refresh so deep history never delays
- * recent data, and stops at `deadlineMs` (the worker passes the time left until the next refresh).
- * Uses a wider-concurrency limiter than the refresh to overlap the async report polling latency.
+ * Advance the historical backfill in bounded parallel (tier-sized concurrency). Runs separately from
+ * the hourly refresh so deep history never delays recent data, and stops at `deadlineMs` (the worker
+ * passes the time left until the next refresh). Uses a wider-concurrency limiter than the refresh to
+ * overlap the async report polling latency.
+ *
+ * Account selection is the SAME rule the hourly core refresh applies (`refreshAccountIds`): an
+ * already-structured DISABLED account is skipped. It previously ran over every account in the
+ * database — 203 of them, against 95 on the core pass — so the majority of backfill traffic was
+ * spent walking years of history for accounts that are disabled and will never produce another row.
+ * A disabled account keeps whatever history it already has, and re-enabling it puts it straight back
+ * in scope because enumeration keeps `accounts.status` current.
  */
 export async function runBackfillCycle(deadlineMs?: number): Promise<void> {
   const creds = await getCredentials();
   if (!creds) return;
   const pacing = pacingFor(normalizeTier(await getStoredTier()));
   const client = buildClient(creds, new Limiter(pacing.backfill.http, pacing.backfill.intervalMs));
-  const ids = (await db.select({ id: schema.accounts.id }).from(schema.accounts)).map((r) => r.id);
+  const rows = await db
+    .select({ id: schema.accounts.id, status: schema.accounts.status })
+    .from(schema.accounts);
+  const structured = await getStructuredAccountIds();
+  const disabled = new Set(
+    rows.filter((a) => accountStatus(a.status) === "DISABLED").map((a) => a.id),
+  );
+  const ids = refreshAccountIds(
+    orderUnsyncedFirst(
+      rows.map((r) => r.id),
+      structured,
+    ),
+    disabled,
+    structured,
+    false,
+  );
+  const skipped = rows.length - ids.length;
+  if (skipped > 0)
+    console.log(`[backfill] ${ids.length} accounts (${skipped} already-synced disabled skipped)`);
   const pastDeadline = (): boolean => deadlineMs !== undefined && Date.now() >= deadlineMs;
   // Advance every account by one chunk per pass, looping until nothing is left to backfill or the
   // deadline hits (each pass no-ops cheaply for already-complete accounts). Parallel metric groups
   // + the wider limiter make a pass fast, so full history clears in a few passes instead of one
   // chunk per hourly cycle.
   let advanced = true;
-  while (advanced && !pastDeadline()) {
+  // Set when Meta itself is failing, so the whole pass stops instead of retrying the same broken
+  // window once per remaining account.
+  let halted: Error | null = null;
+  while (advanced && !pastDeadline() && !halted) {
     advanced = false;
     const today = new Date();
     await mapPool(ids, pacing.backfill.accounts, async (id) => {
-      if (pastDeadline()) return;
+      if (pastDeadline() || halted) return;
       try {
         if (await backfillAccount(client, id, today)) advanced = true;
       } catch (e) {
+        if (e instanceof MetaAuthError || e instanceof MetaCircuitOpenError) {
+          halted = e;
+          return;
+        }
         console.error(`[backfill] ${id} failed:`, e instanceof Error ? e.message : e);
       }
     });
   }
+  if (halted) console.error("[backfill] stopped early:", (halted as Error).message);
   await recordObservedTier(client.observedTier());
 }

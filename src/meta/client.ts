@@ -9,6 +9,19 @@ import { Limiter } from "./limiter";
  *  so the sync surfaces it loudly instead of masking it as a skippable "group failed". */
 export class MetaAuthError extends Error {}
 
+/**
+ * Thrown once Meta has failed `CIRCUIT_THRESHOLD` calls in a row for reasons that are Meta's side
+ * (#1/#2/is_transient and 5xx). Like `MetaAuthError`, callers must re-throw it rather than logging
+ * it as a skipped group.
+ *
+ * Without this the sync grinds on through a bad window: measured at ~920 failed calls per day,
+ * every day, each already retried up to `TRANSIENT_RETRIES` times. Individually each was handled
+ * correctly; collectively it is thousands of pointless requests a day against Meta's platform, and
+ * that volume of errors is the kind of thing that gets a developer account suspended. When Meta says
+ * it is unwell, the right response is to stop and come back next cycle.
+ */
+export class MetaCircuitOpenError extends Error {}
+
 export interface MetaCredentials {
   appId: string;
   appSecret: string;
@@ -32,12 +45,24 @@ export interface MetaClientDeps {
 }
 
 const TRANSIENT_RETRIES = 3; // #1/#2/5xx fail fast; real rate limits get the full maxRetries
+/** Consecutive Meta-side failures that trip the breaker. Any success resets the count. */
+const CIRCUIT_THRESHOLD = 25;
+/**
+ * Attempts allowed inside `withFieldRecovery` before giving up on a request key.
+ *
+ * Each attempt is at least one live API call, plus the bisection probes underneath it, so the old
+ * ceiling of 12 let a single logical request expand into dozens. The blocklist is persisted, so a
+ * key that genuinely needs more rounds converges across cycles instead of burning them all at once.
+ */
+const FIELD_RECOVERY_ATTEMPTS = 4;
 const BASE = "https://graph.facebook.com";
 
 export class MetaClient implements InsightsClient {
   private fetchImpl: typeof fetch;
   private sleep: (ms: number) => Promise<void>;
   private maxRetries: number;
+  /** Meta-side failures since the last success, across every call this client makes. */
+  private consecutiveFailures = 0;
   private limiter?: Limiter;
   private fieldStore?: FieldStore;
   private loaded = new Map<string, Promise<void>>();
@@ -104,6 +129,13 @@ export class MetaClient implements InsightsClient {
     params: Record<string, unknown>,
     accountId = "",
   ): Promise<Record<string, unknown>> {
+    // Trip before spending the call, not after: once Meta has failed this many in a row there is no
+    // reason to believe the next one lands, and continuing is what turns a bad Meta window into
+    // thousands of failed requests.
+    if (this.consecutiveFailures >= CIRCUIT_THRESHOLD)
+      throw new MetaCircuitOpenError(
+        `Meta failed ${this.consecutiveFailures} calls in a row — stopping this cycle`,
+      );
     let attempt = 0; // transient/5xx attempts (fail fast)
     let rlAttempt = 0; // rate-limit attempts (long, retry-after-aware backoff)
     for (;;) {
@@ -116,8 +148,10 @@ export class MetaClient implements InsightsClient {
       if (res.status >= 500) {
         // Transient server error: a few quick retries, then give up so one flaky call doesn't
         // stall the cycle (the next refresh/backfill pass re-attempts).
-        if (attempt++ >= TRANSIENT_RETRIES)
+        if (attempt++ >= TRANSIENT_RETRIES) {
+          this.consecutiveFailures += 1;
           throw new Error(`Meta ${res.status} after ${attempt} retries`);
+        }
         await this.sleep(backoffMs(attempt));
         continue;
       }
@@ -162,6 +196,9 @@ export class MetaClient implements InsightsClient {
           await this.sleep(backoffMs(attempt));
           continue;
         }
+        // Counts Meta-side failures only. A rejected field or a bad request is our bug to fix, not
+        // a signal that Meta is unwell, and must not trip the breaker.
+        if (isTransient) this.consecutiveFailures += 1;
         throw new Error(`Meta error ${error.code}: ${error.message}`);
       }
       if (accountId) {
@@ -182,6 +219,7 @@ export class MetaClient implements InsightsClient {
           );
         }
       }
+      this.consecutiveFailures = 0;
       return body;
     }
   }
@@ -315,7 +353,7 @@ export class MetaClient implements InsightsClient {
     exec: (fields: string[]) => Promise<T>,
   ): Promise<T> {
     await this.ensureLoaded(memoKey);
-    for (let attempt = 0; attempt < 12; attempt++) {
+    for (let attempt = 0; attempt < FIELD_RECOVERY_ATTEMPTS; attempt++) {
       const fields = this.stripBad(memoKey, requested);
       try {
         return await exec(fields);

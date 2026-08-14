@@ -29,7 +29,11 @@ export async function resetAndResync(): Promise<ResetResult> {
   await audit("sync.reset", "wiped all synced data and triggered a full resync");
   await wipeSyncedData();
   if (isCycleRunning()) return { ok: true, syncStarted: false };
-  void runCycle({ full: true }).catch((e) => console.error("[reset] background resync failed:", e));
+  // `force`: a human clicked this. The restart cooldown exists to stop repeated AUTOMATIC sweeps,
+  // not to override a deliberate instruction.
+  void runCycle({ full: true, force: true }).catch((e) =>
+    console.error("[reset] background resync failed:", e),
+  );
   return { ok: true, syncStarted: true };
 }
 
@@ -39,7 +43,7 @@ export async function triggerSync(): Promise<{ ok: true; started: boolean }> {
   await requireAdmin();
   if (isCycleRunning()) return { ok: true, started: false };
   await audit("sync.manual", "triggered a manual core refresh");
-  void runCycle({ full: false }).catch((e) =>
+  void runCycle({ full: false, force: true }).catch((e) =>
     console.error("[sync] manual core refresh failed:", e),
   );
   return { ok: true, started: true };

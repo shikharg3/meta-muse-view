@@ -125,6 +125,22 @@ export async function getServiceHealth(service: string): Promise<ServiceHealth |
   };
 }
 
+/**
+ * Milliseconds since a service last recorded anything, or null when it never has.
+ *
+ * The point is that this clock lives in Postgres, so it survives a process restart. An in-memory
+ * timestamp cannot space out work across deployments — which is exactly the gap that let a run of
+ * restarts fire one Meta sweep each.
+ */
+export async function msSinceLastCycle(service: string): Promise<number | null> {
+  const [row] = await db
+    .select({ checkedAt: schema.serviceHealth.checkedAt })
+    .from(schema.serviceHealth)
+    .where(eq(schema.serviceHealth.service, service));
+  if (!row?.checkedAt) return null;
+  return Date.now() - row.checkedAt.getTime();
+}
+
 export interface Checkpoint {
   backfilledThrough: string | null;
   cursor: string | null;
