@@ -117,8 +117,9 @@ async function checkinLoop(): Promise<void> {
 }
 
 if (process.argv.includes("--once")) {
-  // Manual one-shot: a full (all-metrics) refresh.
-  runCycle({ full: true })
+  // Manual one-shot: a full (all-metrics) refresh. Forced past the restart cooldown — someone ran
+  // this on purpose.
+  runCycle({ full: true, force: true })
     .then(() => process.exit(0))
     .catch((e) => {
       console.error("[sync] cycle failed:", e);

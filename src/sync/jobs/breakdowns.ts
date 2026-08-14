@@ -2,7 +2,7 @@ import { db, schema } from "@/db/client";
 import type { InsightsClient } from "@/meta/types";
 import { pickAction, DEFAULT_CONVERSION_TYPE } from "@/meta/insights";
 import { trailingRange, chunkRange, type Level } from "./insights";
-import { MetaAuthError } from "@/meta/client";
+import { MetaAuthError, MetaCircuitOpenError } from "@/meta/client";
 
 const n = (v: unknown) => (v == null ? 0 : Number(v) || 0);
 
@@ -139,7 +139,7 @@ export async function syncBreakdowns(
         }
       }
     } catch (e) {
-      if (e instanceof MetaAuthError) throw e; // a dead token must abort, not silently skip
+      if (e instanceof MetaAuthError || e instanceof MetaCircuitOpenError) throw e; // must abort
       console.error(
         `[breakdowns] ${level} ${breakdownType} skipped:`,
         e instanceof Error ? e.message : e,

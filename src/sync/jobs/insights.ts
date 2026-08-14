@@ -2,7 +2,7 @@ import { db, schema } from "@/db/client";
 import type { InsightRow, InsightsClient } from "@/meta/types";
 import { normalizeInsightRow } from "@/meta/insights";
 import { INSIGHT_METRIC_GROUPS, ATTRIBUTION_WINDOWS } from "@/meta/fieldsets";
-import { MetaAuthError } from "@/meta/client";
+import { MetaAuthError, MetaCircuitOpenError } from "@/meta/client";
 
 export type Level = "account" | "campaign" | "adset" | "ad";
 
@@ -90,7 +90,9 @@ export async function syncInsightsRange(
             ? await client.runAsyncInsights(accountId, params, { memoKey: `insights:${level}:` })
             : await client.getInsights(accountId, params);
         } catch (e) {
-          if (e instanceof MetaAuthError) throw e; // a dead token must abort, not silently skip
+          // A dead token, or Meta failing every call, must abort — not be logged as a skipped group
+          // and retried across every remaining account.
+          if (e instanceof MetaAuthError || e instanceof MetaCircuitOpenError) throw e;
           console.error(
             `[insights] ${level} metric group skipped:`,
             e instanceof Error ? e.message : e,

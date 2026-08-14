@@ -8,8 +8,10 @@ import {
   backfillAccount,
   mapPool,
   refreshAccountIds,
+  runCycle,
+  MIN_CYCLE_GAP_MS,
 } from "./cycle";
-import { getCheckpoint } from "./state";
+import { getCheckpoint, recordServiceHealth, msSinceLastCycle } from "./state";
 import { addDays } from "@/lib/range";
 import { fakeInsightsClient } from "@/meta/fake-client";
 
@@ -151,4 +153,51 @@ test("backfillStep clamps the floor to the account created date (no walk into em
   await backfillStep("act_c", "insights:account", 1125, today, run, created);
   expect(windows).toHaveLength(1); // one 30-day chunk, then done — not ~13 chunks to the 37mo floor
   expect(windows[0].since).toBe(created); // stopped at creation date, not the retention floor
+});
+test("a restart cannot re-trigger a sweep inside the cooldown, and the clock survives it", async () => {
+  // The suspension trigger: six deploys in 2.5h, each restarting the worker, each firing a fresh
+  // sweep of every account. An in-process timer cannot stop that — the timestamp has to be in the
+  // database, because the process is what restarted.
+  await db.execute(sql`truncate table service_health cascade`);
+  await recordServiceHealth("sync-cycle", true, "core: running");
+
+  const since = await msSinceLastCycle("sync-cycle");
+  expect(since).not.toBeNull();
+  expect(since!).toBeLessThan(MIN_CYCLE_GAP_MS);
+
+  // A fresh process calling runCycle() must decline before it reaches any Meta work, leaving the
+  // recorded note exactly as it was.
+  await runCycle();
+  const [held] = await db
+    .select()
+    .from(schema.serviceHealth)
+    .where(eq(schema.serviceHealth.service, "sync-cycle"));
+  expect(held.note).toBe("core: running");
+
+  // Deliberate human action still gets through.
+  await runCycle({ force: true });
+  const [forced] = await db
+    .select()
+    .from(schema.serviceHealth)
+    .where(eq(schema.serviceHealth.service, "sync-cycle"));
+  expect(forced.note).not.toBe("core: running");
+});
+
+test("the cooldown lapses once the gap has passed", async () => {
+  await db.execute(sql`truncate table service_health cascade`);
+  await recordServiceHealth("sync-cycle", true, "core: completed");
+  await db
+    .update(schema.serviceHealth)
+    .set({ checkedAt: new Date(Date.now() - MIN_CYCLE_GAP_MS - 60_000) })
+    .where(eq(schema.serviceHealth.service, "sync-cycle"));
+
+  const since = await msSinceLastCycle("sync-cycle");
+  expect(since!).toBeGreaterThan(MIN_CYCLE_GAP_MS);
+
+  await runCycle();
+  const [ran] = await db
+    .select()
+    .from(schema.serviceHealth)
+    .where(eq(schema.serviceHealth.service, "sync-cycle"));
+  expect(ran.note).not.toBe("core: completed");
 });
