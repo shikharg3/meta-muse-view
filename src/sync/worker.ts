@@ -129,8 +129,10 @@ if (process.argv.includes("--once")) {
   // Started ALONGSIDE the sync loop, never inside it — see checkinLoop's comment for why.
   void checkinLoop();
   void (async () => {
-    // Seed with today so a restart/deploy does NOT re-trigger the ~3h full refresh; it runs once
-    // at the next UTC day boundary. (A manual Sync-now still forces a full refresh.)
+    // Seed with today so a restart/deploy does NOT re-trigger the ~4.5h full refresh; it runs once
+    // at the next UTC day boundary, and nothing in the UI can force it: Settings → "Sync now" calls
+    // triggerSync(), which passes `full: false`. The daily pass is therefore the only SCHEDULED
+    // writer of the board's `🤖 Account Status`; "Sync Notion" re-runs that write on demand.
     let lastFullDay = today();
     for (;;) {
       const t0 = Date.now();
