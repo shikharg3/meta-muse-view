@@ -140,12 +140,22 @@ if (process.argv.includes("--once")) {
       // One full (all 219 metrics + breakdowns) refresh per calendar day; every other hour pulls
       // just the CORE KPIs so the refresh stays fast and leaves the hour to backfill.
       const full = today() !== lastFullDay;
-      await runCycle({ full }).catch((e) => console.error("[sync] refresh failed:", e));
-      if (full) lastFullDay = today();
-      // Backfill until the next hour, but ALWAYS at least BACKFILL_MIN_MS.
-      await runBackfillCycle(Math.max(t0 + HOUR_MS, Date.now() + BACKFILL_MIN_MS)).catch((e) =>
-        console.error("[sync] backfill failed:", e),
-      );
+      const ran = await runCycle({ full }).catch((e) => {
+        console.error("[sync] refresh failed:", e);
+        return true; // it started and failed; treat the slot as spent
+      });
+      if (full && ran) lastFullDay = today();
+      // The backfill is skipped with it. If the cooldown just decided it is too soon to talk to
+      // Meta, that applies to history too — otherwise a run of deploys still grants each restart a
+      // fresh hour-long backfill budget, which is most of the traffic the refresh cooldown saves.
+      if (ran) {
+        // Backfill until the next hour, but ALWAYS at least BACKFILL_MIN_MS.
+        await runBackfillCycle(Math.max(t0 + HOUR_MS, Date.now() + BACKFILL_MIN_MS)).catch((e) =>
+          console.error("[sync] backfill failed:", e),
+        );
+      }
+      // Always pace to the top of the hour, whether or not this tick did any work — a skipped
+      // cycle must not turn the loop into a spin.
       const rest = t0 + HOUR_MS - Date.now();
       if (rest > 0) await sleep(rest);
     }

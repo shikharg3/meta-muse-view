@@ -280,10 +280,10 @@ const CYCLE_SERVICE = "sync-cycle";
  * `force` bypasses the restart cooldown for deliberate human action — Settings → "Sync now" and
  * `--once`. Automatic paths must never pass it.
  */
-export async function runCycle(opts: { full?: boolean; force?: boolean } = {}): Promise<void> {
+export async function runCycle(opts: { full?: boolean; force?: boolean } = {}): Promise<boolean> {
   if (running) {
     console.warn("[sync] previous cycle still running; skipping this tick");
-    return;
+    return false;
   }
   if (!opts.force) {
     const since = await msSinceLastCycle(CYCLE_SERVICE);
@@ -292,7 +292,7 @@ export async function runCycle(opts: { full?: boolean; force?: boolean } = {}): 
         `[sync] last cycle started ${Math.round(since / 60_000)}m ago; ` +
           `within the ${MIN_CYCLE_GAP_MS / 60_000}m floor — skipping (restart or duplicate tick)`,
       );
-      return;
+      return false;
     }
   }
   running = true;
@@ -318,7 +318,8 @@ export async function runCycle(opts: { full?: boolean; force?: boolean } = {}): 
         "[sync] no credentials configured — set them on the Settings page; skipping cycle",
       );
       await recordServiceHealth(CYCLE_SERVICE, false, "no Meta credentials configured");
-      return;
+      // `true`: the cycle DID start and consumed its slot. Only the cooldown skip returns false.
+      return true;
     }
     // Size pacing from the last observed access tier (persisted). Unknown/dev → conservative.
     const pacing = pacingFor(normalizeTier(await getStoredTier()));
@@ -337,7 +338,7 @@ export async function runCycle(opts: { full?: boolean; force?: boolean } = {}): 
       // Recorded as a service failure, not just a log line: a token that dies overnight otherwise
       // shows up only as data quietly going stale. This is what a 15h outage looked like.
       await recordServiceHealth(CYCLE_SERVICE, false, "Meta token invalid/expired or app blocked");
-      return;
+      return true;
     }
     // Keep the API event log bounded — it's a recent-activity view, not an audit trail.
     await pruneSyncEvents().catch((e) => console.error("[sync] prune events failed:", e));
@@ -386,7 +387,7 @@ export async function runCycle(opts: { full?: boolean; force?: boolean } = {}): 
         console.error("[sync] cycle stopped early:", e.message);
         await recordServiceHealth(CYCLE_SERVICE, false, e.message);
         await recordObservedTier(client.observedTier());
-        return;
+        return true;
       }
       throw e;
     }
@@ -454,6 +455,7 @@ export async function runCycle(opts: { full?: boolean; force?: boolean } = {}): 
     }
     console.log("[sync] cycle done");
     await recordServiceHealth(CYCLE_SERVICE, true, `${opts.full ? "full" : "core"}: completed`);
+    return true;
   } finally {
     running = false;
   }
