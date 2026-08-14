@@ -3,6 +3,7 @@ import {
   CHECKIN_QUESTIONS,
   questionFor,
   isCheckinStatus,
+  isPromptDay,
   CHECKIN_HOUR,
   ESCALATION_HOUR,
   planPrompts,
@@ -144,4 +145,33 @@ test("prompts are ordered by campaign title so the message is stable", () => {
     buyers,
   );
   expect(plans.map((p) => p.campaignTitle)).toEqual(["Alpha", "Zebra"]);
+});
+
+test("prompts fire Monday to Friday and never at the weekend", () => {
+  // 2026-08-10 is a Monday, so this walks one full week.
+  const week = [
+    ["2026-08-10", true], // Mon
+    ["2026-08-11", true], // Tue
+    ["2026-08-12", true], // Wed
+    ["2026-08-13", true], // Thu
+    ["2026-08-14", true], // Fri
+    ["2026-08-15", false], // Sat
+    ["2026-08-16", false], // Sun
+  ] as const;
+  for (const [date, expected] of week) expect(isPromptDay(date)).toBe(expected);
+});
+
+test("the weekday answer does not depend on the process timezone", () => {
+  // A UTC-11 host reading a Date object would see Friday's midnight as Thursday. Reading the date
+  // STRING with UTC getters is what makes this immune.
+  for (const tz of ["Pacific/Kiritimati", "Pacific/Midway", "Europe/Berlin"]) {
+    const prev = process.env.TZ ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+    process.env.TZ = tz;
+    try {
+      expect(isPromptDay("2026-08-15")).toBe(false); // Sat
+      expect(isPromptDay("2026-08-17")).toBe(true); // Mon
+    } finally {
+      process.env.TZ = prev;
+    }
+  }
 });

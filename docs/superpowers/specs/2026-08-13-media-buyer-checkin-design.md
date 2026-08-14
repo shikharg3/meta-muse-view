@@ -62,6 +62,7 @@ Facts the design depends on, verified against the live board and production Post
 | Decision | Choice |
 |---|---|
 | Trigger time | 17:00 **Europe/Berlin wall clock** — 15:00 UTC in summer, 16:00 UTC in winter |
+| Trigger days | **Monday–Friday only** (added 2026-08-14 on the operator's instruction). Both the 17:00 prompt and the 09:00 escalation are suppressed at the weekend — see the note below, because this changes what "yesterday" means. |
 | Target statuses | `Live`, `Paused`, `Ad Account Disabled`, `Ad Account Blocked`, `All ads rejected`, `On Boarding` |
 | "Onboarding" means | `🤖 Account Status = "On Boarding"` — **not** the separate `Onboarding Status` or `Needs Onboarding` columns |
 | Message shape | **One message per buyer**, listing their campaigns, two inline buttons per campaign |
@@ -77,6 +78,31 @@ a day), one free-text blob split by an LLM (misattribution lands a comment on th
 card), LLM substantiality judgement (can swallow a real update), webhook into `meta-web` (adds an
 unauthenticated public route to an auth-gated app), a dedicated `meta-checkin` systemd unit
 (operational overhead, and the CLAUDE.md deploy runbook would need changing).
+
+### 3.1 Weekends (added 2026-08-14)
+
+Media buyers are not asked for updates on Saturday or Sunday. `isPromptDay(date)` in
+`src/lib/checkin.ts` is the single predicate, read off the **local date string** rather than a `Date`
+so the answer cannot drift with the host timezone.
+
+Two consequences, and the second is the one that matters:
+
+1. **The 09:00 escalation is suppressed too.** It is a message about media buyers to the shared alert
+   channel, and firing it on a Saturday would nag a team that is not working. Nothing is lost: it is
+   deferred, not skipped.
+2. **The escalation therefore cannot key on "yesterday".** By Monday, yesterday is Sunday, which was
+   never planned — so a naive weekend suppression would leave **Friday's unanswered prompts escalated
+   never**, silently and permanently. `escalateUnanswered` instead claims **every unescalated
+   `checkin_runs` day strictly before today**, oldest first, one message per day naming its own date.
+   That also drains a backlog after an outage, which the old shape could not.
+
+No weekend `checkin_runs` row is created at all, which is what lets the escalation treat "no row" as
+"nothing was ever asked" rather than "a day that failed".
+
+**Gating applies to SENDING, never receiving.** The `getUpdates` poll and the Notion comment flush run
+all seven days, so a buyer who answers Friday's prompt on Saturday is still recorded and their comment
+still reaches the card. Verified 2026-08-14 against production: a Saturday 17:30 clock declines both
+gates and writes no run row, while the Monday lookback still finds Friday.
 
 ---
 

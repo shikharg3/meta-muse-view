@@ -14,6 +14,23 @@ export const CHECKIN_HOUR = 17;
 export const ESCALATION_HOUR = 9;
 
 /**
+ * Whether the check-in prompts at all on a given Europe/Berlin calendar date.
+ *
+ * Monday–Friday only, on the operator's instruction: media buyers are not asked for updates at the
+ * weekend. Read on the LOCAL date string, not on a `Date`, so the answer cannot drift with the
+ * process timezone — `getUTCDay` on a midnight-UTC parse of `YYYY-MM-DD` is exactly the weekday that
+ * date names, whatever the host is set to.
+ *
+ * Note this gates SENDING, never receiving: a buyer who answers Friday's prompt on Saturday is still
+ * accepted, and the comment still reaches Notion, because the poll loop and the comment flush run
+ * every day.
+ */
+export function isPromptDay(date: string): boolean {
+  const day = new Date(`${date}T00:00:00Z`).getUTCDay();
+  return day >= 1 && day <= 5;
+}
+
+/**
  * One question per status: the five machine-owned delivery states from `delivery-status.ts`, plus
  * the human-owned `On Boarding` on the operator's instruction.
  *

@@ -30,12 +30,12 @@ import {
   type ListItem,
 } from "@/lib/checkin-render";
 import {
+  isPromptDay,
   planPrompts,
   type CheckinBoardRow,
   type CheckinBuyer,
   type PromptState,
 } from "@/lib/checkin";
-import { addDays } from "@/lib/range";
 import { handleUpdate, type PromptRow, type UpdateDeps } from "@/telegram/updates";
 import { sendAlertChannelMessage } from "@/sync/alerts";
 import { recordServiceHealth } from "@/sync/state";
@@ -156,6 +156,10 @@ export async function runDailyCheckin(
   const tg = await telegram();
   if (!tg) return null;
   const local = berlinNow(now);
+  // Monday–Friday only. Checked BEFORE the claim so no `checkin_runs` row exists for a weekend at
+  // all: that is what lets the escalation treat "no row" as "nothing was ever asked" and keeps
+  // Friday's prompts as the most recent unescalated day right through to Monday.
+  if (!isPromptDay(local.date)) return null;
 
   try {
     // The claim and the prompts commit together or not at all. Null means the day was already
@@ -702,11 +706,16 @@ export async function flushPendingComments(): Promise<number> {
 }
 
 /**
- * Post yesterday's unanswered prompts to the shared alert channel, once. Unroutable prompts are named
- * too, so a missing Telegram binding is visible rather than silent.
+ * Post unanswered prompts to the shared alert channel, once per planned day. Unroutable prompts are
+ * named too, so a missing Telegram binding is visible rather than silent.
+ *
+ * Runs Monday–Friday only, like the prompt itself: nobody is nagged at the weekend. That is why this
+ * escalates **every unescalated day before today**, not strictly yesterday — Friday's prompts must
+ * still be reported, and by Monday "yesterday" is Sunday, which was never planned. The same lookback
+ * covers a backlog after an outage, oldest day first, one message per day so each names its own date.
  *
  * `escalated_at` is CLAIMED before the send, not written after it. The claim is a conditional update,
- * so it matches zero rows both when the day was never planned and when another pass already claimed
+ * so it matches zero rows both when a day was never planned and when another pass already claimed
  * it — that is where the "no run row" check went. Sending first and recording after would re-post the
  * entire escalation to the shared channel on the next boot, and the deploy runbook restarts
  * `meta-sync` on every deploy. A crash after claiming loses one nag; a crash before it re-runs
@@ -719,15 +728,25 @@ export async function flushPendingComments(): Promise<number> {
  * Returns the number of prompts moved to `escalated`, or null when there was nothing to claim.
  */
 export async function escalateUnanswered(now: Date): Promise<number | null> {
-  const date = addDays(berlinNow(now).date, -1); // yesterday, via the shared date helper
+  const today = berlinNow(now).date;
+  if (!isPromptDay(today)) return null;
 
+  // One UPDATE claims the whole backlog atomically, so two passes cannot both take the same day.
   const claimed = await db
     .update(schema.checkinRuns)
     .set({ escalatedAt: new Date() })
-    .where(and(eq(schema.checkinRuns.runDate, date), isNull(schema.checkinRuns.escalatedAt)))
+    .where(and(lt(schema.checkinRuns.runDate, today), isNull(schema.checkinRuns.escalatedAt)))
     .returning({ runDate: schema.checkinRuns.runDate });
   if (claimed.length === 0) return null;
 
+  const dates = claimed.map((c) => c.runDate).sort(); // oldest first: dates read in the order they happened
+  let moved = 0;
+  for (const date of dates) moved += await escalateOneDay(date);
+  return moved;
+}
+
+/** One claimed day's nag. The claim already happened, so this never re-checks `escalated_at`. */
+async function escalateOneDay(date: string): Promise<number> {
   const open = await db
     .select()
     .from(schema.checkinPrompts)
