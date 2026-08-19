@@ -255,6 +255,38 @@ BM-wide flip; and the cross-BM path end to end (pixel `/agencies` → `shared_ac
 Roles: admin publishes, member views only. Surfaces: desktop Chrome and Safari, plus mobile web for
 the approve and activate buttons — the person approving a migration at 02:00 will be on a phone.
 
+## The largest schedule risk is not code
+
+Five days before this design, on **2026-08-14**, DOT's Meta developer app `2883033765406087` was
+suspended under **Platform Term 7.e.i.2** (negatively impacting platform, products, data or users).
+Every Graph call returned `API access blocked` / `OAuthException` code 200, and the record notes the
+block was **on the developer account, not the token**. See
+`docs/2026-08-14-meta-platform-appeal.md` for the measured causes (an uncooled restart sweep, no
+circuit breaker, status-blind backfill, unbounded field-error retries) and the four fixes deployed.
+
+Access is back — verified 2026-08-19: accounts synced 1h13m ago, `insights_daily` current to today,
+`token_health.is_valid = true`, `sync-cycle` healthy, and **zero** sync events in seven days. But two
+consequences land squarely on this plan and neither is a coding problem:
+
+1. **A new Meta app inherits the developer account's history.** The user's decision is a dedicated
+   read+write app, which is right for blast radius — but it will be created under the same developer
+   account that took a platform strike five days ago. Creating apps in the neighbourhood of an
+   unresolved platform-term action is exactly the pattern Meta reads as circumvention. Confirm the
+   appeal's resolution state *before* creating the app, and create it openly under the same verified
+   business rather than a fresh identity.
+2. **App Review for Advanced/Full access will be judged against that record.** The tier is confirmed
+   `development_access` — the app never held Standard. So the ~20-writes-per-300s ceiling is the real
+   throughput constraint, the upgrade is the fix, and the upgrade is a review decision made by Meta
+   about a developer account with a fresh violation. Plan for the migrator to be *usable but slow* on
+   the limited tier, and treat the upgrade as an unblocking milestone with an unknown date rather than
+   a scheduled task.
+
+The read-side lesson also transfers directly: the four defects that caused the suspension were all
+**redundant, failing volume** — not throughput against a quota ("one rate-limit event in fourteen
+days"). A write pipeline has strictly worse failure semantics than a read pipeline, because there is
+no idempotency key. The migrator must therefore ship with the restart cooldown, the circuit breaker and
+the bounded retry from day one, ported from `src/sync/cycle.ts`, not added after its own incident.
+
 ## Sequencing
 
 Phase 0 is Meta-side and gates throughput, so it starts first and runs in parallel with everything:
