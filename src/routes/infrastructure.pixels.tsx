@@ -20,7 +20,7 @@ import {
 import { getCurrentUser } from "@/lib/api/auth";
 import { isAdmin } from "@/lib/auth/roles";
 import { fmtRelTime } from "@/lib/format";
-import { pixelRisk, usableBm } from "@/lib/infra-risk";
+import { bmIssue, pixelRisk } from "@/lib/infra-risk";
 import { PIXEL_STATUSES, isBmStatus, isPixelStatus, type BmStatus } from "@/lib/infra-status";
 import { cn } from "@/lib/utils";
 import type { PixelView } from "@/server/fns/infra/pixels";
@@ -82,7 +82,7 @@ function PixelsPage() {
       bms.map((b) => ({
         id: b.id,
         label: b.name,
-        unusable: !(isBmStatus(b.status) && usableBm(b.status)),
+        issue: isBmStatus(b.status) ? (bmIssue(b.status) ?? undefined) : b.status,
       })),
     [bms],
   );
@@ -269,7 +269,7 @@ function PixelsPage() {
                 const rootBm = bmById.get(r.rootBmId);
                 const rootRaw = rootBm?.status;
                 const rootStatus: BmStatus = isBmStatus(rootRaw) ? rootRaw : "suspended";
-                const rootUsable = usableBm(rootStatus);
+                const rootIssue = bmIssue(rootStatus);
                 return (
                   <tr key={r.id} className="hover:bg-accent/40 transition-colors">
                     <td className="px-5 py-3 font-medium">{r.name}</td>
@@ -315,11 +315,11 @@ function PixelsPage() {
                       </div>
                     </td>
                     <td className="px-3 py-3">
-                      <span className={cn("text-xs", !rootUsable && "opacity-60 line-through")}>
+                      <span className={cn("text-xs", rootIssue && "opacity-60 line-through")}>
                         {rootBm?.name ?? "—"}
                       </span>
-                      {!rootUsable && (
-                        <span className="ml-1.5 text-[10px] text-destructive">unusable</span>
+                      {rootIssue && (
+                        <span className="ml-1.5 text-[10px] text-destructive">{rootIssue}</span>
                       )}
                     </td>
                     <td className="px-3 py-3 min-w-[200px]">

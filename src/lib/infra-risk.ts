@@ -14,6 +14,7 @@
  * `redundancy(usableProfiles)` says what the rule is where an alias would hide it.
  */
 import {
+  INFRA_STATUS_LABEL,
   PROFILE_BLOCKING_STATUSES,
   type BmStatus,
   type PageStatus,
@@ -58,6 +59,31 @@ export function usableProfile(statuses: readonly ProfileStatus[]): boolean {
 /** A BM is an access path only while active; `in_review` and `suspended` cannot be relied on. */
 export function usableBm(status: BmStatus): boolean {
   return status === "active";
+}
+
+/**
+ * Why a profile is not an access path, as operator-facing labels — empty exactly when
+ * `usableProfile` is true.
+ *
+ * The registry deliberately accepts restricted assets: the operator registers the profile they
+ * actually have, and the UI names the condition rather than hiding the profile. That only works if
+ * this mirrors `usableProfile` branch for branch, which a test pins.
+ *
+ * Ordered by `PROFILE_BLOCKING_STATUSES`, not by the caller's array, so the same two conditions
+ * always read the same way whatever order they were recorded in.
+ */
+export function profileIssues(statuses: readonly ProfileStatus[]): string[] {
+  const blocking = PROFILE_BLOCKING_STATUSES.filter((s) => statuses.includes(s)).map(
+    (s) => INFRA_STATUS_LABEL[s] ?? s,
+  );
+  if (blocking.length > 0) return blocking;
+  // Nothing blocking is flagged, so the only fault left is a set that never claims `active`.
+  return statuses.includes("active") ? [] : ["Not active"];
+}
+
+/** Why a BM is not an access path, or `null` while it is one. Mirrors `usableBm`. */
+export function bmIssue(status: BmStatus): string | null {
+  return usableBm(status) ? null : (INFRA_STATUS_LABEL[status] ?? status);
 }
 
 /** Ordered; first match wins. */

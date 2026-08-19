@@ -18,7 +18,7 @@ import {
   linkInfraProfileBm,
   setInfraProfileStatuses,
 } from "@/lib/api/infrastructure";
-import { usableBm } from "@/lib/infra-risk";
+import { bmIssue } from "@/lib/infra-risk";
 import {
   INFRA_STATUS_LABEL,
   PROFILE_STATUSES,
@@ -67,7 +67,7 @@ function ProfilesPage() {
       bms.map((bm: BmView) => ({
         id: bm.id,
         label: bm.name,
-        unusable: !(isBmStatus(bm.status) && usableBm(bm.status)),
+        issue: isBmStatus(bm.status) ? (bmIssue(bm.status) ?? undefined) : bm.status,
       })),
     [bms],
   );

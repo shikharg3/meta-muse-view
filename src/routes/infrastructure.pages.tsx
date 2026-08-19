@@ -22,14 +22,8 @@ import {
   verifyInfraPage,
 } from "@/lib/api/infrastructure";
 import { fmtRelTime } from "@/lib/format";
-import { pageRisk, usableBm, usableProfile } from "@/lib/infra-risk";
-import {
-  INFRA_STATUS_LABEL,
-  PAGE_STATUSES,
-  isBmStatus,
-  isPageStatus,
-  type ProfileStatus,
-} from "@/lib/infra-status";
+import { bmIssue, pageRisk, profileIssues, usableProfile } from "@/lib/infra-risk";
+import { PAGE_STATUSES, isBmStatus, isPageStatus, type ProfileStatus } from "@/lib/infra-status";
 import { cn } from "@/lib/utils";
 import type { PageView } from "@/server/fns/infra/pages";
 
@@ -93,7 +87,7 @@ function Pages() {
       bms.map((b) => ({
         id: b.id,
         label: b.name,
-        unusable: !(isBmStatus(b.status) && usableBm(b.status)),
+        issue: isBmStatus(b.status) ? (bmIssue(b.status) ?? undefined) : b.status,
       })),
     [bms],
   );
@@ -103,18 +97,25 @@ function Pages() {
       profiles.map((p) => ({
         id: p.id,
         label: p.name,
-        unusable: !usableProfile(p.statuses),
+        issue: profileIssues(p.statuses).join(", ") || undefined,
       })),
     [profiles],
   );
 
-  // The owner of the record being edited stays selectable even when unusable, so a page whose owner
-  // got banned can still be repointed instead of becoming uneditable.
-  const editingOwnerId = form?.ownerProfileId ?? "";
-  const ownerOptions = useMemo(
-    () => profiles.filter((p) => usableProfile(p.statuses) || p.id === editingOwnerId),
-    [profiles, editingOwnerId],
+  // Every registered profile can own a page, restricted or not — the operator registers the asset
+  // they actually have, and a page owned by a suspended profile is exactly the risk this dashboard
+  // exists to surface. Hiding those profiles made the page unregisterable instead of visibly at risk.
+  // Grouped so the healthy choices still come first.
+  const ownerGroups = useMemo(
+    () => ({
+      clear: profiles.filter((p) => usableProfile(p.statuses)),
+      flagged: profiles.filter((p) => !usableProfile(p.statuses)),
+    }),
+    [profiles],
   );
+
+  const draftOwner = form ? profileById.get(form.ownerProfileId) : undefined;
+  const draftOwnerIssues = draftOwner ? profileIssues(draftOwner.statuses) : [];
 
   // Multi-hop: a page matches on its own fields, on its owner or additional profiles, or on any
   // linked BM — searching "Main BM" must surface the pages that BM can administer.
@@ -288,7 +289,7 @@ function Pages() {
                 const owner = profileById.get(r.ownerProfileId);
                 // A missing owner is treated as the worst case, never ignored.
                 const ownerStatuses = owner ? owner.statuses : (["suspended"] as ProfileStatus[]);
-                const ownerUsable = usableProfile(ownerStatuses);
+                const ownerIssues = profileIssues(ownerStatuses);
                 // Stored as typed; the anchor needs a scheme to leave the app.
                 const href = /^https?:\/\//i.test(r.pageUrl) ? r.pageUrl : `https://${r.pageUrl}`;
                 return (
@@ -344,8 +345,8 @@ function Pages() {
                     </td>
                     <td className="px-3 py-3">
                       <div className="text-xs">{owner?.name ?? "—"}</div>
-                      {!ownerUsable && (
-                        <div className="text-[11px] text-destructive">no active owner</div>
+                      {ownerIssues.length > 0 && (
+                        <div className="text-[11px] text-destructive">{ownerIssues.join(", ")}</div>
                       )}
                     </td>
                     <td className="px-3 py-3">
@@ -487,18 +488,32 @@ function Pages() {
                   className={FIELD}
                 >
                   <option value="">Select a profile…</option>
-                  {ownerOptions.map((p) => (
+                  {ownerGroups.clear.map((p) => (
                     <option key={p.id} value={p.id}>
-                      {usableProfile(p.statuses)
-                        ? p.name
-                        : `${p.name} (${p.statuses.map((s) => INFRA_STATUS_LABEL[s] ?? s).join(", ")})`}
+                      {p.name}
                     </option>
                   ))}
+                  {ownerGroups.flagged.length > 0 && (
+                    <optgroup label="Has an issue — allowed, flagged as at risk">
+                      {ownerGroups.flagged.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.name} ({profileIssues(p.statuses).join(", ")})
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
                 </select>
               </label>
-              {ownerOptions.length === 0 && (
+              {draftOwnerIssues.length > 0 && (
                 <p className="text-[11px] text-warning">
-                  No usable profile is registered — add an active profile before registering a page.
+                  {draftOwner?.name} has an issue: {draftOwnerIssues.join(", ")}. The page saves
+                  normally and will read <span className="font-medium">No active owner</span> until
+                  the profile recovers or you repoint the owner.
+                </p>
+              )}
+              {profiles.length === 0 && (
+                <p className="text-[11px] text-warning">
+                  No profile is registered — add one before registering a page.
                 </p>
               )}
               <label className="block">

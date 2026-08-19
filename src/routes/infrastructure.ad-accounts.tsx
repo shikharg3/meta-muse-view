@@ -18,7 +18,7 @@ import {
 import { getCurrentUser } from "@/lib/api/auth";
 import { isAdmin } from "@/lib/auth/roles";
 import { fmtCurrency, disableReasonLabel } from "@/lib/format";
-import { usableBm } from "@/lib/infra-risk";
+import { bmIssue } from "@/lib/infra-risk";
 import { AD_ACCOUNT_USAGE, INFRA_STATUS_LABEL, isBmStatus } from "@/lib/infra-status";
 import { cn } from "@/lib/utils";
 import type { AdAccountView } from "@/server/fns/infra/ad-accounts";
@@ -171,7 +171,7 @@ function InfraAdAccountsPage() {
   const bmOptions: LinkOption[] = bms.map((bm) => ({
     id: bm.id,
     label: bm.name,
-    unusable: !(isBmStatus(bm.status) && usableBm(bm.status)),
+    issue: isBmStatus(bm.status) ? (bmIssue(bm.status) ?? undefined) : bm.status,
   }));
 
   const needle = q.trim().toLowerCase();

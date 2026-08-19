@@ -6,8 +6,12 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 export interface LinkOption {
   id: string;
   label: string;
-  /** Dimmed with a marker — e.g. a banned BM, which is a real link but not an access path. */
-  unusable?: boolean;
+  /**
+   * The condition costing this option its access, e.g. `Read only`. Present means the link is real
+   * but grants nothing — shown dimmed and named, never hidden: operators link the assets they
+   * actually have, restricted or not.
+   */
+  issue?: string;
 }
 
 /**
@@ -57,9 +61,10 @@ export function LinkChips({
           return (
             <span
               key={id}
+              title={option?.issue}
               className={cn(
                 "inline-flex items-center gap-1 rounded-md border border-border bg-muted/40 px-1.5 py-0.5 text-[11px]",
-                option?.unusable && "opacity-60 line-through",
+                option?.issue && "opacity-60 line-through",
               )}
             >
               {option?.label ?? id}
@@ -103,8 +108,8 @@ export function LinkChips({
                   className="block w-full truncate rounded px-2 py-1 text-left text-xs hover:bg-accent disabled:opacity-40"
                 >
                   {option.label}
-                  {option.unusable && (
-                    <span className="ml-1 text-muted-foreground">(unusable)</span>
+                  {option.issue && (
+                    <span className="ml-1 text-muted-foreground">({option.issue})</span>
                   )}
                 </button>
               ))}

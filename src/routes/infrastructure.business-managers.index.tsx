@@ -22,7 +22,7 @@ import {
 import { getCurrentUser } from "@/lib/api/auth";
 import { isAdmin } from "@/lib/auth/roles";
 import { fmtRelTime } from "@/lib/format";
-import { isVerificationOverdue, usableProfile } from "@/lib/infra-risk";
+import { isVerificationOverdue, profileIssues } from "@/lib/infra-risk";
 import {
   BM_STATUSES,
   BM_TYPES,
@@ -115,7 +115,7 @@ function BusinessManagersPage() {
       profiles.map((p) => ({
         id: p.id,
         label: p.name,
-        unusable: !usableProfile(p.statuses),
+        issue: profileIssues(p.statuses).join(", ") || undefined,
       })),
     [profiles],
   );

@@ -8,9 +8,11 @@ import {
 } from "./infra-status";
 import {
   VERIFICATION_OVERDUE_DAYS,
+  bmIssue,
   isVerificationOverdue,
   pageRisk,
   pixelRisk,
+  profileIssues,
   redundancy,
   usableBm,
   usableProfile,
@@ -70,6 +72,46 @@ describe("usableBm", () => {
       suspended: false,
     };
     for (const s of BM_STATUSES) expect(usableBm(s)).toBe(expected[s]);
+  });
+});
+
+describe("profileIssues", () => {
+  test("empty exactly when the profile is usable, over every single status", () => {
+    // The registry lists restricted profiles instead of hiding them, so this list is the only thing
+    // telling the operator why. It drifting out of step with `usableProfile` would either hide a
+    // fault or invent one.
+    for (const s of PROFILE_STATUSES) {
+      expect(profileIssues([s]).length === 0).toBe(usableProfile([s]));
+      expect(profileIssues(["active", s]).length === 0).toBe(usableProfile(["active", s]));
+    }
+  });
+
+  test("names every blocking condition, not just the first", () => {
+    expect(profileIssues(["active", "read_only", "cannot_use_page"])).toEqual([
+      "Cannot use page",
+      "Read only",
+    ]);
+  });
+
+  test("a set that never claims active reports that, not silence", () => {
+    // `parseProfileStatuses` prevents an empty set reaching the UI, but a caller passing one must
+    // still get a reason — silence here would render a banned owner as healthy.
+    expect(profileIssues([])).toEqual(["Not active"]);
+  });
+
+  test("labels are the operator-facing wording, never raw identifiers", () => {
+    expect(profileIssues(["cannot_use_ads_manager"])).toEqual(["Cannot use Ads Manager"]);
+  });
+});
+
+describe("bmIssue", () => {
+  test("null exactly when the BM is usable, and labelled otherwise", () => {
+    const expected: Record<(typeof BM_STATUSES)[number], string | null> = {
+      active: null,
+      in_review: "In review",
+      suspended: "Suspended",
+    };
+    for (const s of BM_STATUSES) expect(bmIssue(s)).toBe(expected[s]);
   });
 });
 
