@@ -48,16 +48,19 @@ export interface CheckinAdminView {
   }[];
   /**
    * Today's `checkin_runs` row, resolved on the Berlin clock the job itself keys on — never the
-   * browser's. `planned: false` means no row exists, which is the only way to tell "the 17:00 job
+   * browser's. `planned: false` means no row exists, which is the only way to tell "the 13:30 job
    * never ran" from "it ran and nothing was in scope"; `promptsCreated: 0` with `planned: true` is
-   * the second of those. `hour` lets the panel say whether 17:00 has even passed yet.
+   * the second of those. `hour` + `minute` let the panel say whether 13:30 has even passed yet — the
+   * minute is not decoration, the first mark is half past.
    */
   today: {
     date: string;
     hour: number;
+    minute: number;
     planned: boolean;
     plannedAt: string | null;
     promptsCreated: number;
+    remindedAt: string | null;
     escalatedAt: string | null;
   };
   /**
@@ -126,9 +129,11 @@ export async function fetchCheckinAdmin(): Promise<CheckinAdminView> {
       today: {
         date: now.date,
         hour: now.hour,
+        minute: now.minute,
         planned: run !== undefined,
         plannedAt: run?.plannedAt?.toISOString() ?? null,
         promptsCreated: run?.promptsCreated ?? 0,
+        remindedAt: run?.remindedAt?.toISOString() ?? null,
         escalatedAt: run?.escalatedAt?.toISOString() ?? null,
       },
       health,

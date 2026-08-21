@@ -2,7 +2,8 @@ import { useCallback, useEffect, useState } from "react";
 import { AlertTriangle, CheckCircle2, MessageSquare, XCircle } from "lucide-react";
 import { getCheckinAdmin, saveMediaBuyer, toggleMediaBuyer } from "@/lib/api/checkin";
 import type { CheckinAdminView } from "@/server/fns/checkin";
-import { CHECKIN_HOUR } from "@/lib/checkin";
+import { atOrAfter } from "@/lib/berlin-time";
+import { FIRST_PROMPT_AT } from "@/lib/checkin";
 
 /**
  * The current media buyers, offered by name so binding never means pasting a UUID. This list is a
@@ -16,6 +17,13 @@ const KNOWN_BUYERS = [
 
 /** Sentinel for the buyer dropdown's escape hatch; never a real Notion person id. */
 const OTHER = "__other__";
+
+/**
+ * "13:30" from a wall-clock pair. Three call sites — the mark in both sentences and the current time
+ * beside it — and they must agree, or the panel reads "the job runs at 13:30 and it is only 9".
+ */
+const hhmm = (t: { hour: number; minute: number }): string =>
+  `${String(t.hour).padStart(2, "0")}:${String(t.minute).padStart(2, "0")}`;
 
 export function MediaBuyerPanel() {
   const [data, setData] = useState<CheckinAdminView | null>(null);
@@ -295,11 +303,11 @@ export function MediaBuyerPanel() {
                 leave an operator unable to tell a quiet day from a dead worker. */}
             {!data.today.planned ? (
               <p
-                className={`text-xs ${data.today.hour < CHECKIN_HOUR ? "text-muted-foreground" : "text-amber-500"}`}
+                className={`text-xs ${atOrAfter(data.today, FIRST_PROMPT_AT) ? "text-amber-500" : "text-muted-foreground"}`}
               >
-                {data.today.hour < CHECKIN_HOUR
-                  ? `No check-in planned yet — the job runs at ${CHECKIN_HOUR}:00 Berlin and it is only ${String(data.today.hour).padStart(2, "0")}:00.`
-                  : `No check-in was planned today even though ${CHECKIN_HOUR}:00 Berlin has passed — the worker may not be running. This is not the same as "planned, nothing in scope".`}
+                {atOrAfter(data.today, FIRST_PROMPT_AT)
+                  ? `No check-in was planned today even though ${hhmm(FIRST_PROMPT_AT)} Berlin has passed — the worker may not be running. This is not the same as "planned, nothing in scope".`
+                  : `No check-in planned yet — the job runs at ${hhmm(FIRST_PROMPT_AT)} Berlin and it is only ${hhmm(data.today)}.`}
               </p>
             ) : (
               <p className="text-xs text-muted-foreground">
@@ -312,9 +320,13 @@ export function MediaBuyerPanel() {
                   ? "0 campaigns were in scope — the job ran and found nothing to ask about"
                   : `${data.today.promptsCreated} prompt${data.today.promptsCreated === 1 ? "" : "s"} created`}
                 {" · "}
+                {data.today.remindedAt
+                  ? `reminded ${new Date(data.today.remindedAt).toLocaleTimeString()}`
+                  : "no reminder yet"}
+                {" · "}
                 {data.today.escalatedAt
-                  ? `escalated ${new Date(data.today.escalatedAt).toLocaleTimeString()}`
-                  : "no escalation recorded"}
+                  ? `final notice ${new Date(data.today.escalatedAt).toLocaleTimeString()}`
+                  : "no final notice recorded"}
               </p>
             )}
             {/* Health comes after the run line on purpose: "did it run" then "did it reach anyone"

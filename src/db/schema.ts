@@ -694,12 +694,18 @@ export const checkinPrompts = pgTable(
   ],
 );
 
-// Makes both time gates idempotent. Without it the 17:00 gate would re-plan every poll iteration on
-// a day with zero in-scope rows, because "no prompts exist" is indistinguishable from "not planned".
+// Makes all three time gates idempotent. Without it the 13:30 gate would re-plan every poll iteration
+// on a day with zero in-scope rows, because "no prompts exist" is indistinguishable from "not planned".
+//
+// One claim column per notification that must not repeat: `reminded_at` for 17:30, `escalated_at` for
+// the next day's final notice. Both are claimed by conditional update BEFORE the send, so a crash
+// after claiming loses one nudge and a crash before it re-runs cleanly — the right way round for an
+// at-most-once notification.
 export const checkinRuns = pgTable("checkin_runs", {
   runDate: date("run_date").primaryKey(),
   plannedAt: timestamp("planned_at", { withTimezone: true }),
   promptsCreated: integer("prompts_created").notNull().default(0),
+  remindedAt: timestamp("reminded_at", { withTimezone: true }),
   escalatedAt: timestamp("escalated_at", { withTimezone: true }),
 });
 

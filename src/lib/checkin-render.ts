@@ -57,14 +57,34 @@ const STATE_MARKER: Partial<Record<PromptState, string>> = {
 };
 
 /**
+ * Which of the three daily notifications a list is. Only the header differs — numbering, markers and
+ * buttons are one code path, so a reminder can never disagree with the list it is reminding about.
+ */
+export type ListStage = "first" | "reminder" | "final";
+
+const STAGE_HEADER: Record<ListStage, (dateLabel: string) => string> = {
+  first: (d) => `🕔 Daily check-in — ${d}`,
+  reminder: (d) => `⏰ Reminder — still open — ${d}`,
+  // Says outright that nothing further is coming, because that is the whole point of the third send.
+  final: (d) => `🚨 FINAL notice — last reminder for ${d}`,
+};
+
+/**
  * The buyer's daily list, re-rendered after every state change so a tap visibly registers.
  *
  * Numbers are stable across re-renders and button labels carry the number rather than the campaign
  * title — titles on this board reach 40+ characters (`fortunegalaxy.io   Palmluck (26 May 2026)`),
  * which no button label can show.
+ *
+ * `stage` defaults to `first`, so `rerenderList` — which edits a message in place and has no business
+ * knowing which send created it — keeps the header it already had.
  */
-export function renderList(dateLabel: string, items: ListItem[]): RenderedList {
-  const lines = [`🕔 Daily check-in — ${dateLabel}`, ""];
+export function renderList(
+  dateLabel: string,
+  items: ListItem[],
+  stage: ListStage = "first",
+): RenderedList {
+  const lines = [STAGE_HEADER[stage](dateLabel), ""];
   const keyboard: InlineButton[][] = [];
 
   items.forEach((item, i) => {

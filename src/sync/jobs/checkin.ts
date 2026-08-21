@@ -28,6 +28,7 @@ import {
   escalationText,
   renderList,
   type ListItem,
+  type ListStage,
 } from "@/lib/checkin-render";
 import {
   isPromptDay,
@@ -73,11 +74,18 @@ const FLUSH_LIMIT = 25;
 const COMMENT_ID_UNKNOWN = "unknown";
 
 /**
- * The states that still count as unanswered when the 09:00 escalation runs. `unroutable` belongs here
+ * The states that still count as unanswered when the final notice runs. `unroutable` belongs here
  * because an unbound buyer's campaign is unanswered for the worst reason; `answered` does not, even
  * when its comment has not reached Notion yet.
  */
 const UNANSWERED_AT_ESCALATION: PromptState[] = ["pending", "awaiting_reply", "unroutable"];
+
+/**
+ * The states worth re-sending a list for. Narrower than `UNANSWERED_AT_ESCALATION` by exactly
+ * `unroutable`: those prompts have no chat, so a DM pass must skip them while the alert-channel post
+ * still names them.
+ */
+const STILL_OPEN: PromptState[] = ["pending", "awaiting_reply"];
 
 /**
  * Null when no bot token is configured — the whole feature is then inert, which Settings surfaces.
@@ -330,6 +338,28 @@ function toListItem(p: PromptRecord): ListItem {
   };
 }
 
+/**
+ * Which of the three notifications last re-sent a day's list, derived from the claim columns rather
+ * than stored per prompt.
+ *
+ * The claims ARE the history: `reminded_at` is written by the 17:30 pass and `escalated_at` by the
+ * final notice, both before their sends. Deriving from them keeps `rerenderList` showing the header
+ * the buyer is actually looking at — without this it would edit a "FINAL notice" message back into
+ * "Daily check-in" the moment someone tapped a button on it.
+ */
+async function stageForDate(date: string): Promise<ListStage> {
+  const [run] = await db
+    .select({
+      remindedAt: schema.checkinRuns.remindedAt,
+      escalatedAt: schema.checkinRuns.escalatedAt,
+    })
+    .from(schema.checkinRuns)
+    .where(eq(schema.checkinRuns.runDate, date));
+  if (run?.escalatedAt) return "final";
+  if (run?.remindedAt) return "reminder";
+  return "first";
+}
+
 /** Re-render one buyer's daily list after a state change. Failure is non-fatal: the DB is the truth. */
 export async function rerenderList(chatId: string, listMessageId: string): Promise<void> {
   const tg = await telegram();
@@ -345,7 +375,11 @@ export async function rerenderList(chatId: string, listMessageId: string): Promi
     );
   if (prompts.length === 0) return;
   prompts.sort(byListOrder);
-  const { text, keyboard } = renderList(dayLabel(prompts[0].promptDate), prompts.map(toListItem));
+  const { text, keyboard } = renderList(
+    dayLabel(prompts[0].promptDate),
+    prompts.map(toListItem),
+    await stageForDate(prompts[0].promptDate),
+  );
   const res = await tg.editMessageText({
     chatId,
     messageId: Number(listMessageId),
@@ -353,6 +387,91 @@ export async function rerenderList(chatId: string, listMessageId: string): Promi
     keyboard,
   });
   if (!res.ok) console.error("[checkin] list re-render failed:", res.error);
+}
+
+/**
+ * Re-send one day's still-open lists, one message per buyer, and leave exactly one interactive list
+ * in each chat.
+ *
+ * Shared by the 17:30 reminder and the final notice, which differ only in `stage`. The old message's
+ * keyboard is stripped BEFORE the new send: without that, the previous list keeps live buttons that
+ * no longer re-render, which is the orphaned-keyboard defect recorded on `runDailyCheckin`. Stripping
+ * is what makes re-sending safe rather than a second instance of it.
+ *
+ * `list_message_id` is repointed for that buyer's whole day, so `rerenderList` follows the newest
+ * message. A failed strip is not fatal — the point of the pass is to reach the buyer, and a stale
+ * keyboard is a worse outcome only than not nudging at all.
+ *
+ * Unroutable prompts are excluded by `chat_id is not null`: there is no chat to send to, and naming
+ * them is the alert-channel escalation's job.
+ */
+async function resendOpenLists(
+  date: string,
+  stage: ListStage,
+): Promise<{ sent: number; failed: number; lastError: string | null }> {
+  const tg = await telegram();
+  if (!tg) return { sent: 0, failed: 0, lastError: null };
+
+  const open = await db
+    .select()
+    .from(schema.checkinPrompts)
+    .where(
+      and(
+        eq(schema.checkinPrompts.promptDate, date),
+        isNotNull(schema.checkinPrompts.chatId),
+        inArray(schema.checkinPrompts.state, STILL_OPEN),
+      ),
+    );
+
+  const byChat = new Map<string, PromptRecord[]>();
+  for (const p of open) {
+    if (!p.chatId) continue; // narrowing for the map key; the query already excluded these
+    const list = byChat.get(p.chatId) ?? [];
+    list.push(p);
+    byChat.set(p.chatId, list);
+  }
+
+  let sent = 0;
+  let failed = 0;
+  let lastError: string | null = null;
+  for (const [chatId, list] of byChat) {
+    list.sort(byListOrder);
+    // Buttons off the superseded message BEFORE the new one lands, so exactly one list in the chat is
+    // ever interactive. Markup-only, so the old message keeps the text the buyer was actually asked.
+    for (const messageId of new Set(list.map((p) => p.listMessageId))) {
+      if (messageId === null) continue;
+      const stripped = await tg.clearKeyboard({ chatId, messageId: Number(messageId) });
+      if (!stripped.ok) console.error("[checkin] keyboard strip failed:", stripped.error);
+    }
+
+    const { text, keyboard } = renderList(dayLabel(date), list.map(toListItem), stage);
+    const res = await tg.sendMessage({ chatId, text, keyboard });
+    if (!res.ok || res.messageId === undefined) {
+      failed += 1;
+      lastError = res.error ?? "send reported no message id";
+      await db
+        .update(schema.checkinPrompts)
+        .set({ note: lastError })
+        .where(
+          inArray(
+            schema.checkinPrompts.id,
+            list.map((p) => p.id),
+          ),
+        );
+      if (res.retryAfter) await sleep(Math.min(res.retryAfter * 1000, MAX_RETRY_AFTER_MS));
+      continue;
+    }
+    sent += 1;
+    // Repointed for every prompt on this buyer's day, answered ones included, so exactly one message
+    // is addressable per buyer per day.
+    await db
+      .update(schema.checkinPrompts)
+      .set({ listMessageId: String(res.messageId), note: null })
+      .where(
+        and(eq(schema.checkinPrompts.promptDate, date), eq(schema.checkinPrompts.chatId, chatId)),
+      );
+  }
+  return { sent, failed, lastError };
 }
 
 /**
@@ -706,6 +825,39 @@ export async function flushPendingComments(): Promise<number> {
 }
 
 /**
+ * Notification 2: re-send TODAY's still-open lists to the buyers who owe an answer, once.
+ *
+ * `reminded_at` is claimed before the send, for the reason `escalated_at` is: the deploy runbook
+ * restarts `meta-sync`, and sending first would re-nudge every buyer on the next boot. A crash after
+ * claiming loses one reminder; a crash before it re-runs cleanly.
+ *
+ * Scoped to `run_date = today`, not the `< today` backlog the final notice sweeps. A reminder for a
+ * day already past is not a reminder — that day's escalation is what covers it, and re-sending an old
+ * list would put a stale interactive message at the bottom of the chat.
+ *
+ * Returns the number of buyers reached, or null when there was nothing to claim (already reminded
+ * today, or today was never planned).
+ */
+export async function remindUnanswered(now: Date): Promise<number | null> {
+  const today = berlinNow(now).date;
+  if (!isPromptDay(today)) return null;
+
+  const claimed = await db
+    .update(schema.checkinRuns)
+    .set({ remindedAt: new Date() })
+    .where(and(eq(schema.checkinRuns.runDate, today), isNull(schema.checkinRuns.remindedAt)))
+    .returning({ runDate: schema.checkinRuns.runDate });
+  if (claimed.length === 0) return null;
+
+  const { sent, failed, lastError } = await resendOpenLists(today, "reminder");
+  if (sent || failed) {
+    const note = `reminder: ${sent} sent, ${failed} failed`;
+    await recordServiceHealth("checkin", failed === 0, lastError ? `${note}: ${lastError}` : note);
+  }
+  return sent;
+}
+
+/**
  * Post unanswered prompts to the shared alert channel, once per planned day. Unroutable prompts are
  * named too, so a missing Telegram binding is visible rather than silent.
  *
@@ -745,7 +897,15 @@ export async function escalateUnanswered(now: Date): Promise<number | null> {
   return moved;
 }
 
-/** One claimed day's nag. The claim already happened, so this never re-checks `escalated_at`. */
+/**
+ * One claimed day's final notice. The claim already happened, so this never re-checks `escalated_at`.
+ *
+ * Notification 3 is two sends, in this order and for this reason: the buyer's DM goes first so the
+ * warning is the last thing they see before management is told, and a DM failure does NOT abort the
+ * channel post. Visibility to the team is the more important half — a buyer who blocked the bot is
+ * exactly the case where the escalation matters most, and letting a failed DM swallow it would make
+ * the loudest failure the quietest.
+ */
 async function escalateOneDay(date: string): Promise<number> {
   const open = await db
     .select()
@@ -757,6 +917,12 @@ async function escalateOneDay(date: string): Promise<number> {
       ),
     );
   if (open.length === 0) return 0;
+
+  // Best-effort, and deliberately not fatal: `resendOpenLists` records its own per-prompt `note`, and
+  // the channel post below is what must happen regardless. Runs before the state flip, because
+  // `renderList` draws no buttons on an `escalated` row — after it, the final notice would arrive
+  // already inert.
+  const dm = await resendOpenLists(date, "final");
 
   const names = new Map(
     (await db.select().from(schema.mediaBuyers)).map((b) => [b.notionPersonId, b.displayName]),
@@ -789,6 +955,16 @@ async function escalateOneDay(date: string): Promise<number> {
       `escalation for ${date} was not delivered: ${sent.error}`,
     );
     return 0;
+  }
+
+  // A delivered escalation with an undelivered final DM is still a degraded outcome: the buyer was
+  // never warned. Reported only in that case, so the normal path leaves the badge alone.
+  if (dm.failed > 0) {
+    await recordServiceHealth(
+      "checkin",
+      false,
+      `final notice for ${date}: ${dm.failed} buyer DM(s) undelivered${dm.lastError ? `: ${dm.lastError}` : ""}`,
+    );
   }
 
   // The state predicate matters even though the ids were captured moments ago: this is a blind write

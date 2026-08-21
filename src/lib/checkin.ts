@@ -6,12 +6,23 @@
  * helpers live in `berlin-time.ts`; Telegram/Notion rendering lives in `checkin-render.ts`. The only
  * import here is type-only, so this module has no runtime dependencies at all.
  */
+import type { LocalMark } from "./berlin-time";
 import type { MachineStatus } from "./delivery-status";
 
-/** The prompt fires at this Europe/Berlin hour. */
-export const CHECKIN_HOUR = 17;
-/** Unanswered prompts are escalated at this Europe/Berlin hour the NEXT day. */
-export const ESCALATION_HOUR = 9;
+/**
+ * The three notification marks, Europe/Berlin wall clock. "CET" means what the buyer's clock says, so
+ * these follow DST rather than pinning a UTC offset — see `berlin-time.ts`.
+ *
+ * 1. `FIRST_PROMPT_AT` — the day's prompt, every in-scope campaign.
+ * 2. `REMINDER_AT` — same day, only what is still unanswered.
+ * 3. `FINAL_NOTICE_AT` — the NEXT prompt day, marked final, and also posted to the alert channel.
+ *
+ * Mon–Fri only (`isPromptDay`), which is what makes Friday's final notice land on Monday morning
+ * instead of at the weekend.
+ */
+export const FIRST_PROMPT_AT: LocalMark = { hour: 13, minute: 30 };
+export const REMINDER_AT: LocalMark = { hour: 17, minute: 30 };
+export const FINAL_NOTICE_AT: LocalMark = { hour: 8, minute: 0 };
 
 /**
  * Whether the check-in prompts at all on a given Europe/Berlin calendar date.

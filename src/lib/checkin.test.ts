@@ -4,8 +4,9 @@ import {
   questionFor,
   isCheckinStatus,
   isPromptDay,
-  CHECKIN_HOUR,
-  ESCALATION_HOUR,
+  FIRST_PROMPT_AT,
+  REMINDER_AT,
+  FINAL_NOTICE_AT,
   planPrompts,
   type CheckinBoardRow,
   type CheckinBuyer,
@@ -58,9 +59,20 @@ test("the status set is exactly the six agreed values", () => {
   );
 });
 
-test("the gate hours are the agreed ones", () => {
-  expect(CHECKIN_HOUR).toBe(17);
-  expect(ESCALATION_HOUR).toBe(9);
+test("the three notification marks are the agreed ones", () => {
+  expect(FIRST_PROMPT_AT).toEqual({ hour: 13, minute: 30 });
+  expect(REMINDER_AT).toEqual({ hour: 17, minute: 30 });
+  expect(FINAL_NOTICE_AT).toEqual({ hour: 8, minute: 0 });
+});
+
+test("the reminder follows the first prompt on the same day, and the final notice cannot", () => {
+  // Ordering, not just values: a reminder at or before the prompt would fire on the same loop pass
+  // and re-send a list nobody has had a chance to answer.
+  const mins = (m: { hour: number; minute: number }) => m.hour * 60 + m.minute;
+  expect(mins(REMINDER_AT)).toBeGreaterThan(mins(FIRST_PROMPT_AT));
+  // The final notice is BEFORE the first prompt on the clock, which is what makes it belong to the
+  // next calendar day rather than to a third slot on the same evening.
+  expect(mins(FINAL_NOTICE_AT)).toBeLessThan(mins(FIRST_PROMPT_AT));
 });
 
 const VLAD = "2cbd872b-594c-8119-9649-0002845d8d9c";

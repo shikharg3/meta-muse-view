@@ -148,6 +148,22 @@ export class TelegramClient {
     return r.ok ? { ok: true } : { ok: false, error: r.error, retryAfter: r.retryAfter };
   }
 
+  /**
+   * Remove a message's buttons, leaving its text untouched.
+   *
+   * `editMessageText` would work only by restating the text, which for a re-sent check-in list means
+   * the superseded message becomes a duplicate of the new one. This edits just the markup, so the
+   * chat history keeps reading like what the buyer was actually asked, minus the dead buttons.
+   */
+  async clearKeyboard(input: { chatId: string; messageId: number }): Promise<SendResult> {
+    const r = await this.call("editMessageReplyMarkup", {
+      chat_id: input.chatId,
+      message_id: input.messageId,
+      reply_markup: { inline_keyboard: [] },
+    });
+    return r.ok ? { ok: true } : { ok: false, error: r.error, retryAfter: r.retryAfter };
+  }
+
   /** Must be called on every callback or the buyer's client spins for ~30s. */
   async answerCallbackQuery(input: { id: string; text?: string }): Promise<SendResult> {
     const r = await this.call("answerCallbackQuery", {

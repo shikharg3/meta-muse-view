@@ -2,13 +2,14 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { runCycle, runBackfillCycle } from "./cycle";
 import {
   runDailyCheckin,
+  remindUnanswered,
   escalateUnanswered,
   pollTelegramOnce,
   flushPendingComments,
   sendDailyLists,
 } from "./jobs/checkin";
-import { berlinNow } from "@/lib/berlin-time";
-import { CHECKIN_HOUR, ESCALATION_HOUR } from "@/lib/checkin";
+import { atOrAfter, berlinNow } from "@/lib/berlin-time";
+import { FIRST_PROMPT_AT, REMINDER_AT, FINAL_NOTICE_AT } from "@/lib/checkin";
 
 const HOUR_MS = 3_600_000;
 // Backfill always gets at least this much time each loop, so a slow daily full refresh can never
@@ -40,29 +41,34 @@ const CHECKIN_INTERVAL_MS = 30_000;
 
 /**
  * The check-in loop runs INDEPENDENTLY of the sync loop below, and must keep doing so.
- * `runCycle({ full: true })` can occupy hours, so a 17:00 prompt sequenced behind it would arrive
- * around midnight. Each iteration long-polls Telegram for ~30s and then re-evaluates both time
+ * `runCycle({ full: true })` can occupy hours, so a 13:30 prompt sequenced behind it would arrive
+ * around midnight. Each iteration long-polls Telegram for ~30s and then re-evaluates all three time
  * gates, which puts scheduling precision at ~30s and costs nothing while idle.
  *
  * Re-entering the gates every 30s is intended: idempotency lives in the database (the `run_date`
- * claim and the `escalated_at` conditional update), not in this process. There is deliberately no
- * `lastRunDate` variable here — it would forget across a restart and would duplicate the claim
- * logic in a second place, where it could disagree with the first.
+ * claim, and the `reminded_at` / `escalated_at` conditional updates), not in this process. There is
+ * deliberately no `lastRunDate` variable here — it would forget across a restart and would duplicate
+ * the claim logic in a second place, where it could disagree with the first.
+ *
+ * Every gate is `atOrAfter`, never an equality test on the mark: a 30s loop that missed its window
+ * (a long GC, a restart, a slow Postgres) must still fire late rather than skip the day entirely.
+ * That is also why a worker started in the evening sends all of today's due notifications at once.
  *
  * With `TELEGRAM_BOT_TOKEN` unset, `telegram()` returns null and every send path short-circuits, so
  * the feature is inert rather than throwing; Settings surfaces the missing token. "Inert" has to mean
  * idle as well, which is what `CHECKIN_INTERVAL_MS` is for.
  */
 async function checkinLoop(): Promise<void> {
-  console.log("[checkin] loop started (17:00 prompt, 09:00 escalation, 30s poll)");
+  console.log("[checkin] loop started (13:30 prompt, 17:30 reminder, 08:00 final, 30s poll)");
   for (;;) {
     const startedAt = Date.now();
     try {
       const now = new Date();
       const local = berlinNow(now);
 
-      // Plan + send today's prompts. Non-null only on the iteration that wins the day's claim.
-      if (local.hour >= CHECKIN_HOUR) {
+      // 1st notification. Plan + send today's prompts; non-null only on the iteration that wins the
+      // day's claim.
+      if (atOrAfter(local, FIRST_PROMPT_AT)) {
         const run = await runDailyCheckin(now);
         if (run) {
           console.log(
@@ -72,16 +78,23 @@ async function checkinLoop(): Promise<void> {
         }
       }
 
-      // Escalate YESTERDAY's unanswered prompts. Non-null only on the iteration that wins the claim.
-      if (local.hour >= ESCALATION_HOUR) {
+      // 3rd notification, before the 2nd on purpose: at 08:00 only this gate is open, and yesterday's
+      // final notice must land before today's prompt replaces the buyer's attention.
+      if (atOrAfter(local, FINAL_NOTICE_AT)) {
         const escalated = await escalateUnanswered(now);
         if (escalated !== null)
-          console.log(`[checkin] escalated ${escalated} unanswered prompt(s)`);
+          console.log(`[checkin] final notice sent, ${escalated} prompt(s) escalated`);
+      }
+
+      // 2nd notification. Re-sends only what is still open, once per day.
+      if (atOrAfter(local, REMINDER_AT)) {
+        const reminded = await remindUnanswered(now);
+        if (reminded !== null) console.log(`[checkin] reminded ${reminded} buyer(s)`);
       }
 
       // Retry the list sends `runDailyCheckin` could not complete (a buyer whose list never went
-      // out). A no-op once every buyer has a list message, which is the normal case after 17:00.
-      if (local.hour >= CHECKIN_HOUR) {
+      // out). A no-op once every buyer has a list message, which is the normal case after 13:30.
+      if (atOrAfter(local, FIRST_PROMPT_AT)) {
         const lists = await sendDailyLists(local.date);
         if (lists.sent || lists.failed) {
           console.log(`[checkin] lists: ${lists.sent} sent, ${lists.failed} failed`);

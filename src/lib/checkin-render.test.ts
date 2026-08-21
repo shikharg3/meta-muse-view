@@ -41,6 +41,45 @@ test("dayLabel ignores the process timezone", () => {
   expect(withTZ("Pacific/Midway", () => dayLabel("2026-08-13"))).toBe("Thu 13 Aug");
 });
 
+test("renderList headers name which of the three notifications a list is", () => {
+  const items: ListItem[] = [
+    { promptId: 1, title: "Acme", status: "Live", question: "Any changes?", state: "pending" },
+  ];
+  // Every header carries the date, so a buyer scrolling back can tell which day a list belongs to
+  // even after two re-sends put three of them in the chat.
+  for (const stage of ["first", "reminder", "final"] as const) {
+    expect(renderList("Thu 13 Aug", items, stage).text).toContain("Thu 13 Aug");
+  }
+  expect(renderList("Thu 13 Aug", items, "first").text.split("\n")[0]).toBe(
+    "🕔 Daily check-in — Thu 13 Aug",
+  );
+  expect(renderList("Thu 13 Aug", items, "reminder").text).toContain("Reminder");
+  // The whole point of the third send is telling the buyer nothing further is coming.
+  expect(renderList("Thu 13 Aug", items, "final").text).toContain("FINAL");
+});
+
+test("the stage changes only the header, never the numbering or the buttons", () => {
+  // A reminder that renumbered its items would invalidate the buttons the buyer is looking at, and a
+  // reminder that dropped them would leave nothing to tap.
+  const items: ListItem[] = [
+    { promptId: 7, title: "Beta", status: "Live", question: "Any changes?", state: "pending" },
+    { promptId: 9, title: "Gamma", status: "Paused", question: "Why paused?", state: "pending" },
+  ];
+  const first = renderList("Thu 13 Aug", items, "first");
+  const final = renderList("Thu 13 Aug", items, "final");
+  expect(final.keyboard).toEqual(first.keyboard);
+  expect(final.text.split("\n").slice(1)).toEqual(first.text.split("\n").slice(1));
+});
+
+test("renderList defaults to the first-send header", () => {
+  // `rerenderList` edits a message in place without knowing which send created it, so the default
+  // must be the plain one — never a reminder header on the morning's list.
+  const items: ListItem[] = [
+    { promptId: 1, title: "Acme", status: "Live", question: "Any changes?", state: "pending" },
+  ];
+  expect(renderList("Thu 13 Aug", items).text).toBe(renderList("Thu 13 Aug", items, "first").text);
+});
+
 test("dayLabel refuses a malformed date instead of rendering garbage", () => {
   // Without the guard these return the literal string "undefined NaN undefined", which this
   // function's own docstring would put at the top of the buyer's daily message.
