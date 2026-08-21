@@ -186,6 +186,7 @@ function ClientPage() {
       )}
 
       <ClientDetailView
+        rangeLabel={rangeLabel(search)}
         detail={detail}
         budgets={budgets}
         isAdmin={isAdmin}

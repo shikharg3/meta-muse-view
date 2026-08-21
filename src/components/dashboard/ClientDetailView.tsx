@@ -13,6 +13,13 @@ interface Props {
   detail: ClientDetail;
   budgets: CampaignBudget[];
   isAdmin: boolean;
+  /**
+   * Human label for the window the KPI row is measured over ("Last 30 days", "2026-08-01 →
+   * 2026-08-21"). Required, not optional: the caller owns the window, and a KPI row that does not say
+   * which window it covers is what let the top-line Spend be read as spend against the budget below
+   * it — the two are scoped differently and disagreed on every recently-started engagement.
+   */
+  rangeLabel: string;
   /** Clients a campaign can be re-attributed to, and the handler (admin only). */
   moveTargets?: { id: string; name: string }[];
   onMoveCampaign?: (campaignId: string, clientId: string | null) => void;
@@ -29,9 +36,10 @@ interface Props {
 }
 
 /** Full client performance detail — every ad account, every campaign (with drill-down), objective-
- *  aware KPIs, budget and pacing. Shared by the /clients list preview and the standalone /clients/$id
- *  page so both stay in sync. Range is controlled by the caller (loader window). */
+ *  aware KPIs, budget and pacing. Rendered by the /clients/$id page, which owns the loader window and
+ *  passes its label in; nothing here derives a range of its own. */
 export function ClientDetailView({
+  rangeLabel,
   detail,
   budgets,
   isAdmin,
@@ -117,12 +125,22 @@ export function ClientDetailView({
 
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-        <Kpi label="Spend" value={fmtCurrency(detail.kpis.spend)} />
-        <Kpi label={clientResults.label} value={fmtCompact(clientResults.value)} />
-        <Kpi label="Impressions" value={fmtCompact(detail.kpis.impressions)} />
-        <Kpi label="CTR" value={fmtPct(detail.kpis.ctr)} />
-        <Kpi label="CPC" value={fmtCurrency(detail.kpis.cpc)} />
+      {/* The window is named HERE, beside the figures it scopes, not only in the page header. All five
+          of these are trailing-window numbers while the Budget card below is measured from the
+          engagement's start date, so on any client whose engagement began inside the window the two
+          Spend figures legitimately differ — and silently. Each section now states its own scope. */}
+      <div>
+        <div className="mb-3 flex items-baseline justify-between">
+          <h3 className="text-sm font-semibold">Performance</h3>
+          <span className="text-[11px] text-muted-foreground">{rangeLabel}</span>
+        </div>
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+          <Kpi label="Spend" value={fmtCurrency(detail.kpis.spend)} sub={rangeLabel} />
+          <Kpi label={clientResults.label} value={fmtCompact(clientResults.value)} />
+          <Kpi label="Impressions" value={fmtCompact(detail.kpis.impressions)} />
+          <Kpi label="CTR" value={fmtPct(detail.kpis.ctr)} />
+          <Kpi label="CPC" value={fmtCurrency(detail.kpis.cpc)} />
+        </div>
       </div>
 
       {detail.budget.total != null && (
@@ -130,7 +148,13 @@ export function ClientDetailView({
           <h3 className="text-sm font-semibold mb-3">Budget</h3>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <Kpi label="Total budget" value={fmtCurrency(detail.budget.total)} />
-            <Kpi label="Spent" value={fmtCurrency(detail.budget.spent)} />
+            <Kpi
+              label="Spent"
+              value={fmtCurrency(detail.budget.spent)}
+              // The one number on this page most likely to be compared against the Spend tile above,
+              // and the only one measured from the engagement start. Say so on the tile.
+              sub={budget.startDate ? `Since ${budget.startDate}` : "Whole engagement"}
+            />
             <Kpi
               label="Remaining"
               value={detail.budget.remaining != null ? fmtCurrency(detail.budget.remaining) : "—"}
