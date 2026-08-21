@@ -10,6 +10,7 @@ import {
 import { addDays, type DateWindow } from "@/lib/range";
 import { fetchCampaigns, objectiveResults, disabledSinceMap } from "./dashboard";
 import { effectiveAccountIds, getClientRow } from "@/sync/jobs/clients";
+import { lifetimeSpendByAccount } from "@/server/account-lifetime-spend";
 import type { Campaign, Kpis, AccountStatus } from "@/lib/types";
 import { disableReasonLabel } from "@/lib/format";
 import { brandTitles, boardRowsWithoutOwners } from "@/notion/parse";
@@ -294,6 +295,11 @@ export async function fetchClientDetail(
   for (const r of campaignTotals) addRow(r.accountId, r);
   const insightRows = [...accountTotals, ...campaignTotals];
 
+  // Meta's `amount_spent` is scoped to the current spend-cap cycle, not the account's life, so read
+  // as a lifetime figure it showed a disabled account as "$0.00" here and through Ask while its own
+  // daily rows held $1,135.25. Display only — never fed into funds arithmetic.
+  const lifetime = await lifetimeSpendByAccount(allAccountIds);
+
   const accounts: ClientAccountRow[] = allAccountIds.map((aid) => {
     const t = perAccount.get(aid);
     const k = deriveKpis({
@@ -316,7 +322,7 @@ export async function fetchClientDetail(
       hasData: Boolean(t),
       status: accStatus.get(aid) ?? null,
       disableReason: disableReasonLabel(accInfo.get(aid)?.disableReason ?? null),
-      amountSpent: accInfo.get(aid)?.amountSpent ?? null,
+      amountSpent: lifetime.get(aid) ?? accInfo.get(aid)?.amountSpent ?? null,
     };
   });
 

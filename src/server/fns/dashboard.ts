@@ -25,6 +25,7 @@ import {
 } from "@/server/agg";
 import { addDays, type DateWindow } from "@/lib/range";
 import { brandTitles } from "@/notion/parse";
+import { lifetimeSpendByAccount } from "@/server/account-lifetime-spend";
 import {
   creativeFormat,
   creativeImageUrl,
@@ -1071,7 +1072,7 @@ export async function fetchAccount(
   const accounts = await fetchAccounts(w);
   const account = accounts.find((a) => a.id === id);
   if (!account) return null;
-  const [allCampaigns, trend, deltas, metaRows] = await Promise.all([
+  const [allCampaigns, trend, deltas, metaRows, lifetime] = await Promise.all([
     fetchCampaigns(w, [id]),
     fetchTrend(w, id),
     windowDeltas(w, id),
@@ -1087,6 +1088,7 @@ export async function fetchAccount(
       })
       .from(schema.accounts)
       .where(eq(schema.accounts.id, id)),
+    lifetimeSpendByAccount([id]),
   ]);
   const m = metaRows[0];
   return {
@@ -1096,7 +1098,10 @@ export async function fetchAccount(
     trend,
     meta: m
       ? {
-          amountSpent: m.amountSpent,
+          // Meta's `amount_spent` counts against the CURRENT spend-cap cycle, not the account's
+          // life, so this row read $0.00 for accounts with real history. `spendCap` below stays
+          // Meta's, because the two only mean anything as a pair.
+          amountSpent: lifetime.get(id) ?? m.amountSpent,
           balance: m.balance,
           spendCap: m.spendCap,
           timezoneName: m.timezoneName,
