@@ -195,7 +195,10 @@ function RootComponent() {
         <SidebarProvider>
           <NavProgress />
           <AppSidebar user={user} />
-          <SidebarInset>
+          {/* The content region is the container the TopBar sizes against: it is the viewport
+              minus the sidebar, and it changes when the sidebar collapses. An element cannot
+              query its own container, so this has to live here rather than on the header. */}
+          <SidebarInset className="@container">
             <TopBar
               business={business!}
               accounts={accounts}

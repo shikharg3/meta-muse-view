@@ -88,11 +88,17 @@ export function GlobalSearch() {
     <>
       <button
         onClick={() => setOpen(true)}
-        className="hidden lg:flex items-center gap-2 flex-1 max-w-xs ml-2 h-9 rounded-md border border-border bg-card px-3 text-xs text-muted-foreground hover:bg-accent transition-colors"
+        aria-label="Search clients, accounts, campaigns"
+        title="Search clients, accounts, campaigns (⌘K)"
+        // Icon-only once there is room for it at all, and only becomes the elastic labelled box
+        // when the bar is wide enough to spare ~320px. ⌘K works regardless of which form is shown.
+        className="hidden @min-[720px]:flex items-center gap-2 shrink-0 h-9 rounded-md border border-border bg-card px-3 text-xs text-muted-foreground hover:bg-accent transition-colors @min-[1430px]:ml-2 @min-[1430px]:min-w-0 @min-[1430px]:flex-1 @min-[1430px]:shrink @min-[1430px]:max-w-xs"
       >
-        <Search className="size-3.5" />
-        <span>Search clients, accounts…</span>
-        <kbd className="ml-auto text-[10px] font-mono opacity-60">⌘K</kbd>
+        <Search className="size-3.5 shrink-0" />
+        <span className="hidden @min-[1430px]:block truncate">Search clients, accounts…</span>
+        <kbd className="hidden @min-[1430px]:inline ml-auto text-[10px] font-mono opacity-60">
+          ⌘K
+        </kbd>
       </button>
       <Dialog open={open} onOpenChange={setOpen}>
         <DialogContent className="overflow-hidden p-0" aria-describedby={undefined}>

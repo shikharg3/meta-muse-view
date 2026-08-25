@@ -41,7 +41,7 @@ function SyncFreshness({ isAdmin }: { isAdmin: boolean }) {
     ? `Last successful data refresh: ${new Date(last).toLocaleString()}${stale ? " — sync looks stale" : ""}`
     : "No sync has completed yet";
   const cls = cn(
-    "flex items-center gap-1.5 rounded-md border px-2.5 h-9 text-[11px] font-medium transition-colors",
+    "hidden @min-[500px]:flex items-center gap-1.5 shrink-0 rounded-md border px-2.5 h-9 text-[11px] font-medium transition-colors",
     stale
       ? "border-rose-300 bg-rose-200 text-rose-900"
       : "border-emerald-300 bg-emerald-200 text-emerald-900",
@@ -91,7 +91,7 @@ function SyncNowButton({ running }: { running: boolean }) {
     <Button
       variant="outline"
       size="sm"
-      className="hidden sm:inline-flex h-9 text-xs"
+      className="hidden @min-[960px]:inline-flex h-9 shrink-0 whitespace-nowrap text-xs"
       onClick={() => void onSync()}
       disabled={busy}
       title="Pull the latest data from Meta now (runs in the background)"
@@ -131,7 +131,7 @@ function SyncNotionButton() {
     <Button
       variant="outline"
       size="sm"
-      className="hidden sm:inline-flex h-9 text-xs"
+      className="hidden @min-[960px]:inline-flex h-9 shrink-0 whitespace-nowrap text-xs"
       onClick={() => void onClick()}
       disabled={busy}
       title="Re-read the Notion board mapping (clients, statuses, Active Account IDs) and push the auto-updated daily budgets back. Fast — does not pull Meta data."
@@ -177,23 +177,35 @@ export function TopBar({
   }
 
   return (
-    <header className="h-14 border-b border-border bg-background/80 backdrop-blur-md sticky top-0 z-20 flex items-center gap-3 px-4 md:px-6">
-      <SidebarTrigger className="-ml-1" />
-      <div className="h-6 w-px bg-border mx-1" />
+    // Thresholds below are container queries against `SidebarInset` (see __root.tsx), i.e. the
+    // viewport MINUS the 16rem sidebar. Viewport breakpoints were the bug: `md:`/`lg:` revealed
+    // controls this bar had no room for, so labels wrapped out of their h-9 boxes and the
+    // right-hand buttons were pushed off-screen. Each number is the measured width at which the
+    // next control actually fits, so this also self-corrects when the sidebar is collapsed.
+    <header className="h-14 border-b border-border bg-background/80 backdrop-blur-md sticky top-0 z-20 flex items-center gap-3 px-4 @min-[660px]:px-6">
+      <SidebarTrigger className="-ml-1 shrink-0" />
+      <div className="h-6 w-px shrink-0 bg-border mx-1" />
 
       <AccountSwitcher business={business} accounts={accounts} />
       <GlobalClientFilter clients={filterClients} accounts={accounts} />
       <GlobalSearch />
 
-      <div className="flex-1 lg:hidden" />
+      {/* Only needed while the search box is not the elastic element holding the row apart. */}
+      <div className="flex-1 @min-[1430px]:hidden" />
 
       <SyncFreshness isAdmin={isAdmin} />
       <RangePicker />
 
       {isAdmin && <SyncNowButton running={business.syncRunning} />}
       {isAdmin && <SyncNotionButton />}
-      <Button size="sm" className="h-9 text-xs" onClick={onExport} disabled={!kind}>
-        <Download className="size-3.5" /> Export
+      <Button
+        size="sm"
+        className="h-9 shrink-0 whitespace-nowrap text-xs"
+        onClick={onExport}
+        disabled={!kind}
+      >
+        <Download className="size-3.5" />
+        <span className="hidden @min-[360px]:inline">Export</span>
       </Button>
     </header>
   );
