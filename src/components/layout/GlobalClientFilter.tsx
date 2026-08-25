@@ -60,7 +60,7 @@ export function GlobalClientFilter({
   return (
     <Popover>
       <PopoverTrigger asChild>
-        <button className="hidden md:flex items-center gap-2 rounded-md border border-border bg-card hover:bg-accent px-3 h-9 text-xs transition-colors">
+        <button className="hidden @min-[660px]:flex items-center gap-2 shrink-0 whitespace-nowrap rounded-md border border-border bg-card hover:bg-accent px-3 h-9 text-xs transition-colors">
           <Filter className="size-3.5 text-muted-foreground" />
           <span className="font-medium">
             {count === 0 ? "All accounts" : `${count} account${count > 1 ? "s" : ""}`}

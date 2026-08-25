@@ -65,9 +65,9 @@ export function RangePicker() {
   return (
     <Popover>
       <PopoverTrigger asChild>
-        <button className="flex items-center gap-2 rounded-md border border-border bg-card hover:bg-accent px-3 h-9 text-xs transition-colors">
+        <button className="flex items-center gap-2 shrink-0 whitespace-nowrap rounded-md border border-border bg-card hover:bg-accent px-3 h-9 text-xs transition-colors">
           <Calendar className="size-3.5 text-muted-foreground" />
-          <span className="font-medium">{rangeLabel(search)}</span>
+          <span className="hidden @min-[360px]:inline font-medium">{rangeLabel(search)}</span>
           <ChevronDown className="size-3.5 text-muted-foreground" />
         </button>
       </PopoverTrigger>

@@ -25,10 +25,13 @@ export function AccountSwitcher({
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <button className="hidden md:flex items-center gap-2 rounded-md border border-border bg-card hover:bg-accent px-3 h-9 text-xs transition-colors">
+        <button className="hidden @min-[1160px]:flex items-center gap-2 shrink-0 whitespace-nowrap rounded-md border border-border bg-card hover:bg-accent px-3 h-9 text-xs transition-colors">
           <span className="text-muted-foreground">BM</span>
           <span className="font-medium">{business.businessId || "Not configured"}</span>
-          <span className="text-muted-foreground font-mono">· {business.accountCount} accts</span>
+          {/* First thing to go when the bar tightens: the count is the least load-bearing part. */}
+          <span className="hidden @min-[1250px]:inline text-muted-foreground font-mono">
+            · {business.accountCount} accts
+          </span>
           <ChevronDown className="size-3.5 text-muted-foreground" />
         </button>
       </PopoverTrigger>
