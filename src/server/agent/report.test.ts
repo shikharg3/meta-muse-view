@@ -392,3 +392,14 @@ test("characterization: markup inflates spend and derived costs, never delivery"
   expect(d1[14] as number).toBeCloseTo(22.727272, 5); // roas falls
   expect(d1[22] as number).toBeCloseTo(11, 6); // cost_per_purchase +10%
 });
+
+test("totals include event and cost-per columns, not zeros", async () => {
+  const p = await buildReport(rowSource({ act_1: goldenRows }), goldenSpec({ byDay: true }), "Acme");
+  const t = p.totals!;
+  expect(t[0]).toBe("Total");
+  expect(t[1]).toBe(150); // spend still right
+  expect(t.slice(15, 20)).toEqual([35, 7, 15, 14, 420]); // registrations..landing_page_views
+  expect(t[20] as number).toBeCloseTo(4.285714, 5); // cost_per_registration
+  expect(t[21] as number).toBeCloseTo(21.428571, 5); // cost_per_lead
+  expect(t[22] as number).toBeCloseTo(10.714285, 5); // cost_per_purchase
+});

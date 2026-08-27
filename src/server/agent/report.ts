@@ -603,7 +603,9 @@ export async function buildReport(
     return hasDimCol ? [key, ...metricCells(a)] : metricCells(a);
   });
 
-  // Totals across every key (only meaningful when there are multiple rows).
+  // Totals across every key (only meaningful when there are multiple rows). Folding the event map in
+  // is what the previous version omitted: familyCount saw an empty map, so every event column and
+  // every cost-per column rendered 0 in the totals row while the data rows above were correct.
   const total = emptyAgg();
   for (const a of aggByKey.values()) {
     total.spend += a.spend;
@@ -614,6 +616,7 @@ export async function buildReport(
     total.results += a.results;
     total.conversions += a.conversions;
     total.conversionValue += a.conversionValue;
+    for (const [type, n] of a.events) total.events.set(type, (total.events.get(type) ?? 0) + n);
   }
   const totals = hasDimCol ? (["Total", ...metricCells(total)] as (string | number)[]) : null;
 
