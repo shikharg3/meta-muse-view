@@ -112,6 +112,7 @@ export const REPORT_METRICS: ReportMetric[] = [
   // ---- clicks & traffic
   def("clicks", "Clicks", "traffic", "int", scalar("clicks")),
   def("link_clicks", "Link Clicks", "traffic", "int", scalar("inline_link_clicks")),
+  def("unique_clicks", "Unique Clicks", "traffic", "int", scalar("unique_clicks")),
   def("ctr", "CTR", "traffic", "pct", ratio("clicks", "impressions", 100)),
   def("cpc", "CPC", "traffic", "money", ratio("spend", "clicks")),
 

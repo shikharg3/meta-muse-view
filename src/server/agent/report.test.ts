@@ -1,5 +1,11 @@
 import { test, expect } from "bun:test";
-import { buildReport, normalizeColumns, parseBreakdown, resolveRange } from "./report";
+import {
+  buildReport,
+  insightRowFrom,
+  normalizeColumns,
+  parseBreakdown,
+  resolveRange,
+} from "./report";
 import type { ReportRowSource } from "./report";
 import type { InsightRow } from "@/meta/types";
 import { REPORT_COLUMNS } from "@/lib/report-options";
@@ -429,4 +435,34 @@ test("an unknown column key is dropped rather than rendered", async () => {
   );
   expect(p.columns.map((c) => c.key)).toEqual(["spend", "purchases"]);
   expect(p.rows[0]).toEqual([150, 14]);
+});
+
+test("a metric with no promoted column reads through to the report", async () => {
+  // `unique_clicks` is not a column on insights_daily; it exists only inside the synced raw blob.
+  const p = await buildReport(
+    rowSource({ act_1: [row("2026-01-01", "c1", { spend: "10", unique_clicks: "7" })] }),
+    { ...goldenSpec({ byDay: false }), columns: ["spend", "unique_clicks"] },
+    "Acme",
+  );
+  expect(p.rows[0]).toEqual([10, 7]);
+});
+
+test("promoted columns win over the raw blob on a key collision", () => {
+  // The sync normalises spend into its own column; raw keeps Meta's original string. If raw won,
+  // a partial sync pass could silently reinstate a stale or differently-rounded number.
+  const merged = insightRowFrom({
+    raw: { spend: "999", unique_clicks: "7", impressions: "1" },
+    date: "2026-01-01",
+    spend: 100,
+    impressions: 10000,
+    reach: 8000,
+    clicks: 500,
+    inlineLinkClicks: 400,
+    actions: null,
+    actionValues: null,
+  } as unknown as Parameters<typeof insightRowFrom>[0]);
+  expect(merged.spend).toBe("100");
+  expect(merged.impressions).toBe("10000");
+  // …while a field with no promoted column survives from raw.
+  expect((merged as Record<string, unknown>).unique_clicks).toBe("7");
 });

@@ -286,15 +286,17 @@ function assetLabel(v: unknown): string {
 }
 
 /**
- * Report rows sourced from the synced DB, not a live Meta call — reports must cover accounts that
- * are disabled or outside the current Business Manager (their history is retained locally but the
- * token can no longer query them live, which otherwise yields an empty "No data" report).
- * none read campaign-level insights_daily (full objective-aware results); entity dims read
- * insights_daily at their level; meta dims read insights_breakdown_daily at exactly one level.
+ * A synced insights_daily row as an InsightRow the engine can read named fields off.
+ *
+ * `raw` is the full Meta response for this row and is ALREADY on the wire — every select in
+ * dbRowSource is unprojected — so spreading it makes every synced metric reachable at no extra query
+ * cost. Promoted columns are spread LAST and therefore win any key collision: they are normalised
+ * numbers, whereas raw carries Meta's original strings and, for a partial sync pass, may omit keys
+ * entirely. Exported so that precedence can be tested without a database.
  */
-export function dbRowSource(spec: BuildSpec): ReportRowSource {
-  const scopedTo = spec.campaignIds?.length ? new Set(spec.campaignIds) : null;
-  const core = (r: typeof schema.insightsDaily.$inferSelect): InsightRow => ({
+export function insightRowFrom(r: typeof schema.insightsDaily.$inferSelect): InsightRow {
+  return {
+    ...((r.raw ?? {}) as Record<string, unknown>),
     date_start: r.date,
     date_stop: r.date,
     spend: String(r.spend),
@@ -304,7 +306,19 @@ export function dbRowSource(spec: BuildSpec): ReportRowSource {
     inline_link_clicks: String(r.inlineLinkClicks),
     actions: (r.actions ?? undefined) as InsightRow["actions"],
     action_values: (r.actionValues ?? undefined) as InsightRow["action_values"],
-  });
+  };
+}
+
+/**
+ * Report rows sourced from the synced DB, not a live Meta call — reports must cover accounts that
+ * are disabled or outside the current Business Manager (their history is retained locally but the
+ * token can no longer query them live, which otherwise yields an empty "No data" report).
+ * none read campaign-level insights_daily (full objective-aware results); entity dims read
+ * insights_daily at their level; meta dims read insights_breakdown_daily at exactly one level.
+ */
+export function dbRowSource(spec: BuildSpec): ReportRowSource {
+  const scopedTo = spec.campaignIds?.length ? new Set(spec.campaignIds) : null;
+  const core = insightRowFrom;
   const dailyRows = (accountId: string, level: string) =>
     db
       .select()
