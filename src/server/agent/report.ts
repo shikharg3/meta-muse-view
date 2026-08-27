@@ -2,15 +2,12 @@ import { and, eq, gte, lte, inArray } from "drizzle-orm";
 import { db, schema } from "@/db/client";
 import { pickAction } from "@/meta/insights";
 import { resultSpec } from "@/server/creative";
-import { familyCount } from "@/server/agg";
+import { familyCount, familyValue } from "@/server/agg";
 import { trailingRange } from "@/sync/jobs/insights";
 import type { InsightRow } from "@/meta/types";
 import { getClientRow, effectiveAccountIds } from "@/sync/jobs/clients";
-import {
-  REPORT_COLUMNS,
-  DEFAULT_REPORT_COLUMN_KEYS,
-  type ReportColumnKind,
-} from "@/lib/report-options";
+import { DEFAULT_REPORT_COLUMN_KEYS } from "@/lib/report-options";
+import { metric, type ReportColumnKind } from "@/lib/report-catalog";
 import { ownedCampaignIds } from "@/server/fns/campaign-attribution";
 
 // Every dimension a report can break down by. Entity dims read insights_daily at that level;
@@ -61,24 +58,26 @@ export interface ReportPayload {
   filename: string;
 }
 
+/**
+ * Per-row-key accumulator.
+ *
+ * Scalars live in a map keyed by insight-row field name rather than as fixed properties, so the
+ * totals row folds exactly the same structures the data rows do and cannot silently omit one. The
+ * previous shape restated its eight fields in a second place, which is how every event column came
+ * to render 0 in totals.
+ */
 interface Agg {
-  spend: number;
-  impressions: number;
-  reach: number;
-  clicks: number;
-  linkClicks: number;
+  scalars: Map<string, number>;
   results: number;
-  conversions: number;
-  conversionValue: number;
   events: Map<string, number>;
+  eventValues: Map<string, number>;
 }
 
 // "Results" is objective-dependent in Ads Manager (traffic→link clicks,
 // leads→leads, sales→purchases, …). We query at campaign level so each row
 // carries a campaign_id, map it to its objective, and count that objective's
-// result action — matching what the dashboards show. omni_purchase is the
-// conversion baseline used elsewhere.
-const CONVERSION_TYPE = "omni_purchase";
+// result action — matching what the dashboards show. The `conversions` column's omni_purchase
+// baseline now lives in the catalog as an `action` descriptor.
 
 export type ReportDimDef =
   | { label: string; source: "entity"; level: "campaign" | "adset" | "ad" }
@@ -144,38 +143,6 @@ export const REPORT_DIMS: Record<Exclude<Breakdown, "none">, ReportDimDef> = {
 /** The synced row's dimension value, attached by dbRowSource under this key. */
 export const DIM_VALUE_KEY = "__dim";
 
-// Aggregate → metric value. Labels/kinds live in the client-safe report-options
-// module (single source of truth shared with the column-picker UI).
-const COL_META = new Map(REPORT_COLUMNS.map((c) => [c.key, c]));
-const costPer = (a: Agg, label: string): number => {
-  const n = familyCount(a.events, label);
-  return n ? a.spend / n : 0;
-};
-const VALUE_FNS: Record<string, (a: Agg) => number> = {
-  spend: (a) => a.spend,
-  impressions: (a) => a.impressions,
-  reach: (a) => a.reach,
-  clicks: (a) => a.clicks,
-  link_clicks: (a) => a.linkClicks,
-  ctr: (a) => (a.impressions ? (a.clicks / a.impressions) * 100 : 0),
-  cpc: (a) => (a.clicks ? a.spend / a.clicks : 0),
-  cpm: (a) => (a.impressions ? (a.spend / a.impressions) * 1000 : 0),
-  frequency: (a) => (a.reach ? a.impressions / a.reach : 0),
-  results: (a) => a.results,
-  cost_per_result: (a) => (a.results ? a.spend / a.results : 0),
-  conversions: (a) => a.conversions,
-  conversion_value: (a) => a.conversionValue,
-  roas: (a) => (a.spend ? a.conversionValue / a.spend : 0),
-  registrations: (a) => familyCount(a.events, "Registrations"),
-  leads: (a) => familyCount(a.events, "Leads"),
-  initiate_checkout: (a) => familyCount(a.events, "Checkouts initiated"),
-  purchases: (a) => familyCount(a.events, "Purchases"),
-  landing_page_views: (a) => familyCount(a.events, "Landing page views"),
-  cost_per_registration: (a) => costPer(a, "Registrations"),
-  cost_per_lead: (a) => costPer(a, "Leads"),
-  cost_per_purchase: (a) => costPer(a, "Purchases"),
-};
-
 export const DEFAULT_COLUMNS = DEFAULT_REPORT_COLUMN_KEYS;
 
 const COLUMN_ALIASES: Record<string, string> = {
@@ -214,7 +181,7 @@ export function normalizeColumns(input: string[]): string[] {
   for (const raw of input) {
     const key = raw.trim().toLowerCase();
     // A direct catalog key wins (covers every column, incl. new ones); else map free text via aliases.
-    const k = COL_META.has(key) ? key : COLUMN_ALIASES[key.replace(/[^a-z]/g, "")];
+    const k = metric(key) ? key : COLUMN_ALIASES[key.replace(/[^a-z]/g, "")];
     if (k && !out.includes(k)) out.push(k);
   }
   return out;
@@ -493,28 +460,88 @@ function resultValue(r: InsightRow, objective: string | undefined): number {
 }
 
 const num = (v: unknown): number => (v == null ? 0 : Number(v) || 0);
+
 const emptyAgg = (): Agg => ({
-  spend: 0,
-  impressions: 0,
-  reach: 0,
-  clicks: 0,
-  linkClicks: 0,
+  scalars: new Map(),
   results: 0,
-  conversions: 0,
-  conversionValue: 0,
   events: new Map(),
+  eventValues: new Map(),
 });
-function accumulate(a: Agg, r: InsightRow, objectiveByCampaign: Record<string, string>): void {
-  a.spend += num(r.spend);
-  a.impressions += num(r.impressions);
-  a.reach += num(r.reach);
-  a.clicks += num(r.clicks);
-  a.linkClicks += num(r.inline_link_clicks);
+
+const addTo = (m: Map<string, number>, key: string, n: number): void => {
+  if (n) m.set(key, (m.get(key) ?? 0) + n);
+};
+
+/** Sum into `a` only the row fields the selected descriptors actually need. */
+function accumulate(
+  a: Agg,
+  r: InsightRow,
+  objectiveByCampaign: Record<string, string>,
+  fields: readonly string[],
+): void {
+  for (const f of fields) addTo(a.scalars, f, num((r as Record<string, unknown>)[f]));
   a.results += resultValue(r, objectiveByCampaign[String(r.campaign_id ?? "")]);
-  a.conversions += pickAction(r.actions, CONVERSION_TYPE);
-  a.conversionValue += pickAction(r.action_values, CONVERSION_TYPE);
   for (const act of (r.actions as { action_type: string; value: string }[] | undefined) ?? [])
-    a.events.set(act.action_type, (a.events.get(act.action_type) ?? 0) + (Number(act.value) || 0));
+    addTo(a.events, act.action_type, Number(act.value) || 0);
+  for (const act of (r.action_values as { action_type: string; value: string }[] | undefined) ?? [])
+    addTo(a.eventValues, act.action_type, Number(act.value) || 0);
+}
+
+const mergeAgg = (into: Agg, from: Agg): void => {
+  for (const [k, v] of from.scalars) addTo(into.scalars, k, v);
+  into.results += from.results;
+  for (const [k, v] of from.events) addTo(into.events, k, v);
+  for (const [k, v] of from.eventValues) addTo(into.eventValues, k, v);
+};
+
+/** Row fields a descriptor set needs summed, following `derived` dependencies transitively. */
+function neededFields(keys: readonly string[]): string[] {
+  const out = new Set<string>();
+  const seen = new Set<string>();
+  const walk = (key: string): void => {
+    if (seen.has(key)) return;
+    seen.add(key);
+    const m = metric(key);
+    if (!m) return;
+    if (m.source.kind === "scalar") out.add(m.source.field);
+    else if (m.source.kind === "derived") m.source.deps.forEach(walk);
+  };
+  keys.forEach(walk);
+  return [...out];
+}
+
+/** Resolve one descriptor against an accumulator, memoising so shared dependencies compute once. */
+function resolveMetric(key: string, a: Agg, memo: Map<string, number>): number {
+  const hit = memo.get(key);
+  if (hit !== undefined) return hit;
+  const m = metric(key);
+  if (!m) return 0;
+  let v = 0;
+  switch (m.source.kind) {
+    case "scalar":
+      v = a.scalars.get(m.source.field) ?? 0;
+      break;
+    case "result":
+      v = a.results;
+      break;
+    case "action":
+      v = (m.source.measure === "count" ? a.events : a.eventValues).get(m.source.type) ?? 0;
+      break;
+    case "event":
+      v =
+        m.source.measure === "count"
+          ? familyCount(a.events, m.source.family)
+          : familyValue(a.eventValues, m.source.family);
+      break;
+    case "derived": {
+      const deps: Record<string, number> = {};
+      for (const d of m.source.deps) deps[d] = resolveMetric(d, a, memo);
+      v = m.source.fn(deps);
+      break;
+    }
+  }
+  memo.set(key, v);
+  return v;
 }
 
 const MAX_ROWS = 500;
@@ -530,9 +557,10 @@ export async function buildReport(
   subjectName: string,
 ): Promise<ReportPayload> {
   const keys = spec.columns.length ? spec.columns : DEFAULT_COLUMNS;
-  const metricCols = keys.filter((k) => COL_META.has(k));
+  const metricCols = keys.filter((k) => metric(k) !== undefined);
   const cols = metricCols.length ? metricCols : DEFAULT_COLUMNS;
   const dim = spec.breakdown;
+  const fields = neededFields(cols);
 
   const aggByKey = new Map<string, Agg>();
   const order: string[] = [];
@@ -563,7 +591,7 @@ export async function buildReport(
         aggByKey.set(key, a);
         order.push(key);
       }
-      accumulate(a, r, spec.objectiveByCampaign);
+      accumulate(a, r, spec.objectiveByCampaign, fields);
     }
   }
 
@@ -571,12 +599,19 @@ export async function buildReport(
   // roas falls; delivered figures (impressions/clicks/results/revenue) are real and stay untouched.
   if (spec.markup) {
     const factor = 1 + spec.markup;
-    for (const a of aggByKey.values()) a.spend *= factor;
+    for (const a of aggByKey.values()) {
+      const s = a.scalars.get("spend");
+      if (s) a.scalars.set("spend", s * factor);
+    }
   }
 
   // Order rows: chronological when split by day (keys start with the date), spend-first else.
   if (spec.byDay) order.sort();
-  else if (dim !== "none") order.sort((x, y) => aggByKey.get(y)!.spend - aggByKey.get(x)!.spend);
+  else if (dim !== "none")
+    order.sort(
+      (x, y) =>
+        (aggByKey.get(y)!.scalars.get("spend") ?? 0) - (aggByKey.get(x)!.scalars.get("spend") ?? 0),
+    );
   const limited = order.slice(0, MAX_ROWS);
 
   const hasDimCol = dim !== "none" || spec.byDay;
@@ -586,38 +621,28 @@ export async function buildReport(
       : spec.byDay
         ? `Date · ${REPORT_DIMS[dim].label}`
         : REPORT_DIMS[dim].label;
-  const columns: ReportColumn[] = !hasDimCol
-    ? cols.map((k) => ({ key: k, label: COL_META.get(k)!.label, kind: COL_META.get(k)!.kind }))
-    : [
-        { key: "_dim", label: dimLabel, kind: "text" as const },
-        ...cols.map((k) => ({
-          key: k,
-          label: COL_META.get(k)!.label,
-          kind: COL_META.get(k)!.kind,
-        })),
-      ];
+  const columns: ReportColumn[] = [
+    ...(hasDimCol ? [{ key: "_dim", label: dimLabel, kind: "text" as const }] : []),
+    ...cols.map((k) => {
+      const m = metric(k)!;
+      return { key: m.key, label: m.label, kind: m.kind };
+    }),
+  ];
 
-  const metricCells = (a: Agg): number[] => cols.map((k) => VALUE_FNS[k](a));
+  const metricCells = (a: Agg): number[] => {
+    const memo = new Map<string, number>();
+    return cols.map((k) => resolveMetric(k, a, memo));
+  };
   const rows: (string | number)[][] = limited.map((key) => {
     const a = aggByKey.get(key)!;
     return hasDimCol ? [key, ...metricCells(a)] : metricCells(a);
   });
 
-  // Totals across every key (only meaningful when there are multiple rows). Folding the event map in
-  // is what the previous version omitted: familyCount saw an empty map, so every event column and
-  // every cost-per column rendered 0 in the totals row while the data rows above were correct.
+  // Totals across every key (only meaningful when there are multiple rows). mergeAgg folds the same
+  // structures the data rows use, so the totals row cannot omit a field the way the previous
+  // hand-restated version did.
   const total = emptyAgg();
-  for (const a of aggByKey.values()) {
-    total.spend += a.spend;
-    total.impressions += a.impressions;
-    total.reach += a.reach;
-    total.clicks += a.clicks;
-    total.linkClicks += a.linkClicks;
-    total.results += a.results;
-    total.conversions += a.conversions;
-    total.conversionValue += a.conversionValue;
-    for (const [type, n] of a.events) total.events.set(type, (total.events.get(type) ?? 0) + n);
-  }
+  for (const a of aggByKey.values()) mergeAgg(total, a);
   const totals = hasDimCol ? (["Total", ...metricCells(total)] as (string | number)[]) : null;
 
   const dimNote = hasDimCol ? ` · by ${dimLabel.toLowerCase()}` : "";

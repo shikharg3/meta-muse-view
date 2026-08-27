@@ -76,38 +76,75 @@ const ratio = (num: string, den: string, scale = 1): MetricSource => ({
  */
 const costPer = (den: string): MetricSource => ratio("spend", den);
 
+/**
+ * One catalog entry. Positional on purpose: at ~150 metrics a keyed object literal per entry is
+ * three screens of `key:`/`label:` noise, and the argument order (what · shown as · grouped under ·
+ * formatted as · read from) is the same for every row.
+ */
+const def = (
+  key: string,
+  label: string,
+  group: MetricGroup,
+  kind: ReportColumnKind,
+  source: MetricSource,
+): ReportMetric => ({ key, label, group, kind, source });
+
+const scalar = (field: string): MetricSource => ({ kind: "scalar", field });
+const event = (family: string, measure: "count" | "value"): MetricSource => ({
+  kind: "event",
+  family,
+  measure,
+});
+const action = (type: string, measure: "count" | "value"): MetricSource => ({
+  kind: "action",
+  type,
+  measure,
+});
+
 export const REPORT_METRICS: ReportMetric[] = [
   // ---- delivery
-  { key: "spend", label: "Spend", group: "delivery", kind: "money", source: { kind: "scalar", field: "spend" } },
-  { key: "impressions", label: "Impressions", group: "delivery", kind: "int", source: { kind: "scalar", field: "impressions" } },
-  { key: "reach", label: "Reach", group: "delivery", kind: "int", source: { kind: "scalar", field: "reach" } },
-  { key: "frequency", label: "Frequency", group: "delivery", kind: "float", source: ratio("impressions", "reach") },
-  { key: "cpm", label: "CPM", group: "delivery", kind: "money", source: ratio("spend", "impressions", 1000) },
+  def("spend", "Spend", "delivery", "money", scalar("spend")),
+  def("impressions", "Impressions", "delivery", "int", scalar("impressions")),
+  def("reach", "Reach", "delivery", "int", scalar("reach")),
+  def("frequency", "Frequency", "delivery", "float", ratio("impressions", "reach")),
+  def("cpm", "CPM", "delivery", "money", ratio("spend", "impressions", 1000)),
 
   // ---- clicks & traffic
-  { key: "clicks", label: "Clicks", group: "traffic", kind: "int", source: { kind: "scalar", field: "clicks" } },
-  { key: "link_clicks", label: "Link Clicks", group: "traffic", kind: "int", source: { kind: "scalar", field: "inline_link_clicks" } },
-  { key: "ctr", label: "CTR", group: "traffic", kind: "pct", source: ratio("clicks", "impressions", 100) },
-  { key: "cpc", label: "CPC", group: "traffic", kind: "money", source: ratio("spend", "clicks") },
+  def("clicks", "Clicks", "traffic", "int", scalar("clicks")),
+  def("link_clicks", "Link Clicks", "traffic", "int", scalar("inline_link_clicks")),
+  def("ctr", "CTR", "traffic", "pct", ratio("clicks", "impressions", 100)),
+  def("cpc", "CPC", "traffic", "money", ratio("spend", "clicks")),
 
   // ---- conversions
-  { key: "results", label: "Results", group: "conversions", kind: "int", source: { kind: "result" } },
-  { key: "conversions", label: "Conversions", group: "conversions", kind: "int", source: { kind: "action", type: "omni_purchase", measure: "count" } },
-  { key: "registrations", label: "Registrations", group: "conversions", kind: "int", source: { kind: "event", family: "Registrations", measure: "count" } },
-  { key: "leads", label: "Leads", group: "conversions", kind: "int", source: { kind: "event", family: "Leads", measure: "count" } },
-  { key: "initiate_checkout", label: "Checkouts", group: "conversions", kind: "int", source: { kind: "event", family: "Checkouts initiated", measure: "count" } },
-  { key: "purchases", label: "Purchases", group: "conversions", kind: "int", source: { kind: "event", family: "Purchases", measure: "count" } },
-  { key: "landing_page_views", label: "Landing Page Views", group: "conversions", kind: "int", source: { kind: "event", family: "Landing page views", measure: "count" } },
+  def("results", "Results", "conversions", "int", { kind: "result" }),
+  def("conversions", "Conversions", "conversions", "int", action("omni_purchase", "count")),
+  def("registrations", "Registrations", "conversions", "int", event("Registrations", "count")),
+  def("leads", "Leads", "conversions", "int", event("Leads", "count")),
+  def(
+    "initiate_checkout",
+    "Checkouts",
+    "conversions",
+    "int",
+    event("Checkouts initiated", "count"),
+  ),
+  def("purchases", "Purchases", "conversions", "int", event("Purchases", "count")),
+  def(
+    "landing_page_views",
+    "Landing Page Views",
+    "conversions",
+    "int",
+    event("Landing page views", "count"),
+  ),
 
   // ---- conversion value
-  { key: "conversion_value", label: "Conv. Value", group: "value", kind: "money", source: { kind: "action", type: "omni_purchase", measure: "value" } },
-  { key: "roas", label: "ROAS", group: "value", kind: "float", source: ratio("conversion_value", "spend") },
+  def("conversion_value", "Conv. Value", "value", "money", action("omni_purchase", "value")),
+  def("roas", "ROAS", "value", "float", ratio("conversion_value", "spend")),
 
   // ---- cost per
-  { key: "cost_per_result", label: "Cost / Result", group: "cost", kind: "money", source: costPer("results") },
-  { key: "cost_per_registration", label: "Cost / Reg.", group: "cost", kind: "money", source: costPer("registrations") },
-  { key: "cost_per_lead", label: "Cost / Lead", group: "cost", kind: "money", source: costPer("leads") },
-  { key: "cost_per_purchase", label: "Cost / Purchase", group: "cost", kind: "money", source: costPer("purchases") },
+  def("cost_per_result", "Cost / Result", "cost", "money", costPer("results")),
+  def("cost_per_registration", "Cost / Reg.", "cost", "money", costPer("registrations")),
+  def("cost_per_lead", "Cost / Lead", "cost", "money", costPer("leads")),
+  def("cost_per_purchase", "Cost / Purchase", "cost", "money", costPer("purchases")),
 ];
 
 /** Static key → descriptor table. Built once at module load. */

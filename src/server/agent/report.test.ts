@@ -3,6 +3,7 @@ import { buildReport, normalizeColumns, parseBreakdown, resolveRange } from "./r
 import type { ReportRowSource } from "./report";
 import type { InsightRow } from "@/meta/types";
 import { REPORT_COLUMNS } from "@/lib/report-options";
+import { REPORT_METRICS } from "@/lib/report-catalog";
 
 const rowSource =
   (byAccount: Record<string, InsightRow[] | "throw">): ReportRowSource =>
@@ -394,7 +395,11 @@ test("characterization: markup inflates spend and derived costs, never delivery"
 });
 
 test("totals include event and cost-per columns, not zeros", async () => {
-  const p = await buildReport(rowSource({ act_1: goldenRows }), goldenSpec({ byDay: true }), "Acme");
+  const p = await buildReport(
+    rowSource({ act_1: goldenRows }),
+    goldenSpec({ byDay: true }),
+    "Acme",
+  );
   const t = p.totals!;
   expect(t[0]).toBe("Total");
   expect(t[1]).toBe(150); // spend still right
@@ -402,4 +407,26 @@ test("totals include event and cost-per columns, not zeros", async () => {
   expect(t[20] as number).toBeCloseTo(4.285714, 5); // cost_per_registration
   expect(t[21] as number).toBeCloseTo(21.428571, 5); // cost_per_lead
   expect(t[22] as number).toBeCloseTo(10.714285, 5); // cost_per_purchase
+});
+
+test("every catalog metric renders through the engine", async () => {
+  const p = await buildReport(
+    rowSource({ act_1: goldenRows }),
+    { ...goldenSpec({ byDay: false }), columns: REPORT_METRICS.map((m) => m.key) },
+    "Acme",
+  );
+  expect(p.columns.length).toBe(REPORT_METRICS.length);
+  for (const [i, cell] of p.rows[0].entries()) {
+    expect(Number.isFinite(cell as number), `${p.columns[i].key} produced ${cell}`).toBe(true);
+  }
+});
+
+test("an unknown column key is dropped rather than rendered", async () => {
+  const p = await buildReport(
+    rowSource({ act_1: goldenRows }),
+    { ...goldenSpec({ byDay: false }), columns: ["spend", "not_a_real_metric", "purchases"] },
+    "Acme",
+  );
+  expect(p.columns.map((c) => c.key)).toEqual(["spend", "purchases"]);
+  expect(p.rows[0]).toEqual([150, 14]);
 });

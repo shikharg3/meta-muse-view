@@ -1,6 +1,12 @@
-// Client-safe report column + breakdown catalog (no DB/secret imports) so both
-// the Settings/chat UI and the server report engine share one source of truth.
-export type ReportColumnKind = "text" | "int" | "money" | "float" | "pct";
+// Client-safe report breakdown + range vocabulary (no DB/secret imports), shared by the Settings and
+// chat UI with the server report engine.
+//
+// Column labels and kinds are NOT defined here any more: they live in report-catalog.ts, and this
+// module only projects the subset the current picker shows. Two hand-maintained lists that had to
+// agree is precisely the arrangement that crashed report generation when they did not.
+import { LEGACY_UI_COLUMN_KEYS, metric, type ReportColumnKind } from "./report-catalog";
+
+export type { ReportColumnKind };
 
 export interface ReportColumnDef {
   key: string;
@@ -8,30 +14,11 @@ export interface ReportColumnDef {
   kind: ReportColumnKind;
 }
 
-export const REPORT_COLUMNS: ReportColumnDef[] = [
-  { key: "spend", label: "Spend", kind: "money" },
-  { key: "impressions", label: "Impressions", kind: "int" },
-  { key: "reach", label: "Reach", kind: "int" },
-  { key: "clicks", label: "Clicks", kind: "int" },
-  { key: "link_clicks", label: "Link Clicks", kind: "int" },
-  { key: "ctr", label: "CTR", kind: "pct" },
-  { key: "cpc", label: "CPC", kind: "money" },
-  { key: "cpm", label: "CPM", kind: "money" },
-  { key: "frequency", label: "Frequency", kind: "float" },
-  { key: "results", label: "Results", kind: "int" },
-  { key: "cost_per_result", label: "Cost / Result", kind: "money" },
-  { key: "conversions", label: "Conversions", kind: "int" },
-  { key: "conversion_value", label: "Conv. Value", kind: "money" },
-  { key: "roas", label: "ROAS", kind: "float" },
-  { key: "registrations", label: "Registrations", kind: "int" },
-  { key: "leads", label: "Leads", kind: "int" },
-  { key: "initiate_checkout", label: "Checkouts", kind: "int" },
-  { key: "purchases", label: "Purchases", kind: "int" },
-  { key: "landing_page_views", label: "Landing Page Views", kind: "int" },
-  { key: "cost_per_registration", label: "Cost / Reg.", kind: "money" },
-  { key: "cost_per_lead", label: "Cost / Lead", kind: "money" },
-  { key: "cost_per_purchase", label: "Cost / Purchase", kind: "money" },
-];
+/** Catalog projection for the current chip-cloud picker. See LEGACY_UI_COLUMN_KEYS. */
+export const REPORT_COLUMNS: ReportColumnDef[] = LEGACY_UI_COLUMN_KEYS.map((k) => {
+  const m = metric(k)!;
+  return { key: m.key, label: m.label, kind: m.kind };
+});
 
 export const DEFAULT_REPORT_COLUMN_KEYS = ["spend", "impressions", "ctr", "cpc", "results"];
 

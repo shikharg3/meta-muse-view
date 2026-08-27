@@ -167,3 +167,15 @@ export function familyCount(sums: Map<string, number>, label: string): number {
   const key = fam.types.find((t) => sums.has(t));
   return key ? Math.round(sums.get(key) ?? 0) : 0;
 }
+
+/**
+ * Value for one canonical event family, using the same first-present-variant de-dup as familyCount.
+ * Paired with it deliberately: a count and a value read from different variants of the same family
+ * would produce an average order value that belongs to neither.
+ */
+export function familyValue(sums: Map<string, number>, label: string): number {
+  const fam = EVENT_FAMILIES.find((f) => f.label === label);
+  if (!fam) return 0;
+  const key = fam.types.find((t) => sums.has(t));
+  return key ? Math.round(sums.get(key) ?? 0) : 0;
+}

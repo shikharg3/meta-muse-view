@@ -21,7 +21,8 @@ test("no cost or ratio metric reads a stored field", () => {
   // bypass the markup applied to spend and understate what a client is charged, so every cost or
   // ratio must be derived from spend and a count.
   for (const m of REPORT_METRICS) {
-    const isCostOrRatio = /^(cost_per_|cpc|cpm|cpp|ctr|roas|frequency)/.test(m.key) || m.group === "cost";
+    const isCostOrRatio =
+      /^(cost_per_|cpc|cpm|cpp|ctr|roas|frequency)/.test(m.key) || m.group === "cost";
     if (!isCostOrRatio) continue;
     expect(m.source.kind, `${m.key} must be derived, is ${m.source.kind}`).toBe("derived");
   }
