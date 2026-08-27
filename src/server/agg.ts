@@ -203,3 +203,16 @@ export function familyValue(sums: Map<string, number>, label: string): number {
   const key = fam.types.find((t) => sums.has(t));
   return key ? Math.round(sums.get(key) ?? 0) : 0;
 }
+
+/**
+ * Family labels in declaration order, and label → member action_types.
+ *
+ * The report catalog is client-safe and cannot import this module, so it restates the labels; a test
+ * asserts the two lists agree. EVENT_MEMBERS lets the availability check ask whether any variant of
+ * a family actually fired for a client, without duplicating the synonym lists.
+ */
+export const eventFamilyLabels = (): string[] => EVENT_FAMILIES.map((f) => f.label);
+
+export const EVENT_MEMBERS: Record<string, string[]> = Object.fromEntries(
+  EVENT_FAMILIES.map((f) => [f.label, f.types]),
+);

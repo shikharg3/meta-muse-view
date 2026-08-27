@@ -1,5 +1,6 @@
 import { test, expect } from "bun:test";
-import { familyCount, familyValue } from "./agg";
+import { familyCount, familyValue, eventFamilyLabels, EVENT_MEMBERS } from "./agg";
+import { EVENT_FAMILY_LABELS } from "@/lib/report-catalog";
 
 test("a family matches even when only a late synonym is present", () => {
   // Measured on production: the purchase family returns eight action_types. A row carrying only the
@@ -39,4 +40,16 @@ test("familyValue reads the same variant familyCount does", () => {
 test("an unknown family is zero, never a throw", () => {
   expect(familyCount(new Map([["purchase", 1]]), "Not A Family")).toBe(0);
   expect(familyValue(new Map([["purchase", 1]]), "Not A Family")).toBe(0);
+});
+
+test("catalog family labels match EVENT_FAMILIES exactly", () => {
+  // The client-safe catalog cannot import this module, so it restates the labels. If they drift, an
+  // event column silently resolves to 0 — a wrong number, not an error.
+  expect([...EVENT_FAMILY_LABELS]).toEqual(eventFamilyLabels());
+});
+
+test("every family exposes its member action types", () => {
+  for (const label of eventFamilyLabels()) {
+    expect(EVENT_MEMBERS[label]?.length ?? 0, `${label} has no members`).toBeGreaterThan(0);
+  }
 });

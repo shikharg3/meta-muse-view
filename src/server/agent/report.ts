@@ -475,6 +475,24 @@ function resultValue(r: InsightRow, objective: string | undefined): number {
 
 const num = (v: unknown): number => (v == null ? 0 : Number(v) || 0);
 
+/**
+ * A row field's numeric value, tolerating Meta's two shapes for a metric.
+ *
+ * Scalars arrive as strings ("59"), but the video and ROAS families arrive as action arrays —
+ * `video_p25_watched_actions` is `[{ action_type: "video_view", value: "528" }]`. Number() on an
+ * array is NaN, so without this every video column would silently render 0.
+ */
+const fieldValue = (v: unknown): number => {
+  if (Array.isArray(v)) {
+    let sum = 0;
+    for (const e of v) {
+      if (e && typeof e === "object" && "value" in e) sum += Number(e.value) || 0;
+    }
+    return sum;
+  }
+  return num(v);
+};
+
 const emptyAgg = (): Agg => ({
   scalars: new Map(),
   results: 0,
@@ -493,7 +511,7 @@ function accumulate(
   objectiveByCampaign: Record<string, string>,
   fields: readonly string[],
 ): void {
-  for (const f of fields) addTo(a.scalars, f, num((r as Record<string, unknown>)[f]));
+  for (const f of fields) addTo(a.scalars, f, fieldValue((r as Record<string, unknown>)[f]));
   a.results += resultValue(r, objectiveByCampaign[String(r.campaign_id ?? "")]);
   for (const act of (r.actions as { action_type: string; value: string }[] | undefined) ?? [])
     addTo(a.events, act.action_type, Number(act.value) || 0);
