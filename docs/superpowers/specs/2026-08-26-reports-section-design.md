@@ -127,8 +127,10 @@ sorts in SQL.
 
 ### Flow
 
-1. `runReport` computes the payload exactly as `reportForClient` does today, writes a
-   `report_runs` row with `exported_at = NULL`, returns `{ payload, runId }`.
+1. `createReportRun` computes the payload by delegating to the existing `reportForClient`, writes a
+   `report_runs` row with `exported_at = NULL`, and returns `{ payload, runId }`. **Not** named
+   `runReport`: that name is already taken by `report.ts:685`, the core report producer called by
+   `reportForClient`, by the LLM tool path at `tools.ts:550`, and by eight tests in `agent.test.ts`.
 2. The CSV/PDF buttons call `markReportExported({ runId, format })`, which stamps `exported_at` (if
    unset) and appends to `exported_formats`.
 3. History lists runs where `exported_at IS NOT NULL`.
@@ -170,7 +172,7 @@ All three already exist in the database:
 | --- | --- | --- |
 | promoted `insights_daily` columns | 27 | 7 |
 | `raw` jsonb metrics | ~90 of 111 measured keys | 0 |
-| `EVENT_FAMILIES` × {count, value, cost-per} | 51 | 8 |
+| `EVENT_FAMILIES` × {count, value} + derived cost-per | 51 | 8 |
 | derived ratios with no stored equivalent | ~10 | 7 |
 
 The ~150 figure is `~90` scalar metrics (the 111 measured `raw` keys less ~21 identity/dimension
@@ -207,10 +209,17 @@ present, wrong when it is the only one.
 
 ```ts
 type MetricSource =
-  | { kind: "column"; field: keyof InsightRow }
-  | { kind: "raw"; field: string }
-  | { kind: "event"; family: string; measure: "count" | "value" | "cost" }
-  | { kind: "derived"; deps: string[]; fn: (v: Record<string, number>) => number };
+  // A named numeric field. `dbRowSource` merges `raw` under the promoted columns, so one kind
+  // covers both — promoted values win on key collision because they are already normalised.
+  | { kind: "scalar"; field: string }
+  // One de-duplicated EVENT_FAMILIES family (agg.ts:78). Counts and values only — see below.
+  | { kind: "event"; family: string; measure: "count" | "value" }
+  // A single literal Meta action_type. Legacy-compat ONLY, for the existing conversions /
+  // conversion_value / roas columns, which pin `omni_purchase` rather than the family.
+  | { kind: "action"; type: string; measure: "count" | "value" }
+  // The objective-aware "result" count, which needs objectiveByCampaign and so cannot be a scalar.
+  | { kind: "result" }
+  | { kind: "derived"; deps: string[]; fn: (v: Readonly<Record<string, number>>) => number };
 
 interface ReportMetric {
   key: string;
@@ -241,12 +250,13 @@ spend inherits it.
 `landing_page_view_per_link_click`, `marketing_messages_cost_per_*` and every `*_rate` — roughly
 25-30 of the ~90 candidate fields.
 
-**No cost, cost-per, ratio or rate metric may use `{ kind: "raw" }`.** Sourcing Meta's precomputed
-values would bypass the markup and print un-inflated costs beside inflated spend in a client-facing
-report — silently understating what the client is being charged. Every such metric is
-`{ kind: "derived" }` over spend and a count. Meta's precomputed cost fields are excluded from the
-catalog entirely rather than offered conditionally, because a column that is correct only when markup
-is zero is a trap.
+**There is deliberately no `"cost"` measure and no raw-sourced cost field, so a mis-sourced cost
+column is not representable.** Sourcing Meta's precomputed values would bypass the markup and print
+un-inflated costs beside inflated spend in a client-facing report — silently understating what the
+client is being charged. Every cost-per metric is therefore `{ kind: "derived" }` over spend and a
+count, enforced by the type rather than by review. Meta's precomputed cost fields are excluded from
+the catalog entirely rather than offered conditionally, because a column correct only when markup is
+zero is a trap.
 
 ### Groups
 
@@ -402,7 +412,7 @@ New tests, each defending a contract that a plausible bug would break:
    behaviour change. Fixes bugs 1 and 2.
 2. Catalog expansion to ~150 metrics + `reportCatalogFor` availability fn.
 3. `DATE_PRESETS` registry and resolution.
-4. Schema + `runReport` / `markReportExported` / template CRUD + draft pruning.
+4. Schema + `createReportRun` / `markReportExported` / template CRUD + draft pruning.
 5. Route split and the tab layout.
 6. Columns dialog, breakdown and range popovers, preview scroll behaviour.
 7. Template and history UI.
