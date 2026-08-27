@@ -2,6 +2,7 @@ import { test, expect } from "bun:test";
 import { buildReport, normalizeColumns, parseBreakdown, resolveRange } from "./report";
 import type { ReportRowSource } from "./report";
 import type { InsightRow } from "@/meta/types";
+import { REPORT_COLUMNS } from "@/lib/report-options";
 
 const rowSource =
   (byAccount: Record<string, InsightRow[] | "throw">): ReportRowSource =>
@@ -276,4 +277,118 @@ test("buildReport adset merges same-named ad sets and sorts by spend", async () 
     ["California", 25],
     ["Texas", 20],
   ]);
+});
+
+// ---------------------------------------------------------------- characterization
+// Captured from the live engine before the descriptor refactor. These are the contract: the refactor
+// must move no number. Two days of one campaign, carrying three purchase synonyms so that family
+// de-duplication is exercised rather than assumed.
+const goldenRows: InsightRow[] = [
+  row("2026-01-01", "c1", {
+    spend: "100",
+    impressions: "10000",
+    reach: "8000",
+    clicks: "500",
+    inline_link_clicks: "400",
+    actions: [
+      { action_type: "omni_purchase", value: "10" },
+      { action_type: "purchase", value: "10" },
+      { action_type: "offsite_conversion.fb_pixel_purchase", value: "10" },
+      { action_type: "omni_complete_registration", value: "25" },
+      { action_type: "lead", value: "5" },
+      { action_type: "omni_initiated_checkout", value: "15" },
+      { action_type: "omni_landing_page_view", value: "300" },
+    ],
+    action_values: [
+      { action_type: "omni_purchase", value: "2500" },
+      { action_type: "purchase", value: "2500" },
+    ],
+  }),
+  row("2026-01-02", "c1", {
+    spend: "50",
+    impressions: "4000",
+    reach: "3500",
+    clicks: "200",
+    inline_link_clicks: "150",
+    actions: [
+      { action_type: "omni_purchase", value: "4" },
+      { action_type: "omni_complete_registration", value: "10" },
+      { action_type: "lead", value: "2" },
+      { action_type: "omni_landing_page_view", value: "120" },
+    ],
+    action_values: [{ action_type: "omni_purchase", value: "900" }],
+  }),
+];
+
+const goldenSpec = (o: { byDay: boolean; markup?: number }) => ({
+  accountIds: ["act_1"],
+  since: "2026-01-01",
+  until: "2026-01-02",
+  columns: REPORT_COLUMNS.map((c) => c.key),
+  breakdown: "none" as const,
+  byDay: o.byDay,
+  objectiveByCampaign: { c1: "OUTCOME_SALES" },
+  markup: o.markup,
+});
+
+test("characterization: every legacy column, one total row", async () => {
+  const p = await buildReport(
+    rowSource({ act_1: goldenRows }),
+    goldenSpec({ byDay: false }),
+    "Acme",
+  );
+  expect(p.columns.map((c) => c.key)).toEqual([
+    "spend",
+    "impressions",
+    "reach",
+    "clicks",
+    "link_clicks",
+    "ctr",
+    "cpc",
+    "cpm",
+    "frequency",
+    "results",
+    "cost_per_result",
+    "conversions",
+    "conversion_value",
+    "roas",
+    "registrations",
+    "leads",
+    "initiate_checkout",
+    "purchases",
+    "landing_page_views",
+    "cost_per_registration",
+    "cost_per_lead",
+    "cost_per_purchase",
+  ]);
+  const r = p.rows[0];
+  expect(r.slice(0, 5)).toEqual([150, 14000, 11500, 700, 550]);
+  expect(r[5]).toBe(5); // ctr
+  expect(r[6] as number).toBeCloseTo(0.214285, 5); // cpc
+  expect(r[7] as number).toBeCloseTo(10.714285, 5); // cpm
+  expect(r[8] as number).toBeCloseTo(1.217391, 5); // frequency
+  expect(r[9]).toBe(14); // results — OUTCOME_SALES counts purchases
+  expect(r[11]).toBe(14); // conversions — omni_purchase
+  expect(r[12]).toBe(3400); // conversion_value
+  expect(r[13] as number).toBeCloseTo(22.666666, 5); // roas
+  // Three purchase synonyms must not treble the count.
+  expect(r.slice(14, 19)).toEqual([35, 7, 15, 14, 420]);
+  expect(r[19] as number).toBeCloseTo(4.285714, 5); // cost_per_registration
+  expect(r[20] as number).toBeCloseTo(21.428571, 5); // cost_per_lead
+  expect(r[21] as number).toBeCloseTo(10.714285, 5); // cost_per_purchase
+  expect(p.totals).toBeNull();
+});
+
+test("characterization: markup inflates spend and derived costs, never delivery", async () => {
+  const p = await buildReport(
+    rowSource({ act_1: goldenRows }),
+    goldenSpec({ byDay: true, markup: 0.1 }),
+    "Acme",
+  );
+  const d1 = p.rows[0]; // index 0 is the _dim cell, so every metric shifts by one
+  expect(d1[1] as number).toBeCloseTo(110, 6); // spend +10%
+  expect(d1[2]).toBe(10000); // impressions untouched
+  expect(d1[7] as number).toBeCloseTo(0.22, 6); // cpc +10%
+  expect(d1[14] as number).toBeCloseTo(22.727272, 5); // roas falls
+  expect(d1[22] as number).toBeCloseTo(11, 6); // cost_per_purchase +10%
 });
