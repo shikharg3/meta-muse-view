@@ -367,6 +367,18 @@ status history with old → new values and the acting user.
 **Deliberately not in it:** no token or scope change, no secrets, no alert rows or Telegram, no client or
 spend linkage, no CSV import. Recorded because each was considered and declined, not overlooked.
 
+**Shipped 2026-08-26 — Pages: faceted filters and URL export.** Added on the operator's request. The
+Pages screen had one search box and one single-select status dropdown, so "restricted pages under this
+BM" was two unrelated queries and a page-URL handoff was one copy click per row. It now carries five
+multi-select facets (status, owner, linked BM, risk, additional profiles — OR within a facet, AND
+across them, counts scoped by the other facets) plus row selection with a `Copy URLs` / `View URLs`
+bar that emits one scheme-normalized URL per line. Client-side only: the route loader already returns
+every page, BM and profile, so no server fn and no query params were added. Match rules and the URL
+export live in `src/lib/infra-page-filters.ts` with tests; `FilterMenu` is reusable by the Pixels, BM
+and Ad Account screens, which are not wired to it yet. Design:
+`docs/superpowers/specs/2026-08-26-infra-pages-filters-design.md`. Branch
+`feat/infra-pages-improvements`.
+
 ---
 
 ## 5. Candidate tracks

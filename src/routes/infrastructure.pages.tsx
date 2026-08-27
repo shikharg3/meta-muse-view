@@ -1,10 +1,21 @@
 import { useMemo, useState } from "react";
 import { createFileRoute, redirect, useRouter } from "@tanstack/react-router";
-import { Check, Copy, ExternalLink, Pencil, Search, ShieldCheck, Trash2 } from "lucide-react";
+import {
+  Check,
+  Copy,
+  ExternalLink,
+  Link2,
+  Pencil,
+  Search,
+  ShieldCheck,
+  Trash2,
+  X,
+} from "lucide-react";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { PagePendingSkeleton } from "@/components/dashboard/TableSkeleton";
 import { StatusPill } from "@/components/dashboard/StatusPill";
 import { useSort, SortHeader } from "@/components/dashboard/SortableTable";
+import { FilterMenu } from "@/components/infra/FilterMenu";
 import { LinkChips, type LinkOption } from "@/components/infra/LinkChips";
 import { RiskBadge } from "@/components/infra/RiskBadge";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
@@ -22,14 +33,18 @@ import {
   verifyInfraPage,
 } from "@/lib/api/infrastructure";
 import { fmtRelTime } from "@/lib/format";
-import { pageRisk, usableBm, usableProfile } from "@/lib/infra-risk";
 import {
-  INFRA_STATUS_LABEL,
-  PAGE_STATUSES,
-  isBmStatus,
-  isPageStatus,
-  type ProfileStatus,
-} from "@/lib/infra-status";
+  FACET_KEYS,
+  FACET_LABEL,
+  NO_FACETS,
+  decoratePages,
+  facetOptions,
+  filterByFacets,
+  pageUrlExport,
+  type Facets,
+} from "@/lib/infra-page-filters";
+import { RISK_ORDER, usableBm, usableProfile } from "@/lib/infra-risk";
+import { INFRA_STATUS_LABEL, PAGE_STATUSES, isBmStatus, isPageStatus } from "@/lib/infra-status";
 import { cn } from "@/lib/utils";
 import type { PageView } from "@/server/fns/infra/pages";
 
@@ -74,12 +89,17 @@ const FIELD =
 const LABEL = "text-xs font-medium text-muted-foreground";
 const ICON_BUTTON =
   "inline-flex size-7 items-center justify-center rounded-md border border-border text-muted-foreground transition-colors hover:bg-accent hover:text-foreground";
+const BAR_BUTTON =
+  "inline-flex h-8 items-center gap-1.5 rounded-md border border-border bg-background px-2.5 text-xs font-medium hover:bg-accent disabled:opacity-40 disabled:hover:bg-background";
 
 function Pages() {
   const { pages, bms, profiles } = Route.useLoaderData();
   const router = useRouter();
   const [q, setQ] = useState("");
-  const [statusFilter, setStatusFilter] = useState("all");
+  const [facets, setFacets] = useState<Facets>(NO_FACETS);
+  const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(() => new Set<string>());
+  const [urlsOpen, setUrlsOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
   const [form, setForm] = useState<PageForm | null>(null);
   const [formMsg, setFormMsg] = useState<string | null>(null);
@@ -116,19 +136,25 @@ function Pages() {
     [profiles, editingOwnerId],
   );
 
+  // Risk, owner resolution and the outbound href are attached once, here, rather than recomputed in a
+  // table cell — that is what lets the Risk facet and the Risk badge be the same value.
+  const rows = useMemo(
+    () => decoratePages(pages, (id) => profileById.get(id)),
+    [pages, profileById],
+  );
+
   // Multi-hop: a page matches on its own fields, on its owner or additional profiles, or on any
   // linked BM — searching "Main BM" must surface the pages that BM can administer.
-  const filtered = useMemo(() => {
+  const searched = useMemo(() => {
     const needle = q.trim().toLowerCase();
-    return pages.filter((r) => {
-      if (statusFilter !== "all" && r.status !== statusFilter) return false;
-      if (!needle) return true;
+    if (!needle) return rows;
+    return rows.filter((r) => {
       const haystack = [
         r.name,
         r.pageId,
         r.pageUrl,
         r.notes,
-        profileById.get(r.ownerProfileId)?.name,
+        r.ownerName,
         ...r.profileIds.map((id) => profileById.get(id)?.name),
         ...r.bmIds.flatMap((id) => {
           const bm = bmById.get(id);
@@ -139,7 +165,22 @@ function Pages() {
         .toLowerCase();
       return haystack.includes(needle);
     });
-  }, [pages, q, statusFilter, profileById, bmById]);
+  }, [rows, q, profileById, bmById]);
+
+  const facetNames = useMemo(
+    () => ({
+      profile: (id: string) => profileById.get(id)?.name,
+      bm: (id: string) => bmById.get(id)?.name,
+    }),
+    [profileById, bmById],
+  );
+
+  const options = useMemo(
+    () => facetOptions(searched, facets, facetNames),
+    [searched, facets, facetNames],
+  );
+  const filtered = useMemo(() => filterByFacets(searched, facets), [searched, facets]);
+  const activeFacets = FACET_KEYS.reduce((n, k) => n + facets[k].length, 0);
 
   const { sorted, key, dir, toggle } = useSort(
     filtered,
@@ -147,10 +188,56 @@ function Pages() {
       name: (r) => r.name,
       status: (r) => r.status,
       bms: (r) => r.bmIds.length,
+      // Inverted so the first click puts critical on top, where a risk column is worth reading.
+      risk: (r) => 3 - RISK_ORDER[r.risk.level],
     },
     "name",
     "asc",
   );
+
+  // Selection is keyed by id and survives filter edits — filter, select, refilter, select more is the
+  // reason multi-select exists. Deriving from `rows` also drops ids a delete has since removed, so a
+  // stale entry can never inflate the count or the export.
+  const selectedRows = useMemo(
+    () => rows.filter((r) => selectedIds.has(r.id)),
+    [rows, selectedIds],
+  );
+  const exported = useMemo(() => pageUrlExport(selectedRows), [selectedRows]);
+  const allShownSelected = sorted.length > 0 && sorted.every((r) => selectedIds.has(r.id));
+  const someShownSelected = !allShownSelected && sorted.some((r) => selectedIds.has(r.id));
+
+  const toggleRow = (id: string) =>
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(id)) next.add(id);
+      return next;
+    });
+
+  /** Only the rows on screen, never the ones a filter is hiding. */
+  const toggleShown = () =>
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      for (const r of sorted) {
+        if (allShownSelected) next.delete(r.id);
+        else next.add(r.id);
+      }
+      return next;
+    });
+
+  /**
+   * A denied or unavailable clipboard must not fail silently — an operator handing off a URL list
+   * would paste whatever was there before. The dialog's textarea is the manual path, so open it.
+   */
+  const copyUrls = async () => {
+    try {
+      await navigator.clipboard.writeText(exported.text);
+    } catch {
+      setUrlsOpen(true);
+      return;
+    }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
 
   const changeStatus = async (row: PageView, status: string) => {
     setMsg(null);
@@ -229,29 +316,60 @@ function Pages() {
         </button>
       </PageHeader>
 
-      <div className="flex flex-wrap items-center gap-2">
-        <div className="relative flex-1 min-w-[220px] max-w-sm">
-          <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
-          <input
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="Search pages, owners, BMs…"
-            className="w-full h-9 rounded-md border border-border bg-card pl-8 pr-3 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
-          />
-        </div>
-        <select
-          value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value)}
-          className="h-9 rounded-md border border-border bg-card px-2.5 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
-          aria-label="Filter by status"
-        >
-          <option value="all">All statuses</option>
-          {PAGE_STATUSES.map((s) => (
-            <option key={s} value={s}>
-              {s}
-            </option>
+      <div className="space-y-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="relative flex-1 min-w-[220px] max-w-sm">
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+            <input
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="Search pages, owners, BMs…"
+              className="w-full h-9 rounded-md border border-border bg-card pl-8 pr-3 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
+            />
+          </div>
+          {FACET_KEYS.map((k) => (
+            <FilterMenu
+              key={k}
+              label={FACET_LABEL[k]}
+              options={options[k]}
+              selected={facets[k]}
+              onChange={(next) => setFacets((f) => ({ ...f, [k]: next }))}
+            />
           ))}
-        </select>
+        </div>
+
+        {activeFacets > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5">
+            {FACET_KEYS.flatMap((k) =>
+              facets[k].map((value) => (
+                <span
+                  key={`${k}:${value}`}
+                  className="inline-flex items-center gap-1 rounded-md border border-border bg-muted/40 px-1.5 py-0.5 text-[11px]"
+                >
+                  <span className="text-muted-foreground">{FACET_LABEL[k]}:</span>
+                  {options[k].find((o) => o.value === value)?.label ?? value}
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setFacets((f) => ({ ...f, [k]: f[k].filter((v) => v !== value) }))
+                    }
+                    className="text-muted-foreground hover:text-destructive"
+                    aria-label={`Remove ${FACET_LABEL[k]} filter`}
+                  >
+                    <X className="size-3" />
+                  </button>
+                </span>
+              )),
+            )}
+            <button
+              type="button"
+              onClick={() => setFacets(NO_FACETS)}
+              className="text-[11px] text-muted-foreground underline hover:text-foreground"
+            >
+              Clear all
+            </button>
+          </div>
+        )}
       </div>
 
       {msg && <p className="text-xs text-destructive">{msg}</p>}
@@ -261,6 +379,19 @@ function Pages() {
           <table className="w-full text-sm">
             <thead>
               <tr className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider bg-muted/30">
+                <th className="w-9 px-3 py-2.5">
+                  <input
+                    type="checkbox"
+                    checked={allShownSelected}
+                    disabled={sorted.length === 0}
+                    ref={(el) => {
+                      if (el) el.indeterminate = someShownSelected;
+                    }}
+                    onChange={toggleShown}
+                    className="size-3.5 accent-primary disabled:opacity-40"
+                    aria-label={allShownSelected ? "Deselect shown pages" : "Select shown pages"}
+                  />
+                </th>
                 <SortHeader label="Name" sortKey="name" active={key} dir={dir} onSort={toggle} />
                 <th className="text-left px-3 py-2.5">Identifier</th>
                 <SortHeader
@@ -279,31 +410,41 @@ function Pages() {
                   onSort={toggle}
                 />
                 <th className="text-left px-3 py-2.5">Additional Profiles</th>
-                <th className="text-left px-3 py-2.5">Risk</th>
+                <SortHeader label="Risk" sortKey="risk" active={key} dir={dir} onSort={toggle} />
                 <th className="text-right px-5 py-2.5">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
               {sorted.map((r) => {
-                const owner = profileById.get(r.ownerProfileId);
-                // A missing owner is treated as the worst case, never ignored.
-                const ownerStatuses = owner ? owner.statuses : (["suspended"] as ProfileStatus[]);
-                const ownerUsable = usableProfile(ownerStatuses);
-                // Stored as typed; the anchor needs a scheme to leave the app.
-                const href = /^https?:\/\//i.test(r.pageUrl) ? r.pageUrl : `https://${r.pageUrl}`;
+                const selected = selectedIds.has(r.id);
                 return (
-                  <tr key={r.id} className="hover:bg-accent/40 transition-colors">
-                    <td className="px-5 py-3">
+                  <tr
+                    key={r.id}
+                    className={cn(
+                      "transition-colors",
+                      selected ? "bg-primary/5" : "hover:bg-accent/40",
+                    )}
+                  >
+                    <td className="px-3 py-3">
+                      <input
+                        type="checkbox"
+                        checked={selected}
+                        onChange={() => toggleRow(r.id)}
+                        className="size-3.5 accent-primary"
+                        aria-label={`Select ${r.name}`}
+                      />
+                    </td>
+                    <td className="px-3 py-3">
                       <div className="font-medium">{r.name}</div>
                       <div className="text-[11px] text-muted-foreground">
                         {r.verifiedAt ? `verified ${fmtRelTime(r.verifiedAt)}` : "never verified"}
                       </div>
                     </td>
                     <td className="px-3 py-3">
-                      {r.pageUrl ? (
+                      {r.href ? (
                         <div className="flex items-center gap-1.5">
                           <a
-                            href={href}
+                            href={r.href}
                             target="_blank"
                             rel="noreferrer"
                             className="hover:text-primary inline-flex max-w-[220px] items-center gap-1 text-xs"
@@ -311,7 +452,7 @@ function Pages() {
                             <span className="truncate">{r.pageUrl}</span>
                             <ExternalLink className="size-3 shrink-0 opacity-60" />
                           </a>
-                          <CopyButton value={r.pageUrl} />
+                          <CopyButton value={r.href} />
                         </div>
                       ) : r.pageId ? (
                         <div className="flex items-center gap-1.5">
@@ -343,8 +484,8 @@ function Pages() {
                       </div>
                     </td>
                     <td className="px-3 py-3">
-                      <div className="text-xs">{owner?.name ?? "—"}</div>
-                      {!ownerUsable && (
+                      <div className="text-xs">{r.ownerName ?? "—"}</div>
+                      {!r.ownerUsable && (
                         <div className="text-[11px] text-destructive">no active owner</div>
                       )}
                     </td>
@@ -377,14 +518,7 @@ function Pages() {
                       />
                     </td>
                     <td className="px-3 py-3">
-                      <RiskBadge
-                        risk={pageRisk({
-                          status: isPageStatus(r.status) ? r.status : "restricted",
-                          ownerStatuses,
-                          bmCount: r.bmIds.length,
-                          profileCount: r.profileIds.length,
-                        })}
-                      />
+                      <RiskBadge risk={r.risk} />
                     </td>
                     <td className="px-5 py-3">
                       <div className="flex items-center justify-end gap-1">
@@ -426,7 +560,7 @@ function Pages() {
               })}
               {sorted.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="px-5 py-12 text-center text-sm text-muted-foreground">
+                  <td colSpan={9} className="px-5 py-12 text-center text-sm text-muted-foreground">
                     No pages match your filters.
                   </td>
                 </tr>
@@ -436,8 +570,91 @@ function Pages() {
         </div>
         <div className="px-5 py-3 border-t border-border text-[11px] text-muted-foreground font-mono">
           {sorted.length} of {pages.length} pages
+          {selectedRows.length > 0 && ` · ${selectedRows.length} selected`}
         </div>
       </div>
+
+      {/*
+       * `fixed`, not `sticky`: the layout's scroll ancestor is `<main class="flex-1 overflow-x-hidden">`
+       * whose `overflow-y` computes to `auto` while its height grows with the content, so it is the
+       * sticky scrollport but never actually scrolls — a sticky bar there resolves to its flow
+       * position and sits below the fold. Measured: bar top 5862px in a 950px viewport.
+       */}
+      {selectedRows.length > 0 && (
+        <div className="fixed bottom-6 left-1/2 z-30 flex -translate-x-1/2 flex-wrap items-center gap-3 rounded-xl border border-border bg-card/95 px-4 py-2.5 shadow-lg backdrop-blur">
+          <span className="text-xs font-medium">
+            {selectedRows.length} page{selectedRows.length === 1 ? "" : "s"} selected
+          </span>
+          {exported.missing > 0 && (
+            <span className="text-[11px] text-warning">{exported.missing} without a URL</span>
+          )}
+          <div className="ml-auto flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void copyUrls()}
+              disabled={exported.urls.length === 0}
+              className={BAR_BUTTON}
+            >
+              {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+              Copy {exported.urls.length} URL{exported.urls.length === 1 ? "" : "s"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setUrlsOpen(true)}
+              disabled={exported.urls.length === 0}
+              className={BAR_BUTTON}
+            >
+              <Link2 className="size-3.5" />
+              View URLs
+            </button>
+            <button
+              type="button"
+              onClick={() => setSelectedIds(new Set())}
+              className="text-[11px] text-muted-foreground underline hover:text-foreground"
+            >
+              Clear
+            </button>
+          </div>
+        </div>
+      )}
+
+      <Dialog open={urlsOpen} onOpenChange={setUrlsOpen}>
+        <DialogContent className="max-w-lg">
+          <DialogTitle>
+            {exported.urls.length} page URL{exported.urls.length === 1 ? "" : "s"}
+          </DialogTitle>
+          <textarea
+            readOnly
+            value={exported.text}
+            rows={Math.min(14, Math.max(3, exported.urls.length))}
+            onFocus={(e) => e.currentTarget.select()}
+            className="w-full rounded-md border border-border bg-background px-3 py-2 font-mono text-xs focus:outline-none focus:ring-1 focus:ring-ring"
+          />
+          {exported.missing > 0 && (
+            <p className="text-[11px] text-warning">
+              {exported.missing} selected page{exported.missing === 1 ? " has" : "s have"} no URL
+              and
+              {exported.missing === 1 ? " is" : " are"} not listed.
+            </p>
+          )}
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => setUrlsOpen(false)}
+              className="h-9 px-3 rounded-md border border-border bg-card text-xs font-medium hover:bg-accent"
+            >
+              Close
+            </button>
+            <button
+              type="button"
+              onClick={() => void copyUrls()}
+              className="h-9 px-3 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90"
+            >
+              {copied ? "Copied" : "Copy all"}
+            </button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <Dialog
         open={form !== null}
