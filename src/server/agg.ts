@@ -76,6 +76,8 @@ type RawActions = { action_type: string; value: string }[] | null | undefined;
 // counts. Each family lists members in preference order (Meta's unified omni_*
 // first); we take the FIRST present member so each conversion is counted once.
 const EVENT_FAMILIES: { label: string; types: string[] }[] = [
+  // Trailing members were observed in production but were previously absent here, so a row carrying
+  // only one of them counted zero. Order still matters: unified omni_* first, bare name next.
   {
     label: "Purchases",
     types: [
@@ -83,15 +85,29 @@ const EVENT_FAMILIES: { label: string; types: string[] }[] = [
       "purchase",
       "offsite_conversion.fb_pixel_purchase",
       "onsite_web_purchase",
+      "onsite_web_app_purchase",
+      "web_in_store_purchase",
+      "web_app_in_store_purchase",
+      "offsite_purchase_add_20_s_calls",
     ],
   },
-  { label: "Leads", types: ["lead", "onsite_web_lead", "offsite_conversion.fb_pixel_lead"] },
+  {
+    label: "Leads",
+    types: [
+      "lead",
+      "onsite_web_lead",
+      "offsite_conversion.fb_pixel_lead",
+      "offsite_lead_add_20_s_calls",
+    ],
+  },
   {
     label: "Registrations",
     types: [
       "omni_complete_registration",
       "complete_registration",
       "offsite_conversion.fb_pixel_complete_registration",
+      "offsite_complete_registration_add_meta_leads",
+      "offsite_complete_registration_add_20_s_calls",
     ],
   },
   {
@@ -104,11 +120,19 @@ const EVENT_FAMILIES: { label: string; types: string[] }[] = [
       "omni_initiated_checkout",
       "initiate_checkout",
       "offsite_conversion.fb_pixel_initiate_checkout",
+      "onsite_web_initiate_checkout",
+      "offsite_initiate_checkout_add_20_s_calls",
     ],
   },
   {
     label: "View content",
-    types: ["omni_view_content", "view_content", "offsite_conversion.fb_pixel_view_content"],
+    types: [
+      "omni_view_content",
+      "view_content",
+      "offsite_conversion.fb_pixel_view_content",
+      "offsite_content_view_add_meta_leads",
+      "offsite_content_view_add_20_s_calls",
+    ],
   },
   { label: "Add payment info", types: ["omni_add_payment_info", "add_payment_info"] },
   { label: "Subscriptions", types: ["omni_subscribe", "subscribe"] },

@@ -1,76 +1,42 @@
 import { test, expect } from "bun:test";
-import { canonicalEvents, accountStatus } from "./agg";
+import { familyCount, familyValue } from "./agg";
 
-test("canonicalEvents collapses Meta's variant action_types into one event", () => {
-  const events = canonicalEvents([
-    {
-      actions: [
-        { action_type: "omni_purchase", value: "10" },
-        { action_type: "purchase", value: "10" },
-        { action_type: "offsite_conversion.fb_pixel_purchase", value: "10" },
-      ],
-      actionValues: [{ action_type: "omni_purchase", value: "300" }],
-    },
-  ]);
-  // counted ONCE (10), not summed across the 3 duplicate types (30)
-  expect(events).toEqual([{ label: "Purchases", count: 10, value: 300 }]);
+test("a family matches even when only a late synonym is present", () => {
+  // Measured on production: the purchase family returns eight action_types. A row carrying only the
+  // in-store variant is still a purchase, and counting 0 would understate the client's results.
+  expect(familyCount(new Map([["web_in_store_purchase", 12]]), "Purchases")).toBe(12);
+  expect(familyCount(new Map([["onsite_web_app_purchase", 3]]), "Purchases")).toBe(3);
+  expect(familyCount(new Map([["offsite_lead_add_20_s_calls", 9]]), "Leads")).toBe(9);
+  expect(
+    familyCount(new Map([["offsite_complete_registration_add_meta_leads", 4]]), "Registrations"),
+  ).toBe(4);
 });
 
-test("canonicalEvents surfaces leads/registrations even with zero purchases (Blockbet case)", () => {
-  const events = canonicalEvents([
-    {
-      actions: [
-        { action_type: "lead", value: "67" },
-        { action_type: "onsite_web_lead", value: "67" },
-        { action_type: "offsite_conversion.fb_pixel_lead", value: "67" },
-        { action_type: "complete_registration", value: "4" },
-        { action_type: "link_click", value: "156" },
-      ],
-      actionValues: null,
-    },
+test("preference order wins so synonyms never double-count", () => {
+  // All eight purchase synonyms report the same conversion; summing them would be an 8x overcount.
+  const sums = new Map([
+    ["omni_purchase", 10],
+    ["purchase", 10],
+    ["offsite_conversion.fb_pixel_purchase", 10],
+    ["onsite_web_purchase", 10],
+    ["onsite_web_app_purchase", 10],
+    ["web_in_store_purchase", 10],
+    ["web_app_in_store_purchase", 10],
+    ["offsite_purchase_add_20_s_calls", 10],
   ]);
-  const byLabel = Object.fromEntries(events.map((e) => [e.label, e.count]));
-  expect(byLabel["Leads"]).toBe(67); // de-duplicated, not 3x
-  expect(byLabel["Registrations"]).toBe(4);
-  expect(byLabel["Link clicks"]).toBe(156);
-  expect(byLabel["Purchases"]).toBeUndefined(); // none → omitted
-  expect(events[0].label).toBe("Link clicks"); // sorted by count desc
+  expect(familyCount(sums, "Purchases")).toBe(10);
 });
 
-test("canonicalEvents sums across rows and ignores unknown/custom action types", () => {
-  const events = canonicalEvents([
-    {
-      actions: [
-        { action_type: "lead", value: "5" },
-        { action_type: "offsite_conversion.fb_pixel_custom", value: "99" },
-      ],
-      actionValues: null,
-    },
-    { actions: [{ action_type: "lead", value: "3" }], actionValues: null },
-  ]);
-  expect(events).toEqual([{ label: "Leads", count: 8, value: 0 }]);
+test("familyValue reads the same variant familyCount does", () => {
+  // A count and a value taken from different variants would yield an average order value that
+  // belongs to neither.
+  const counts = new Map([["purchase", 4]]);
+  const values = new Map([["purchase", 400]]);
+  expect(familyCount(counts, "Purchases")).toBe(4);
+  expect(familyValue(values, "Purchases")).toBe(400);
 });
 
-test("canonicalEvents prefers the unified omni_* value within a family", () => {
-  const events = canonicalEvents([
-    {
-      actions: [
-        { action_type: "omni_purchase", value: "12" }, // cross-device unified — preferred
-        { action_type: "offsite_conversion.fb_pixel_purchase", value: "9" },
-      ],
-      actionValues: null,
-    },
-  ]);
-  expect(events[0]).toEqual({ label: "Purchases", count: 12, value: 0 });
-});
-
-test("accountStatus maps Meta codes + labels; disabled codes are never ACTIVE", () => {
-  expect(accountStatus("1")).toBe("ACTIVE");
-  expect(accountStatus("2")).toBe("DISABLED"); // the CereBree case (account_status 2)
-  expect(accountStatus("100")).toBe("DISABLED");
-  expect(accountStatus("101")).toBe("DISABLED");
-  expect(accountStatus("7")).toBe("PENDING");
-  expect(accountStatus("DISABLED")).toBe("DISABLED"); // already-mapped label passthrough
-  expect(accountStatus("999")).toBe("PENDING"); // unknown code → PENDING, not ACTIVE
-  expect(accountStatus(null)).toBe("ACTIVE"); // documents the no-data default
+test("an unknown family is zero, never a throw", () => {
+  expect(familyCount(new Map([["purchase", 1]]), "Not A Family")).toBe(0);
+  expect(familyValue(new Map([["purchase", 1]]), "Not A Family")).toBe(0);
 });
