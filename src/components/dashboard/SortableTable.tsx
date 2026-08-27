@@ -28,8 +28,9 @@ export function useSort<T>(
       setDir((d) => (d === "asc" ? "desc" : "asc"));
     } else {
       setKey(k);
-      // Names read better ascending; metrics read better descending.
-      const sample = accessors[k]?.(rows[0]);
+      // Names read better ascending; metrics read better descending. Sampling needs a row: with a
+      // filter matching nothing, `rows[0]` is undefined and an accessor reading a field would throw.
+      const sample = rows.length > 0 ? accessors[k]?.(rows[0]) : undefined;
       setDir(typeof sample === "string" ? "asc" : "desc");
     }
   };
