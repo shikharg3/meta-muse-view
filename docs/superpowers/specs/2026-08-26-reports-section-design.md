@@ -134,7 +134,7 @@ sorts in SQL.
 2. The CSV/PDF buttons call `markReportExported({ runId, format })`, which stamps `exported_at` (if
    unset) and appends to `exported_formats`.
 3. History lists runs where `exported_at IS NOT NULL`.
-4. Drafts are pruned by the sync worker's daily-gated block — `src/sync/worker.ts:139` already runs
+4. Drafts are pruned by the sync worker's daily-gated block — `src/sync/worker.ts:155` already runs
    once-per-calendar-day work off `today() !== lastFullDay`. Retention: **7 days**.
 
 The server never trusts client-supplied numbers: the archived payload is the server's own
@@ -353,11 +353,11 @@ instead of quietly emitting an unusable document.
 
 ## Known issue left open
 
-The hourly refresh requests only `CORE_METRICS` (12 fields, `cycle.ts:144`) and the upsert at
-`insights.ts:170` does `set: { ...values, syncedAt }`, so promoted columns absent from that pass are
+The hourly refresh requests only `CORE_METRICS` (12 fields, `cycle.ts:145`) and the upsert at
+`insights.ts:172` does `set: { ...values, syncedAt }`, so promoted columns absent from that pass are
 written NULL over good values. Measured effect: `quality_ranking` non-null in **0 of 513,253**
 ad-level rows; `raw` p95 82 keys inside the 28-day refresh window against 96 outside. The guard for
-exactly this hazard exists fifteen lines earlier at `insights.ts:152-159` for the attribution-window
+exactly this hazard exists eighteen lines earlier at `insights.ts:154-159` for the attribution-window
 columns and was never applied to the metric columns.
 
 This is sync-side, out of scope here, and worth its own change. Until then the availability filter
