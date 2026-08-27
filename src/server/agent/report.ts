@@ -8,6 +8,7 @@ import type { InsightRow } from "@/meta/types";
 import { getClientRow, effectiveAccountIds } from "@/sync/jobs/clients";
 import { DEFAULT_REPORT_COLUMN_KEYS } from "@/lib/report-options";
 import { metric, type ReportColumnKind } from "@/lib/report-catalog";
+import { resolvePreset } from "@/lib/date-presets";
 import { ownedCampaignIds } from "@/server/fns/campaign-attribution";
 
 // Every dimension a report can break down by. Entity dims read insights_daily at that level;
@@ -789,8 +790,14 @@ export async function runReport(args: ReportArgs): Promise<ReportPayload | { err
   return payload;
 }
 
-/** Resolve a `days` count or explicit since/until into a date range. */
+/**
+ * Resolve a preset key, a `days` count, or explicit since/until into a date range.
+ *
+ * Precedence is explicit dates, then preset, then days. A stored template keeps a preset key rather
+ * than resolved dates so that "last month" still means last month a year later.
+ */
 export function resolveRange(input: {
+  preset?: unknown;
   days?: unknown;
   since?: unknown;
   until?: unknown;
@@ -804,6 +811,10 @@ export function resolveRange(input: {
   ) {
     return { since: input.since, until: input.until };
   }
+  if (typeof input.preset === "string" && input.preset) {
+    const resolved = resolvePreset(input.preset, new Date().toISOString().slice(0, 10));
+    if (resolved) return resolved;
+  }
   const days = Math.round(Number(input.days));
   // Clamp to the insights retention target (≈37 months) — history is synced to account creation.
   if (Number.isFinite(days) && days > 0) return trailingRange(Math.min(days, 1125));
@@ -812,6 +823,8 @@ export function resolveRange(input: {
 
 export interface ClientReportInput {
   clientId: string;
+  /** A DATE_PRESETS key. Preferred over `days` so a saved template stays meaningful over time. */
+  preset?: string;
   days?: number;
   since?: string;
   until?: string;

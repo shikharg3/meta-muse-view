@@ -466,3 +466,19 @@ test("promoted columns win over the raw blob on a key collision", () => {
   // …while a field with no promoted column survives from raw.
   expect((merged as Record<string, unknown>).unique_clicks).toBe("7");
 });
+
+test("resolveRange accepts a preset, with explicit dates taking precedence", () => {
+  const preset = resolveRange({ preset: "yesterday" });
+  const today = new Date().toISOString().slice(0, 10);
+  expect(preset).not.toBeNull();
+  expect(preset!.since).toBe(preset!.until);
+  expect(preset!.until < today).toBe(true);
+
+  // Explicit dates win over a preset, and an unknown preset falls through to `days`.
+  expect(resolveRange({ preset: "last_month", since: "2026-01-01", until: "2026-01-31" })).toEqual({
+    since: "2026-01-01",
+    until: "2026-01-31",
+  });
+  expect(resolveRange({ preset: "nonsense", days: 7 })).not.toBeNull();
+  expect(resolveRange({ preset: "nonsense" })).toBeNull();
+});
