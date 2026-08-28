@@ -8,6 +8,7 @@ import {
   flushPendingComments,
   sendDailyLists,
 } from "./jobs/checkin";
+import { pruneReportDrafts } from "@/server/fns/reports";
 import { atOrAfter, berlinNow } from "@/lib/berlin-time";
 import { FIRST_PROMPT_AT, REMINDER_AT, FINAL_NOTICE_AT } from "@/lib/checkin";
 
@@ -157,7 +158,18 @@ if (process.argv.includes("--once")) {
         console.error("[sync] refresh failed:", e);
         return true; // it started and failed; treat the slot as spent
       });
-      if (full && ran) lastFullDay = today();
+      if (full && ran) {
+        lastFullDay = today();
+        // Piggy-backs on the daily gate rather than running hourly: an unexported report run is a
+        // draft nobody kept, and a week is long enough to finish an interrupted export while short
+        // enough that abandoned frozen payloads never dominate the table. `.catch` per the
+        // neighbouring jobs — a prune failure must not cost the loop its `lastFullDay` claim.
+        const pruned = await pruneReportDrafts().catch((e) => {
+          console.error("[sync] report draft prune failed:", e);
+          return 0;
+        });
+        if (pruned) console.log(`[sync] pruned ${pruned} unexported report draft(s)`);
+      }
       // The backfill is skipped with it. If the cooldown just decided it is too soon to talk to
       // Meta, that applies to history too — otherwise a run of deploys still grants each restart a
       // fresh hour-long backfill budget, which is most of the traffic the refresh cooldown saves.

@@ -715,3 +715,51 @@ export const telegramState = pgTable("telegram_state", {
   updateOffset: bigint("update_offset", { mode: "number" }),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+// Saved report recipes. `client_id` NULL = a generic shape whose client is chosen at run time;
+// set = a one-click client-bound template. One nullable FK delivers both without override rules.
+export const reportTemplates = pgTable(
+  "report_templates",
+  {
+    id: text("id").primaryKey(), // crypto.randomUUID()
+    name: text("name").notNull(),
+    clientId: text("client_id").references(() => clients.id, { onDelete: "cascade" }),
+    columns: jsonb("columns").notNull(), // string[] catalog keys, IN USER ORDER
+    breakdown: text("breakdown").notNull().default("none"),
+    splitByDay: boolean("split_by_day").notNull().default(false),
+    markup: doublePrecision("markup"),
+    rangePreset: text("range_preset"), // a DATE_PRESETS key; null = ask at run time
+    campaignIds: jsonb("campaign_ids"), // only legal when clientId is set
+    createdBy: text("created_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("report_templates_client_idx").on(t.clientId)],
+);
+
+// One row per generated report. `exported_at` NULL = draft; the first export freezes the payload as
+// the snapshot of what the client actually received. RESTRICT on client_id because clients are
+// soft-deleted via removed_at and history must outlive a client leaving the Notion board.
+export const reportRuns = pgTable(
+  "report_runs",
+  {
+    id: text("id").primaryKey(),
+    templateId: text("template_id").references(() => reportTemplates.id, { onDelete: "set null" }),
+    clientId: text("client_id")
+      .notNull()
+      .references(() => clients.id, { onDelete: "restrict" }),
+    params: jsonb("params").notNull(), // the exact ClientReportInput used
+    payload: jsonb("payload").notNull(), // the frozen ReportPayload
+    since: date("since").notNull(),
+    until: date("until").notNull(),
+    rowCount: integer("row_count").notNull(),
+    ranBy: text("ran_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    exportedAt: timestamp("exported_at", { withTimezone: true }),
+    exportedFormats: jsonb("exported_formats"), // string[]: "csv" | "pdf"
+  },
+  (t) => [
+    index("report_runs_exported_idx").on(t.exportedAt, t.createdAt),
+    index("report_runs_client_idx").on(t.clientId, t.exportedAt),
+  ],
+);

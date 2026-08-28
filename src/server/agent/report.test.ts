@@ -8,7 +8,6 @@ import {
 } from "./report";
 import type { ReportRowSource } from "./report";
 import type { InsightRow } from "@/meta/types";
-import { REPORT_COLUMNS } from "@/lib/report-options";
 import { REPORT_METRICS } from "@/lib/report-catalog";
 
 const rowSource =
@@ -327,11 +326,38 @@ const goldenRows: InsightRow[] = [
   }),
 ];
 
+// The characterization expectations below were captured against the old 22-column picker set, so the
+// spec pins those keys in that order instead of tracking whatever the catalog projection now offers.
+const LEGACY_22 = [
+  "spend",
+  "impressions",
+  "reach",
+  "clicks",
+  "link_clicks",
+  "ctr",
+  "cpc",
+  "cpm",
+  "frequency",
+  "results",
+  "cost_per_result",
+  "conversions",
+  "conversion_value",
+  "roas",
+  "registrations",
+  "leads",
+  "initiate_checkout",
+  "purchases",
+  "landing_page_views",
+  "cost_per_registration",
+  "cost_per_lead",
+  "cost_per_purchase",
+];
+
 const goldenSpec = (o: { byDay: boolean; markup?: number }) => ({
   accountIds: ["act_1"],
   since: "2026-01-01",
   until: "2026-01-02",
-  columns: REPORT_COLUMNS.map((c) => c.key),
+  columns: LEGACY_22,
   breakdown: "none" as const,
   byDay: o.byDay,
   objectiveByCampaign: { c1: "OUTCOME_SALES" },

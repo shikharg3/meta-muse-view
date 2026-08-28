@@ -45,7 +45,9 @@ test("an unknown family is zero, never a throw", () => {
 test("catalog family labels match EVENT_FAMILIES exactly", () => {
   // The client-safe catalog cannot import this module, so it restates the labels. If they drift, an
   // event column silently resolves to 0 — a wrong number, not an error.
-  expect([...EVENT_FAMILY_LABELS]).toEqual(eventFamilyLabels());
+  // Received first: EVENT_FAMILY_LABELS is `as const`, so passing it as the *expected* value narrows
+  // toEqual to its literal union and rejects the plain string[] the accessor returns.
+  expect(eventFamilyLabels()).toEqual([...EVENT_FAMILY_LABELS]);
 });
 
 test("every family exposes its member action types", () => {

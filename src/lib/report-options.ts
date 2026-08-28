@@ -1,10 +1,10 @@
 // Client-safe report breakdown + range vocabulary (no DB/secret imports), shared by the Settings and
 // chat UI with the server report engine.
 //
-// Column labels and kinds are NOT defined here any more: they live in report-catalog.ts, and this
-// module only projects the subset the current picker shows. Two hand-maintained lists that had to
-// agree is precisely the arrangement that crashed report generation when they did not.
-import { LEGACY_UI_COLUMN_KEYS, metric, type ReportColumnKind } from "./report-catalog";
+// Column labels, kinds and groups are NOT defined here any more: they live in report-catalog.ts, and
+// this module projects all of them for the picker. Two hand-maintained lists that had to agree is
+// precisely the arrangement that crashed report generation when they did not.
+import { REPORT_METRICS, type MetricGroup, type ReportColumnKind } from "./report-catalog";
 
 export type { ReportColumnKind };
 
@@ -12,13 +12,16 @@ export interface ReportColumnDef {
   key: string;
   label: string;
   kind: ReportColumnKind;
+  group: MetricGroup;
 }
 
-/** Catalog projection for the current chip-cloud picker. See LEGACY_UI_COLUMN_KEYS. */
-export const REPORT_COLUMNS: ReportColumnDef[] = LEGACY_UI_COLUMN_KEYS.map((k) => {
-  const m = metric(k)!;
-  return { key: m.key, label: m.label, kind: m.kind };
-});
+/** Every catalog metric, projected for the picker. */
+export const REPORT_COLUMNS: ReportColumnDef[] = REPORT_METRICS.map((m) => ({
+  key: m.key,
+  label: m.label,
+  kind: m.kind,
+  group: m.group,
+}));
 
 export const DEFAULT_REPORT_COLUMN_KEYS = ["spend", "impressions", "ctr", "cpc", "results"];
 

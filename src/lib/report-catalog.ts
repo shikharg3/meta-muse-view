@@ -364,34 +364,3 @@ const BY_KEY: Record<string, ReportMetric> = Object.fromEntries(
 );
 
 export const metric = (key: string): ReportMetric | undefined => BY_KEY[key];
-
-/**
- * The 22 keys the current chip-cloud picker shows, in its historical display order.
- *
- * SCAFFOLDING WITH A DEFINED END: it exists only so the old picker keeps showing 22 options instead
- * of the whole catalog while the replacement picker is built. Plan 2, Task 1 deletes it.
- */
-export const LEGACY_UI_COLUMN_KEYS = [
-  "spend",
-  "impressions",
-  "reach",
-  "clicks",
-  "link_clicks",
-  "ctr",
-  "cpc",
-  "cpm",
-  "frequency",
-  "results",
-  "cost_per_result",
-  "conversions",
-  "conversion_value",
-  "roas",
-  "registrations",
-  "leads",
-  "initiate_checkout",
-  "purchases",
-  "landing_page_views",
-  "cost_per_registration",
-  "cost_per_lead",
-  "cost_per_purchase",
-];

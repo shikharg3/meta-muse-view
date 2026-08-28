@@ -2,7 +2,6 @@ import { test, expect } from "bun:test";
 import {
   REPORT_METRICS,
   metric,
-  LEGACY_UI_COLUMN_KEYS,
   GROUP_LABELS,
   EVENT_FAMILY_LABELS,
   type MetricGroup,
@@ -44,12 +43,6 @@ test("derived dependency graphs terminate", () => {
     for (const dep of m.source.deps) walk(dep, [...stack, key]);
   };
   for (const m of REPORT_METRICS) walk(m.key, []);
-});
-
-test("every legacy UI key exists in the catalog", () => {
-  for (const k of LEGACY_UI_COLUMN_KEYS) {
-    expect(metric(k), `missing legacy key ${k}`).toBeDefined();
-  }
 });
 
 test("the catalog covers the measured stored metric set", () => {
