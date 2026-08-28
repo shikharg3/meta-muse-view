@@ -1,4 +1,3 @@
-import { createServerFn } from "@tanstack/react-start";
 import { and, eq, gte, inArray, lte } from "drizzle-orm";
 
 import { db, schema } from "@/db/client";
@@ -6,6 +5,7 @@ import { EVENT_MEMBERS } from "@/server/agg";
 import { REPORT_METRICS, metric } from "@/lib/report-catalog";
 import { resolveRange } from "@/server/agent/report";
 import { getClientRow, effectiveAccountIds } from "@/sync/jobs/clients";
+import { requireAdmin } from "./auth";
 
 /** Rows scanned per availability check. The picker needs presence, not precision. */
 const SAMPLE_ROWS = 5000;
@@ -84,18 +84,29 @@ export function classifyAvailable(rows: readonly { raw: unknown; actions: unknow
   return REPORT_METRICS.filter((m) => has(m.key, new Set())).map((m) => m.key);
 }
 
-export const reportCatalogFor = createServerFn({ method: "POST" })
-  .inputValidator((d: { clientId: string; days?: number; since?: string; until?: string }) => d)
-  .handler(async ({ data }) => {
-    const row = await getClientRow(data.clientId);
-    if (!row) return { keys: [] as string[] };
-    const range = resolveRange(data);
-    if (!range) return { keys: [] as string[] };
-    return {
-      keys: await availableMetricKeys({
-        accountIds: effectiveAccountIds(row),
-        since: range.since,
-        until: range.until,
-      }),
-    };
-  });
+/**
+ * Availability for a client over a resolved window. Plain async function, not a server fn: the
+ * createServerFn wrapper lives in src/lib/api/report-catalog.ts, matching every other module here.
+ *
+ * A read, so it throws on an unauthorised caller rather than returning an error shape.
+ */
+export async function fetchReportCatalog(input: {
+  clientId: string;
+  preset?: string;
+  days?: number;
+  since?: string;
+  until?: string;
+}): Promise<{ keys: string[] }> {
+  await requireAdmin();
+  const row = await getClientRow(input.clientId);
+  if (!row) return { keys: [] };
+  const range = resolveRange(input);
+  if (!range) return { keys: [] };
+  return {
+    keys: await availableMetricKeys({
+      accountIds: effectiveAccountIds(row),
+      since: range.since,
+      until: range.until,
+    }),
+  };
+}
