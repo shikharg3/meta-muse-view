@@ -2,6 +2,7 @@ import { FileText, Download } from "lucide-react";
 import { fmtCurrency, fmtNumber, fmtPct } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { downloadBlob, downloadCsvRows } from "@/lib/download";
+import { stampReportExport } from "@/lib/api/reports";
 import type { ReportColumn, ReportPayload } from "@/server/agent/report";
 
 /** Format a raw cell value for display, per its column kind. */
@@ -66,7 +67,17 @@ async function downloadPdf(report: ReportPayload) {
   doc.save(`${report.filename}.pdf`);
 }
 
-export function ReportBlock({ report }: { report: ReportPayload }) {
+export function ReportBlock({ report, runId }: { report: ReportPayload; runId?: string }) {
+  // Fire-and-forget: a failed stamp must never block or undo a download the user already has.
+  const stamp = (format: "csv" | "pdf") => {
+    if (!runId) return;
+    void stampReportExport({ data: { runId, format } }).catch(() => {});
+  };
+  // The dimension column carries the row's identity, so it stays pinned while the metric columns
+  // scroll horizontally. Any other first column is just another metric and scrolls with the rest.
+  const stickyDim = report.columns[0]?.key === "_dim";
+  // Deliberately NO row virtualization: MAX_ROWS = 500 in src/server/agent/report.ts:520 already
+  // caps output, and 500x30 cells is unremarkable for the DOM. Do not add a windowing dependency.
   return (
     <div className="rounded-lg border border-border bg-card overflow-hidden">
       <div className="flex items-center gap-3 px-4 py-3 border-b border-border">
@@ -78,13 +89,21 @@ export function ReportBlock({ report }: { report: ReportPayload }) {
           </div>
         </div>
         <button
-          onClick={() => downloadCsv(report)}
+          onClick={() => {
+            downloadCsv(report);
+            stamp("csv");
+          }}
           className="h-8 px-3 rounded-md border border-border text-xs font-medium inline-flex items-center gap-1.5 hover:bg-accent"
         >
           <Download className="size-3.5" /> CSV
         </button>
+        {report.columns.length > 12 && (
+          <span className="text-[11px] text-muted-foreground max-w-[14rem] leading-tight">
+            PDF is unreadable beyond ~12 columns — use CSV
+          </span>
+        )}
         <button
-          onClick={() => void downloadPdf(report)}
+          onClick={() => void downloadPdf(report).then(() => stamp("pdf"))}
           className="h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-medium inline-flex items-center gap-1.5"
         >
           <Download className="size-3.5" /> PDF
@@ -96,13 +115,17 @@ export function ReportBlock({ report }: { report: ReportPayload }) {
         </div>
       )}
       <div className="max-h-[60vh] overflow-auto">
-        <table className="w-full text-xs">
+        <table className="min-w-max text-xs">
           <thead className="sticky top-0 bg-card">
             <tr className="text-left text-[10px] uppercase tracking-wider text-muted-foreground border-b border-border">
-              {report.columns.map((c) => (
+              {report.columns.map((c, ci) => (
                 <th
                   key={c.key}
-                  className={cn("px-3 py-2 font-semibold", c.kind !== "text" && "text-right")}
+                  className={cn(
+                    "px-3 py-2 font-semibold whitespace-nowrap",
+                    c.kind !== "text" && "text-right",
+                    ci === 0 && stickyDim && "sticky left-0 z-20 bg-card",
+                  )}
                 >
                   {c.label}
                 </th>
@@ -116,9 +139,10 @@ export function ReportBlock({ report }: { report: ReportPayload }) {
                   <td
                     key={ci}
                     className={cn(
-                      "px-3 py-1.5 font-mono",
+                      "px-3 py-1.5 font-mono whitespace-nowrap",
                       report.columns[ci].kind !== "text" && "text-right",
                       ci === 0 && report.columns[ci].kind === "text" && "font-sans text-foreground",
+                      ci === 0 && stickyDim && "sticky left-0 z-10 bg-card",
                     )}
                   >
                     {fmtCell(v, report.columns[ci].kind)}
@@ -134,8 +158,9 @@ export function ReportBlock({ report }: { report: ReportPayload }) {
                   <td
                     key={ci}
                     className={cn(
-                      "px-3 py-1.5 font-mono",
+                      "px-3 py-1.5 font-mono whitespace-nowrap",
                       report.columns[ci].kind !== "text" && "text-right",
+                      ci === 0 && stickyDim && "sticky left-0 z-10 bg-muted/50",
                     )}
                   >
                     {fmtCell(v, report.columns[ci].kind)}

@@ -187,8 +187,9 @@ export async function saveTemplate(
     splitByDay: input.splitByDay ?? false,
     markup: input.markup ?? null,
     rangePreset: input.rangePreset?.trim() || null,
-    // Dropped with the client rather than kept as dead weight: `validateTemplate` already rejects
-    // campaign ids without a client, so this only fires when an edit clears the client.
+    // `validateTemplate` already rejects campaign ids without a client, so this is not that check.
+    // It catches the narrower case the validator cannot see: a whitespace-only clientId passes there
+    // as a truthy string but normalises to null at line 172, and ids scoped to no client are noise.
     campaignIds: clientId && input.campaignIds?.length ? input.campaignIds : null,
     updatedAt: new Date(),
   };

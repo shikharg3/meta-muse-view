@@ -25,10 +25,14 @@ import { Route as AudiencesRouteImport } from './routes/audiences'
 import { Route as AlertsRouteImport } from './routes/alerts'
 import { Route as ActivityRouteImport } from './routes/activity'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as ReportsIndexRouteImport } from './routes/reports.index'
 import { Route as PortalIndexRouteImport } from './routes/portal.index'
 import { Route as InfrastructureIndexRouteImport } from './routes/infrastructure.index'
 import { Route as ClientsIndexRouteImport } from './routes/clients.index'
 import { Route as AccountsIndexRouteImport } from './routes/accounts.index'
+import { Route as ReportsTemplatesRouteImport } from './routes/reports.templates'
+import { Route as ReportsNewRouteImport } from './routes/reports.new'
+import { Route as ReportsRunIdRouteImport } from './routes/reports.$runId'
 import { Route as PortalLoginRouteImport } from './routes/portal_.login'
 import { Route as PortalReportsRouteImport } from './routes/portal.reports'
 import { Route as PortalCreativesRouteImport } from './routes/portal.creatives'
@@ -122,6 +126,11 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ReportsIndexRoute = ReportsIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => ReportsRoute,
+} as any)
 const PortalIndexRoute = PortalIndexRouteImport.update({
   id: '/',
   path: '/',
@@ -141,6 +150,21 @@ const AccountsIndexRoute = AccountsIndexRouteImport.update({
   id: '/accounts/',
   path: '/accounts/',
   getParentRoute: () => rootRouteImport,
+} as any)
+const ReportsTemplatesRoute = ReportsTemplatesRouteImport.update({
+  id: '/templates',
+  path: '/templates',
+  getParentRoute: () => ReportsRoute,
+} as any)
+const ReportsNewRoute = ReportsNewRouteImport.update({
+  id: '/new',
+  path: '/new',
+  getParentRoute: () => ReportsRoute,
+} as any)
+const ReportsRunIdRoute = ReportsRunIdRouteImport.update({
+  id: '/$runId',
+  path: '/$runId',
+  getParentRoute: () => ReportsRoute,
 } as any)
 const PortalLoginRoute = PortalLoginRouteImport.update({
   id: '/portal_/login',
@@ -218,7 +242,7 @@ export interface FileRoutesByFullPath {
   '/login': typeof LoginRoute
   '/overview': typeof OverviewRoute
   '/portal': typeof PortalRouteWithChildren
-  '/reports': typeof ReportsRoute
+  '/reports': typeof ReportsRouteWithChildren
   '/settings': typeof SettingsRoute
   '/signup': typeof SignupRoute
   '/sync': typeof SyncRoute
@@ -233,10 +257,14 @@ export interface FileRoutesByFullPath {
   '/portal/creatives': typeof PortalCreativesRoute
   '/portal/reports': typeof PortalReportsRoute
   '/portal/login': typeof PortalLoginRoute
+  '/reports/$runId': typeof ReportsRunIdRoute
+  '/reports/new': typeof ReportsNewRoute
+  '/reports/templates': typeof ReportsTemplatesRoute
   '/accounts/': typeof AccountsIndexRoute
   '/clients/': typeof ClientsIndexRoute
   '/infrastructure/': typeof InfrastructureIndexRoute
   '/portal/': typeof PortalIndexRoute
+  '/reports/': typeof ReportsIndexRoute
   '/infrastructure/business-managers/$id': typeof InfrastructureBusinessManagersIdRoute
   '/infrastructure/business-managers/': typeof InfrastructureBusinessManagersIndexRoute
 }
@@ -251,7 +279,6 @@ export interface FileRoutesByTo {
   '/finance': typeof FinanceRoute
   '/login': typeof LoginRoute
   '/overview': typeof OverviewRoute
-  '/reports': typeof ReportsRoute
   '/settings': typeof SettingsRoute
   '/signup': typeof SignupRoute
   '/sync': typeof SyncRoute
@@ -266,10 +293,14 @@ export interface FileRoutesByTo {
   '/portal/creatives': typeof PortalCreativesRoute
   '/portal/reports': typeof PortalReportsRoute
   '/portal/login': typeof PortalLoginRoute
+  '/reports/$runId': typeof ReportsRunIdRoute
+  '/reports/new': typeof ReportsNewRoute
+  '/reports/templates': typeof ReportsTemplatesRoute
   '/accounts': typeof AccountsIndexRoute
   '/clients': typeof ClientsIndexRoute
   '/infrastructure': typeof InfrastructureIndexRoute
   '/portal': typeof PortalIndexRoute
+  '/reports': typeof ReportsIndexRoute
   '/infrastructure/business-managers/$id': typeof InfrastructureBusinessManagersIdRoute
   '/infrastructure/business-managers': typeof InfrastructureBusinessManagersIndexRoute
 }
@@ -286,7 +317,7 @@ export interface FileRoutesById {
   '/login': typeof LoginRoute
   '/overview': typeof OverviewRoute
   '/portal': typeof PortalRouteWithChildren
-  '/reports': typeof ReportsRoute
+  '/reports': typeof ReportsRouteWithChildren
   '/settings': typeof SettingsRoute
   '/signup': typeof SignupRoute
   '/sync': typeof SyncRoute
@@ -301,10 +332,14 @@ export interface FileRoutesById {
   '/portal/creatives': typeof PortalCreativesRoute
   '/portal/reports': typeof PortalReportsRoute
   '/portal_/login': typeof PortalLoginRoute
+  '/reports/$runId': typeof ReportsRunIdRoute
+  '/reports/new': typeof ReportsNewRoute
+  '/reports/templates': typeof ReportsTemplatesRoute
   '/accounts/': typeof AccountsIndexRoute
   '/clients/': typeof ClientsIndexRoute
   '/infrastructure/': typeof InfrastructureIndexRoute
   '/portal/': typeof PortalIndexRoute
+  '/reports/': typeof ReportsIndexRoute
   '/infrastructure/business-managers/$id': typeof InfrastructureBusinessManagersIdRoute
   '/infrastructure/business-managers/': typeof InfrastructureBusinessManagersIndexRoute
 }
@@ -337,10 +372,14 @@ export interface FileRouteTypes {
     | '/portal/creatives'
     | '/portal/reports'
     | '/portal/login'
+    | '/reports/$runId'
+    | '/reports/new'
+    | '/reports/templates'
     | '/accounts/'
     | '/clients/'
     | '/infrastructure/'
     | '/portal/'
+    | '/reports/'
     | '/infrastructure/business-managers/$id'
     | '/infrastructure/business-managers/'
   fileRoutesByTo: FileRoutesByTo
@@ -355,7 +394,6 @@ export interface FileRouteTypes {
     | '/finance'
     | '/login'
     | '/overview'
-    | '/reports'
     | '/settings'
     | '/signup'
     | '/sync'
@@ -370,10 +408,14 @@ export interface FileRouteTypes {
     | '/portal/creatives'
     | '/portal/reports'
     | '/portal/login'
+    | '/reports/$runId'
+    | '/reports/new'
+    | '/reports/templates'
     | '/accounts'
     | '/clients'
     | '/infrastructure'
     | '/portal'
+    | '/reports'
     | '/infrastructure/business-managers/$id'
     | '/infrastructure/business-managers'
   id:
@@ -404,10 +446,14 @@ export interface FileRouteTypes {
     | '/portal/creatives'
     | '/portal/reports'
     | '/portal_/login'
+    | '/reports/$runId'
+    | '/reports/new'
+    | '/reports/templates'
     | '/accounts/'
     | '/clients/'
     | '/infrastructure/'
     | '/portal/'
+    | '/reports/'
     | '/infrastructure/business-managers/$id'
     | '/infrastructure/business-managers/'
   fileRoutesById: FileRoutesById
@@ -424,7 +470,7 @@ export interface RootRouteChildren {
   LoginRoute: typeof LoginRoute
   OverviewRoute: typeof OverviewRoute
   PortalRoute: typeof PortalRouteWithChildren
-  ReportsRoute: typeof ReportsRoute
+  ReportsRoute: typeof ReportsRouteWithChildren
   SettingsRoute: typeof SettingsRoute
   SignupRoute: typeof SignupRoute
   SyncRoute: typeof SyncRoute
@@ -557,6 +603,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/reports/': {
+      id: '/reports/'
+      path: '/'
+      fullPath: '/reports/'
+      preLoaderRoute: typeof ReportsIndexRouteImport
+      parentRoute: typeof ReportsRoute
+    }
     '/portal/': {
       id: '/portal/'
       path: '/'
@@ -584,6 +637,27 @@ declare module '@tanstack/react-router' {
       fullPath: '/accounts/'
       preLoaderRoute: typeof AccountsIndexRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/reports/templates': {
+      id: '/reports/templates'
+      path: '/templates'
+      fullPath: '/reports/templates'
+      preLoaderRoute: typeof ReportsTemplatesRouteImport
+      parentRoute: typeof ReportsRoute
+    }
+    '/reports/new': {
+      id: '/reports/new'
+      path: '/new'
+      fullPath: '/reports/new'
+      preLoaderRoute: typeof ReportsNewRouteImport
+      parentRoute: typeof ReportsRoute
+    }
+    '/reports/$runId': {
+      id: '/reports/$runId'
+      path: '/$runId'
+      fullPath: '/reports/$runId'
+      preLoaderRoute: typeof ReportsRunIdRouteImport
+      parentRoute: typeof ReportsRoute
     }
     '/portal_/login': {
       id: '/portal_/login'
@@ -689,6 +763,23 @@ const PortalRouteChildren: PortalRouteChildren = {
 const PortalRouteWithChildren =
   PortalRoute._addFileChildren(PortalRouteChildren)
 
+interface ReportsRouteChildren {
+  ReportsRunIdRoute: typeof ReportsRunIdRoute
+  ReportsNewRoute: typeof ReportsNewRoute
+  ReportsTemplatesRoute: typeof ReportsTemplatesRoute
+  ReportsIndexRoute: typeof ReportsIndexRoute
+}
+
+const ReportsRouteChildren: ReportsRouteChildren = {
+  ReportsRunIdRoute: ReportsRunIdRoute,
+  ReportsNewRoute: ReportsNewRoute,
+  ReportsTemplatesRoute: ReportsTemplatesRoute,
+  ReportsIndexRoute: ReportsIndexRoute,
+}
+
+const ReportsRouteWithChildren =
+  ReportsRoute._addFileChildren(ReportsRouteChildren)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ActivityRoute: ActivityRoute,
@@ -701,7 +792,7 @@ const rootRouteChildren: RootRouteChildren = {
   LoginRoute: LoginRoute,
   OverviewRoute: OverviewRoute,
   PortalRoute: PortalRouteWithChildren,
-  ReportsRoute: ReportsRoute,
+  ReportsRoute: ReportsRouteWithChildren,
   SettingsRoute: SettingsRoute,
   SignupRoute: SignupRoute,
   SyncRoute: SyncRoute,

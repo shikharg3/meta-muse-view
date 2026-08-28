@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { Briefcase, ChevronDown, FileText, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Briefcase, ChevronDown, Columns3, FileText, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
@@ -11,16 +11,22 @@ import {
   CommandList,
 } from "@/components/ui/command";
 import {
-  REPORT_COLUMNS,
   REPORT_BREAKDOWNS,
-  REPORT_RANGE_PRESETS,
+  REPORT_COLUMNS,
   DEFAULT_REPORT_COLUMN_KEYS,
 } from "@/lib/report-options";
+import { DATE_PRESETS } from "@/lib/date-presets";
+import { ColumnPickerDialog } from "@/components/reports/ColumnPickerDialog";
+import { RangePicker, type RangeValue } from "@/components/reports/RangePicker";
+import { BreakdownPicker } from "@/components/reports/BreakdownPicker";
+import { getReportCatalog } from "@/lib/api/report-catalog";
 import { getClientCampaigns } from "@/lib/api/clients";
 
 export interface ReportRequest {
   clientId: string;
   clientName: string;
+  /** A DATE_PRESETS key. Preferred over `days`, so a saved template stays meaningful over time. */
+  preset?: string;
   days?: number;
   since?: string;
   until?: string;
@@ -38,25 +44,38 @@ interface Props {
   onSubmit: (req: ReportRequest) => void;
   onClose?: () => void;
   lockedClient?: { id: string; name: string }; // pre-selected + locked (used on the client page)
+  /**
+   * Seed values, e.g. from a saved template. Read once into initial state; a caller switches seeds
+   * by remounting (a `key`), so a later prop change never clobbers an edit in progress.
+   */
+  initial?: Partial<ReportRequest> & { rangePreset?: string | null };
 }
 
-export function ReportBuilder({ clients, busy, onSubmit, onClose, lockedClient }: Props) {
-  const [clientId, setClientId] = useState(lockedClient?.id ?? "");
-  const [clientName, setClientName] = useState(lockedClient?.name ?? "");
+export function ReportBuilder({ clients, busy, onSubmit, onClose, lockedClient, initial }: Props) {
+  const [clientId, setClientId] = useState(lockedClient?.id ?? initial?.clientId ?? "");
+  const [clientName, setClientName] = useState(lockedClient?.name ?? initial?.clientName ?? "");
   const [pickerOpen, setPickerOpen] = useState(false);
-  const [custom, setCustom] = useState(false);
-  const [days, setDays] = useState(7);
-  const [since, setSince] = useState("");
-  const [until, setUntil] = useState("");
-  const [columns, setColumns] = useState<string[]>(DEFAULT_REPORT_COLUMN_KEYS);
-  const [breakdown, setBreakdown] = useState("none");
-  const [splitByDay, setSplitByDay] = useState(true); // default = daily totals (old "By day")
-  const [markupPct, setMarkupPct] = useState(0);
+  const [columnsOpen, setColumnsOpen] = useState(false);
+  const [range, setRange] = useState<RangeValue>(
+    initial?.since && initial?.until
+      ? { since: initial.since, until: initial.until }
+      : { preset: initial?.preset ?? initial?.rangePreset ?? "last_7d" },
+  );
+  const [columns, setColumns] = useState<string[]>(initial?.columns ?? DEFAULT_REPORT_COLUMN_KEYS);
+  // null = availability not known yet (no client, or the probe failed). The picker then shows every
+  // metric rather than an empty list, which is the safe direction to fail in.
+  const [availableKeys, setAvailableKeys] = useState<string[] | null>(null);
+  const [breakdown, setBreakdown] = useState(initial?.breakdown ?? "none");
+  // default = daily totals (old "By day")
+  const [splitByDay, setSplitByDay] = useState(initial?.splitByDay ?? true);
+  const [markupPct, setMarkupPct] = useState(
+    initial?.markup ? Math.round(initial.markup * 100) : 0,
+  );
   const [campaigns, setCampaigns] = useState<{ id: string; name: string }[]>([]);
   const [selectedCampaigns, setSelectedCampaigns] = useState<Set<string>>(new Set());
-
-  const toggleColumn = (key: string) =>
-    setColumns((cur) => (cur.includes(key) ? cur.filter((k) => k !== key) : [...cur, key]));
+  // Consumed once, by the load below: a seeded subset has to survive the campaign fetch, but a
+  // client the user picks afterwards means "all campaigns", not the seed's now-foreign ids.
+  const seedCampaignIds = useRef(initial?.campaignIds);
 
   // Load the client's campaigns when it changes; default to all selected (= no filter).
   useEffect(() => {
@@ -69,12 +88,37 @@ export function ReportBuilder({ clients, busy, onSubmit, onClose, lockedClient }
     void getClientCampaigns({ data: clientId }).then((cs) => {
       if (cancelled) return;
       setCampaigns(cs);
-      setSelectedCampaigns(new Set(cs.map((c) => c.id)));
+      const seed = seedCampaignIds.current;
+      seedCampaignIds.current = undefined;
+      const kept = seed?.filter((id) => cs.some((c) => c.id === id)) ?? [];
+      setSelectedCampaigns(new Set(kept.length > 0 ? kept : cs.map((c) => c.id)));
     });
     return () => {
       cancelled = true;
     };
   }, [clientId]);
+
+  // Probe which metrics actually hold data for this client and window, so the picker can hide the
+  // ~100 that would render a column of zeros. Failure is non-fatal: `null` means "show everything".
+  useEffect(() => {
+    if (!clientId) {
+      setAvailableKeys(null);
+      return;
+    }
+    let cancelled = false;
+    const probe =
+      "preset" in range ? { preset: range.preset } : { since: range.since, until: range.until };
+    void getReportCatalog({ data: { clientId, ...probe } })
+      .then((r) => {
+        if (!cancelled) setAvailableKeys(r.keys);
+      })
+      .catch(() => {
+        if (!cancelled) setAvailableKeys(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [clientId, range]);
 
   const toggleCampaign = (id: string) =>
     setSelectedCampaigns((cur) => {
@@ -84,15 +128,17 @@ export function ReportBuilder({ clients, busy, onSubmit, onClose, lockedClient }
       return next;
     });
 
-  const canSubmit = !!clientId && columns.length > 0 && (!custom || (!!since && !!until)) && !busy;
+  const customIncomplete = !("preset" in range) && (!range.since || !range.until);
+  const canSubmit = !!clientId && columns.length > 0 && !customIncomplete && !busy;
 
   const submit = () => {
     if (!canSubmit) return;
-    // Emit columns in catalog order for a predictable layout.
-    const ordered = REPORT_COLUMNS.filter((c) => columns.includes(c.key)).map((c) => c.key);
-    const colLabels = REPORT_COLUMNS.filter((c) => columns.includes(c.key)).map((c) => c.label);
+    // Emit the user's own column order — the picker's right pane IS the report layout.
     const bd = REPORT_BREAKDOWNS.find((b) => b.key === breakdown)?.label ?? breakdown;
-    const range = custom ? `${since} → ${until}` : `last ${days} days`;
+    const rangeLabel =
+      "preset" in range
+        ? (DATE_PRESETS.find((p) => p.key === range.preset)?.label ?? range.preset)
+        : `${range.since} → ${range.until}`;
     // Only send ids when a proper non-empty subset is chosen; all/none = every campaign.
     const allCampaigns = campaigns.length > 0 && selectedCampaigns.size === campaigns.length;
     const campaignIds =
@@ -102,13 +148,15 @@ export function ReportBuilder({ clients, busy, onSubmit, onClose, lockedClient }
     onSubmit({
       clientId,
       clientName,
-      ...(custom ? { since, until } : { days }),
-      columns: ordered,
+      ...("preset" in range
+        ? { preset: range.preset }
+        : { since: range.since, until: range.until }),
+      columns,
       breakdown,
       splitByDay,
       markup: markupPct ? markupPct / 100 : undefined,
       campaignIds,
-      summary: `${clientName} · ${range} · ${bd.toLowerCase()}${splitByDay ? " × day" : ""} · ${colLabels.join(", ")}${markupPct ? ` · +${markupPct}% markup` : ""}${campaignIds ? ` · ${campaignIds.length} campaigns` : ""}`,
+      summary: `${clientName} · ${rangeLabel.toLowerCase()} · ${bd.toLowerCase()}${splitByDay ? " × day" : ""} · ${columns.length} columns${markupPct ? ` · +${markupPct}% markup` : ""}${campaignIds ? ` · ${campaignIds.length} campaigns` : ""}`,
     });
   };
 
@@ -210,82 +258,44 @@ export function ReportBuilder({ clients, busy, onSubmit, onClose, lockedClient }
         </Field>
       )}
 
-      {/* Date range */}
+      {/* Date range — 19 named presets, resolved locally against our own daily rows */}
       <Field label="Date range">
-        <div className="flex flex-wrap items-center gap-1.5">
-          {REPORT_RANGE_PRESETS.map((d) => (
-            <Chip
-              key={d}
-              active={!custom && days === d}
-              onClick={() => {
-                setCustom(false);
-                setDays(d);
-              }}
-            >
-              {d}d
-            </Chip>
-          ))}
-          <Chip active={custom} onClick={() => setCustom(true)}>
-            Custom
-          </Chip>
-          {custom && (
-            <div className="flex items-center gap-1.5 w-full mt-1.5">
-              <input
-                type="date"
-                value={since}
-                onChange={(e) => setSince(e.target.value)}
-                className="h-8 flex-1 rounded-md border border-border bg-background px-2 text-xs font-mono"
-              />
-              <span className="text-muted-foreground text-xs">→</span>
-              <input
-                type="date"
-                value={until}
-                onChange={(e) => setUntil(e.target.value)}
-                className="h-8 flex-1 rounded-md border border-border bg-background px-2 text-xs font-mono"
-              />
-            </div>
-          )}
-        </div>
+        <RangePicker value={range} onChange={setRange} />
       </Field>
 
-      {/* Columns */}
-      <Field label={`Columns (${columns.length})`}>
-        <div className="flex flex-wrap gap-1.5">
-          {REPORT_COLUMNS.map((c) => (
-            <Chip key={c.key} active={columns.includes(c.key)} onClick={() => toggleColumn(c.key)}>
-              {c.label}
-            </Chip>
-          ))}
-        </div>
+      {/* Columns — the picker needs the viewport, so it lives in a dialog rather than this rail */}
+      <Field label="Columns">
+        <button
+          type="button"
+          onClick={() => setColumnsOpen(true)}
+          className="flex w-full items-center gap-2 rounded-md border border-border bg-background hover:bg-accent px-3 h-9 text-xs transition-colors"
+        >
+          <Columns3 className="size-3.5 text-muted-foreground" />
+          <span className="flex-1 text-left">
+            {columns.length} column{columns.length === 1 ? "" : "s"} selected
+          </span>
+          <span className="text-muted-foreground">Edit</span>
+        </button>
+        <ColumnPickerDialog
+          open={columnsOpen}
+          onOpenChange={setColumnsOpen}
+          selected={columns}
+          onChange={setColumns}
+          availableKeys={availableKeys}
+        />
       </Field>
 
-      {/* Breakdown */}
+      {/* Breakdown — renders its own split-by-day control alongside the trigger */}
       <Field label="Breakdown">
-        <div className="flex items-center gap-2">
-          <select
-            value={breakdown}
-            onChange={(e) => setBreakdown(e.target.value)}
-            className="flex-1 h-9 rounded-md border border-border bg-background px-2.5 text-xs"
-          >
-            {REPORT_BREAKDOWNS.map((b) => (
-              <option key={b.key} value={b.key}>
-                {b.label}
-              </option>
-            ))}
-          </select>
-          <label className="flex items-center gap-1.5 text-xs text-muted-foreground whitespace-nowrap cursor-pointer">
-            <input
-              type="checkbox"
-              checked={splitByDay}
-              onChange={(e) => setSplitByDay(e.target.checked)}
-              className="size-3.5 accent-primary"
-            />
-            Split by day
-          </label>
-        </div>
+        <BreakdownPicker
+          breakdown={breakdown}
+          onBreakdownChange={setBreakdown}
+          splitByDay={splitByDay}
+          onSplitByDayChange={setSplitByDay}
+        />
       </Field>
 
-      {/* Client markup */}
+      {/* Client markup — inflates spend, so every derived cost metric rises and ROAS falls */}
       <Field label="Client markup %">
         <input
           type="number"
@@ -293,9 +303,13 @@ export function ReportBuilder({ clients, busy, onSubmit, onClose, lockedClient }
           max={100}
           value={markupPct || ""}
           onChange={(e) => setMarkupPct(Number(e.target.value) || 0)}
-          placeholder="0 — added to spend & cost metrics for client-facing reports"
+          placeholder="0"
           className="w-full h-9 rounded-md border border-border bg-background px-2.5 text-xs"
         />
+        <p className="mt-1 text-[11px] text-muted-foreground">
+          Added to spend and every cost metric. Delivered figures — impressions, clicks, results,
+          revenue — stay real.
+        </p>
       </Field>
 
       <button
