@@ -31,10 +31,10 @@ function FrozenRun() {
   // plus a key list: relabelling, regrouping or dropping a metric cannot make an archived report
   // disagree with the CSV the client already has, and the numbers can never drift.
   //
-  // `_dim` is the synthetic dimension/date column assembled in `report.ts`, never a catalog key, so
-  // it is excluded rather than counted as missing forever.
+  // `_period` and `_dim` are the synthetic date/dimension columns assembled in `report.ts`, never
+  // catalog keys, so they are excluded rather than counted as missing forever.
   const orphaned = run.payload.columns.filter(
-    (c) => c.key !== "_dim" && metric(c.key) === undefined,
+    (c) => c.key !== "_period" && c.key !== "_dim" && metric(c.key) === undefined,
   ).length;
 
   return (

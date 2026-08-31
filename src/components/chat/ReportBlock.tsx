@@ -82,9 +82,10 @@ export function ReportBlock({ report, runId }: { report: ReportPayload; runId?: 
     if (!runId) return;
     void stampReportExport({ data: { runId, format } }).catch(() => {});
   };
-  // The dimension column carries the row's identity, so it stays pinned while the metric columns
-  // scroll horizontally. Any other first column is just another metric and scrolls with the rest.
-  const stickyDim = report.columns[0]?.key === "_dim";
+  // The leading date/dimension column carries the row's identity, so it stays pinned while the
+  // metric columns scroll horizontally. Any other first column is just another metric and scrolls
+  // with the rest.
+  const stickyDim = report.columns[0]?.key === "_period" || report.columns[0]?.key === "_dim";
   // Deliberately NO row virtualization: MAX_ROWS = 500 in src/server/agent/report.ts:520 already
   // caps output, and 500x30 cells is unremarkable for the DOM. Do not add a windowing dependency.
   return (

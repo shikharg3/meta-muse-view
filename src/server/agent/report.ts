@@ -76,16 +76,20 @@ export interface ReportPayload {
  * to render 0 in totals.
  */
 interface Agg {
+  /** The bucket's own identity, carried rather than re-parsed out of the map key. */
+  period: string | null;
+  dimValue: string | null;
   scalars: Map<string, number>;
   results: number;
   events: Map<string, number>;
   eventValues: Map<string, number>;
   /**
-   * How many of Meta's own rows were folded in. One means every metric in this bucket is Meta's
-   * verbatim figure; more means the de-duplicated metrics would be a double count, because a person
-   * reached on two days — or by two of the client's accounts — appears in both rows.
+   * How many of Meta's rows folded in here actually recorded something. Zero means the bucket is
+   * noise and earns no report row. One means every metric in it is Meta's verbatim figure. More
+   * means the de-duplicated metrics would be a double count, because a person reached on two days —
+   * or by two of the client's accounts — appears in both rows.
    */
-  nativeRows: number;
+  deliveringRows: number;
 }
 
 // "Results" is objective-dependent in Ads Manager (traffic→link clicks,
@@ -515,13 +519,31 @@ const fieldValue = (v: unknown): number => {
   return num(v);
 };
 
-const emptyAgg = (): Agg => ({
+const emptyAgg = (period: string | null, dimValue: string | null): Agg => ({
+  period,
+  dimValue,
   scalars: new Map(),
   results: 0,
   events: new Map(),
   eventValues: new Map(),
-  nativeRows: 0,
+  deliveringRows: 0,
 });
+
+/**
+ * Whether Meta's row recorded anything at all. Checked against the row's own fields rather than the
+ * report's selected columns, so the answer does not change with the column picker: a row with no
+ * spend, no impressions, no reach and no actions contributes nothing to any metric and reached
+ * nobody, so it neither earns a report row nor blocks a de-duplicated one.
+ */
+const delivered = (r: InsightRow): boolean => {
+  const f = r as Record<string, unknown>;
+  return (
+    fieldValue(f.impressions) > 0 ||
+    fieldValue(f.spend) > 0 ||
+    fieldValue(f.reach) > 0 ||
+    (Array.isArray(f.actions) && f.actions.length > 0)
+  );
+};
 
 const addTo = (m: Map<string, number>, key: string, n: number): void => {
   if (n) m.set(key, (m.get(key) ?? 0) + n);
@@ -534,7 +556,7 @@ function accumulate(
   objectiveByCampaign: Record<string, string>,
   fields: readonly string[],
 ): void {
-  a.nativeRows++;
+  if (delivered(r)) a.deliveringRows++;
   for (const f of fields) addTo(a.scalars, f, fieldValue((r as Record<string, unknown>)[f]));
   a.results += resultValue(r, objectiveByCampaign[String(r.campaign_id ?? "")]);
   for (const act of (r.actions as { action_type: string; value: string }[] | undefined) ?? [])
@@ -544,7 +566,7 @@ function accumulate(
 }
 
 const mergeAgg = (into: Agg, from: Agg): void => {
-  into.nativeRows += from.nativeRows;
+  into.deliveringRows += from.deliveringRows;
   for (const [k, v] of from.scalars) addTo(into.scalars, k, v);
   into.results += from.results;
   for (const [k, v] of from.events) addTo(into.events, k, v);
@@ -642,26 +664,22 @@ export async function buildReport(
     if (rows.length === 0) continue;
     contributors++;
     for (const r of rows) {
-      const dimVal = (): string => String(r[DIM_VALUE_KEY] ?? "—");
       // The time axis is Meta's `time_increment`, resolved to the bucket this row's date falls in.
-      // `all_days` has no time axis at all, which is why it keeps the old "Total" / bare-value keys.
+      // `all_days` has no time axis, so those reports carry no period at all.
       const period =
         spec.timeIncrement === "all_days"
           ? null
           : bucketLabel(
               bucketFor(String(r.date_start), spec.since, spec.until, spec.timeIncrement),
             );
-      const key =
-        period === null
-          ? dim === "none"
-            ? "Total"
-            : dimVal()
-          : dim === "none"
-            ? period
-            : `${period} · ${dimVal()}`;
+      const dimValue = dim === "none" ? null : String(r[DIM_VALUE_KEY] ?? "—");
+      // NUL joins the parts: a campaign name may contain any printable text, including the " · "
+      // this key used to be built from. The parts are carried on the Agg so a row is never parsed
+      // back out of its own key.
+      const key = `${period ?? ""}\u0000${dimValue ?? ""}`;
       let a = aggByKey.get(key);
       if (!a) {
-        a = emptyAgg();
+        a = emptyAgg(period, dimValue);
         aggByKey.set(key, a);
         order.push(key);
       }
@@ -680,59 +698,83 @@ export async function buildReport(
   }
 
   const hasTimeAxis = spec.timeIncrement !== "all_days";
-  // Order rows: chronological when there is a time axis (keys start with the bucket's ISO start
-  // date), spend-first otherwise.
-  if (hasTimeAxis) order.sort();
+  // Chronological when there is a time axis, then by dimension value within a period; spend-first
+  // when the report has no time axis at all.
+  if (hasTimeAxis)
+    order.sort((x, y) => {
+      const a = aggByKey.get(x)!;
+      const b = aggByKey.get(y)!;
+      const byPeriod = (a.period ?? "").localeCompare(b.period ?? "");
+      return byPeriod !== 0 ? byPeriod : (a.dimValue ?? "").localeCompare(b.dimValue ?? "");
+    });
   else if (dim !== "none")
     order.sort(
       (x, y) =>
         (aggByKey.get(y)!.scalars.get("spend") ?? 0) - (aggByKey.get(x)!.scalars.get("spend") ?? 0),
     );
-  const limited = order.slice(0, MAX_ROWS);
+  // Drop buckets Meta returned with nothing in them — a campaign that was live but silent that day
+  // is noise in a client report. Filtered BEFORE the cap, or 500 empty rows could crowd out the
+  // ones that matter.
+  const limited = order.filter((k) => aggByKey.get(k)!.deliveringRows > 0).slice(0, MAX_ROWS);
 
-  const hasDimCol = dim !== "none" || hasTimeAxis;
-  const timeLabel = spec.timeIncrement === "1" ? "Date" : "Period";
-  // Evaluated even when there is no dimension column, so the "none" case must not reach REPORT_DIMS.
-  const dimLabel = !hasDimCol
-    ? ""
-    : dim === "none"
-      ? timeLabel
-      : hasTimeAxis
-        ? `${timeLabel} · ${REPORT_DIMS[dim].label}`
-        : REPORT_DIMS[dim].label;
+  // Date and dimension are two facts, so they are two columns: one sorts and pivots as a date, the
+  // other as a name. They used to share a cell, which made both useless in a spreadsheet.
+  const leading: ReportColumn[] = [
+    ...(hasTimeAxis
+      ? [
+          {
+            key: "_period",
+            label: spec.timeIncrement === "1" ? "Date" : "Period",
+            kind: "text" as const,
+          },
+        ]
+      : []),
+    ...(dim === "none"
+      ? []
+      : [{ key: "_dim", label: REPORT_DIMS[dim].label, kind: "text" as const }]),
+  ];
+  const leadCells = (a: Agg): string[] => [
+    ...(hasTimeAxis ? [a.period ?? ""] : []),
+    ...(dim === "none" ? [] : [a.dimValue ?? ""]),
+  ];
   const columns: ReportColumn[] = [
-    ...(hasDimCol ? [{ key: "_dim", label: dimLabel, kind: "text" as const }] : []),
+    ...leading,
     ...cols.map((k) => {
       const m = metric(k)!;
       return { key: m.key, label: m.label, kind: m.kind };
     }),
   ];
 
-  // A metric Meta de-duplicates is Meta's own figure while a bucket holds exactly one of Meta's rows,
-  // and a double count the moment it holds two. There is no third option — the distinct-person count
-  // for a wider window is not a function of the narrower ones — so the cell is withheld, never summed.
+  // A metric Meta de-duplicates is Meta's own figure while a bucket holds exactly one delivering
+  // row, and a double count the moment it holds two. There is no third option — the distinct-person
+  // count for a wider window is not a function of the narrower ones — so the cell is withheld,
+  // never summed.
   const dedupCols = cols.filter((k) => !isAdditive(k));
   const metricCells = (a: Agg): (number | null)[] => {
     const memo = new Map<string, number>();
-    const summable = a.nativeRows <= 1;
+    const summable = a.deliveringRows <= 1;
     return cols.map((k) => (summable || isAdditive(k) ? resolveMetric(k, a, memo) : null));
   };
   const rows: (string | number | null)[][] = limited.map((key) => {
     const a = aggByKey.get(key)!;
-    return hasDimCol ? [key, ...metricCells(a)] : metricCells(a);
+    return [...leadCells(a), ...metricCells(a)];
   });
 
   // Totals across every key (only meaningful when there are multiple rows). mergeAgg folds the same
   // structures the data rows use, so the totals row cannot omit a field the way the previous
   // hand-restated version did.
-  const total = emptyAgg();
+  const total = emptyAgg(null, null);
   for (const a of aggByKey.values()) mergeAgg(total, a);
-  const totals = hasDimCol ? ["Total", ...metricCells(total)] : null;
+  const totals =
+    leading.length > 0
+      ? [...leading.map((_, i) => (i === 0 ? "Total" : "")), ...metricCells(total)]
+      : null;
 
-  const dimNote = hasDimCol ? ` · by ${dimLabel.toLowerCase()}` : "";
+  const dimNote =
+    leading.length > 0 ? ` · by ${leading.map((c) => c.label.toLowerCase()).join(" · ")}` : "";
   const withheld =
     dedupCols.length > 0 &&
-    (total.nativeRows > 1 || limited.some((k) => aggByKey.get(k)!.nativeRows > 1));
+    (total.deliveringRows > 1 || limited.some((k) => aggByKey.get(k)!.deliveringRows > 1));
   const notes = [
     contributors < spec.accountIds.length
       ? `${contributors} of ${spec.accountIds.length} accounts have data in this range.`

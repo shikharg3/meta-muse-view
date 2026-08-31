@@ -253,13 +253,102 @@ test("buildReport adset_day yields one row per ad set per day, chronological", a
     },
     "X",
   );
-  expect(p.columns[0].label).toBe("Date · Ad set");
-  expect(p.rows).toEqual([
-    ["2026-07-01 · California", 10],
-    ["2026-07-01 · Texas", 20],
-    ["2026-07-02 · California", 30],
+  // Date and ad set are two columns now, so each row carries two leading cells and the totals row
+  // labels the first and leaves the second blank.
+  expect(p.columns.slice(0, 2).map((c) => ({ key: c.key, label: c.label }))).toEqual([
+    { key: "_period", label: "Date" },
+    { key: "_dim", label: "Ad set" },
   ]);
-  expect(p.totals).toEqual(["Total", 60]);
+  expect(p.rows).toEqual([
+    ["2026-07-01", "California", 10],
+    ["2026-07-01", "Texas", 20],
+    ["2026-07-02", "California", 30],
+  ]);
+  expect(p.totals).toEqual(["Total", "", 60]);
+});
+
+test("a row Meta returned with nothing in it is dropped, not printed as zeros", async () => {
+  const src = rowSource({
+    act_1: [
+      row("2026-07-01", "c1", {
+        __dim: "Live",
+        spend: "10",
+        impressions: "1000",
+        reach: "900",
+      }),
+      // Live but silent that day: Meta returns the row, everything in it is zero.
+      row("2026-07-01", "c1", { __dim: "Silent", spend: "0", impressions: "0" }),
+      row("2026-07-02", "c1", { __dim: "Live", spend: "0", impressions: "0" }),
+    ],
+  });
+  const p = await buildReport(
+    src,
+    {
+      accountIds: ["act_1"],
+      since: "2026-07-01",
+      until: "2026-07-02",
+      columns: ["spend", "impressions", "reach"],
+      breakdown: "adset",
+      timeIncrement: "1",
+      objectiveByCampaign: {},
+    },
+    "X",
+  );
+  expect(p.rows).toEqual([["2026-07-01", "Live", 10, 1000, 900]]);
+  expect(p.rowCount).toBe(1);
+  // The dropped rows reached nobody, so they cannot have double-counted anyone either: the total
+  // still folds exactly one delivering row and reports reach rather than withholding it.
+  expect(p.totals).toEqual(["Total", "", 10, 1000, 900]);
+});
+
+test("activity without spend or impressions still counts as a row worth printing", async () => {
+  const src = rowSource({
+    act_1: [
+      row("2026-07-01", "c1", {
+        __dim: "Organic-ish",
+        spend: "0",
+        impressions: "0",
+        actions: [{ action_type: "lead", value: "3" }],
+      }),
+    ],
+  });
+  const p = await buildReport(
+    src,
+    {
+      accountIds: ["act_1"],
+      since: "2026-07-01",
+      until: "2026-07-01",
+      columns: ["spend", "leads"],
+      breakdown: "adset",
+      timeIncrement: "1",
+      objectiveByCampaign: {},
+    },
+    "X",
+  );
+  expect(p.rows).toEqual([["2026-07-01", "Organic-ish", 0, 3]]);
+});
+
+test("a range where nothing delivered yields no rows at all", async () => {
+  const src = rowSource({
+    act_1: [row("2026-07-01", "c1", { __dim: "Silent", spend: "0", impressions: "0" })],
+  });
+  const p = await buildReport(
+    src,
+    {
+      accountIds: ["act_1"],
+      since: "2026-07-01",
+      until: "2026-07-01",
+      columns: ["spend"],
+      breakdown: "adset",
+      timeIncrement: "1",
+      objectiveByCampaign: {},
+    },
+    "X",
+  );
+  // rowCount 0 is what `runReport` turns into "No data for X in this range" — the honest answer,
+  // rather than a table of zeros.
+  expect(p.rows).toEqual([]);
+  expect(p.rowCount).toBe(0);
 });
 
 test("buildReport adset merges same-named ad sets and sorts by spend", async () => {
@@ -458,7 +547,7 @@ test("every catalog metric renders through the engine", async () => {
   // Daily granularity on a single account means every bucket is exactly one of Meta's rows, so
   // nothing is withheld and every metric — de-duplicated ones included — must resolve to a number.
   for (const [i, cell] of p.rows[0].entries()) {
-    if (p.columns[i].key === "_dim") continue;
+    if (p.columns[i].key === "_period" || p.columns[i].key === "_dim") continue;
     expect(Number.isFinite(cell as number), `${p.columns[i].key} produced ${cell}`).toBe(true);
   }
 });

@@ -583,8 +583,8 @@ test("adset_day report: one row per ad set per day, honoring campaign scoping", 
   });
   if ("error" in scoped) throw new Error(scoped.error);
   expect(scoped.rows).toEqual([
-    [`${today} · California`, 100],
-    [`${today} · Texas`, 80],
+    [today, "California", 100],
+    [today, "Texas", 80],
   ]);
 }, 20000);
 
