@@ -13,6 +13,7 @@ import {
   LIVE_STATUSES,
   parseCampaignRow,
   resolvePropertyKey,
+  resolveStatusKey,
 } from "@/notion/parse";
 import {
   deriveStatus,
@@ -1059,7 +1060,9 @@ export async function syncNotionDailyBudgets(
     // Resolved by name rather than through ensureColumn, which would CREATE the column when absent —
     // wrong for a status property, whose options and groups the API cannot fully configure. Options
     // are appended before the rename so `statusKey` still names the column Notion knows.
-    const statusKey = resolvePropertyKey(Object.keys(props), ACCOUNT_STATUS_COLUMN);
+    // `resolveStatusKey` rather than `resolvePropertyKey`: it accepts the board's shortened
+    // `🤖 Status` spelling too, gated on the property actually being a status.
+    const statusKey = resolveStatusKey(props);
     let statusCol = statusKey ? props[statusKey] : undefined;
     if (statusKey && statusCol && !opts.dryRun) {
       // A schema-bootstrap failure must degrade the status feature only. Left unguarded these awaits
@@ -1081,7 +1084,7 @@ export async function syncNotionDailyBudgets(
     } else if (statusKey && statusCol && opts.dryRun && !statusKey.startsWith(AUTO_MARKER)) {
       result.columnsTouched.push(`would rename "${statusKey}" → "${AUTO_ACCOUNT_STATUS_COLUMN}"`);
     } else if (!statusKey) {
-      result.warning = `no "${ACCOUNT_STATUS_COLUMN}" column on this board; status left untouched`;
+      result.warning = `no "${ACCOUNT_STATUS_COLUMN}" status column on this board; status left untouched`;
     }
 
     // Pinned statuses, loaded once per data source rather than per row.

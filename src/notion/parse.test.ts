@@ -10,6 +10,7 @@ import {
   boardRows,
   boardRowsWithoutOwners,
   resolvePropertyKey,
+  resolveStatusKey,
   LIVE_STATUSES,
   STATUS_PRIORITY,
 } from "./parse";
@@ -357,6 +358,41 @@ test("parseCampaignRow still finds Account Status once the marker is stamped on 
     properties: { Campaign: { type: "title", title: [{ plain_text: "Slots.lv" }] } },
   } as unknown as NotionPage;
   expect(parseCampaignRow(absent)!.status).toBeNull();
+});
+
+test("parseCampaignRow finds the status column after the board shortens its name", () => {
+  // Measured 2026-08-31: the live board's column read `🤖 Status`, not `🤖 Account Status`.
+  // `resolvePropertyKey` collapses the marker but not the missing word, so every row parsed as
+  // status: null — every row non-live, 658 row-writes skipped, every clients.status null.
+  const renamed = {
+    id: "p1",
+    properties: {
+      Campaign: { type: "title", title: [{ plain_text: "Lucky Rebel" }] },
+      "🤖 Status": { type: "status", status: { name: "Live" } },
+    },
+  } as unknown as NotionPage;
+  expect(parseCampaignRow(renamed)!.status).toBe("Live");
+});
+
+test("resolveStatusKey only ever accepts a status-typed property", () => {
+  // What makes the loose "Status" alias safe. A board whose `Status` is a select or text column
+  // holds someone else's vocabulary; writing `{ status: { name } }` into it would be rejected by
+  // Notion at best, and appending MACHINE_STATUSES as options is not survivable at worst.
+  expect(resolveStatusKey({ Status: { type: "select" } })).toBeNull();
+  expect(resolveStatusKey({ "🤖 Status": { type: "rich_text" } })).toBeNull();
+  expect(resolveStatusKey({ "🤖 Status": { type: "status" } })).toBe("🤖 Status");
+  expect(resolveStatusKey({})).toBeNull();
+  expect(resolveStatusKey(undefined)).toBeNull();
+});
+
+test("resolveStatusKey prefers the fully-spelled column over a bare Status beside it", () => {
+  // Both spellings on one board is drift mid-rename, not a new column. The specific name wins so the
+  // job keeps writing where the team's values already live.
+  const props = {
+    "🤖 Account Status": { type: "status" },
+    Status: { type: "status" },
+  };
+  expect(resolveStatusKey(props)).toBe("🤖 Account Status");
 });
 
 const VLAD = "2cbd872b-594c-8119-9649-0002845d8d9c";

@@ -24,6 +24,7 @@ import {
   type ActiveAdSet,
   statusForRow,
   AUTO_ACCOUNT_STATUS_COLUMN,
+  AUTO_MARKER,
   GEO_COLUMN,
   AUTO_GEO_COLUMN,
   geoSkipReason,
@@ -32,7 +33,7 @@ import {
   FUNDS_COLUMN,
   BUDGET_REMAINING_COLUMN,
 } from "./notion-budget";
-import { ACCOUNT_STATUS_COLUMN, resolvePropertyKey } from "@/notion/parse";
+import { resolvePropertyKey, resolveStatusKey } from "@/notion/parse";
 
 const camp = (id: string, over: Partial<AttributedCampaign> = {}): AttributedCampaign => ({
   id,
@@ -421,10 +422,15 @@ test("statusForRow returns null when the derived value already matches the cell"
 
 test("the Account Status column carries the machine-written marker too", () => {
   expect(AUTO_ACCOUNT_STATUS_COLUMN).toBe("🤖 Account Status");
-  // And the read side must still find it under that name, or every row reads as non-live.
-  expect(resolvePropertyKey([AUTO_ACCOUNT_STATUS_COLUMN], ACCOUNT_STATUS_COLUMN)).toBe(
+  // Both sides of the sync must resolve this column identically: the read side turns it into
+  // `row.status`, the write side into `statusKey`. A disagreement writes into a column nothing reads.
+  expect(resolveStatusKey({ [AUTO_ACCOUNT_STATUS_COLUMN]: { type: "status" } })).toBe(
     AUTO_ACCOUNT_STATUS_COLUMN,
   );
+  // The board's shortened spelling resolves too, and it already carries the marker — so the rename
+  // branch in the job never fires against it and the team's chosen label survives.
+  expect(resolveStatusKey({ "🤖 Status": { type: "status" } })).toBe("🤖 Status");
+  expect("🤖 Status".startsWith(AUTO_MARKER)).toBe(true);
 });
 
 test("budget remaining is the contract minus spend since the engagement started", () => {

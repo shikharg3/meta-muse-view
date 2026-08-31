@@ -157,9 +157,42 @@ const peopleIds = (p: NotionProp | undefined): string[] =>
  */
 export const ACCOUNT_STATUS_COLUMN = "Account Status";
 
-/** The board's `Account Status` cell, found whether or not the 🤖 marker has been stamped on it. */
+/**
+ * Spellings the status column has actually worn, most specific first.
+ *
+ * `resolvePropertyKey` absorbs cosmetic drift (case, spacing, punctuation, the 🤖 marker) but a
+ * WORD-level rename is beyond it, and this column cannot afford one: a miss returns null for every
+ * row, which makes every row non-live and silently stops the entire write-back — status, budget,
+ * spend, funds, projected end date, destination and geo alike. Measured 2026-08-31 against the live
+ * board, which had been renamed to `🤖 Status`: 658 row-writes skipped, every `clients.status` null.
+ * The same failure mode already cost this job its funds column once (see `FUNDS_COLUMN` in
+ * `sync/jobs/notion-budget.ts`), so the second occurrence gets a fix rather than another constant.
+ */
+const ACCOUNT_STATUS_ALIASES: readonly string[] = [ACCOUNT_STATUS_COLUMN, "Status"];
+
+/**
+ * The board's status column, whatever it is currently called and whether or not the 🤖 marker has
+ * been stamped on it.
+ *
+ * Only a `status`-typed property is ever considered. That is what makes the loose `"Status"` alias
+ * safe: a board carrying an unrelated `Status` select or text column cannot be mistaken for this one,
+ * and the write side cannot append options to — or write a `{ status: { name } }` value into — a
+ * property that would reject it.
+ */
+export function resolveStatusKey(
+  props: Record<string, { type?: string } | undefined> | undefined,
+): string | null {
+  const typed = Object.keys(props ?? {}).filter((k) => props?.[k]?.type === "status");
+  for (const want of ACCOUNT_STATUS_ALIASES) {
+    const key = resolvePropertyKey(typed, want);
+    if (key) return key;
+  }
+  return null;
+}
+
+/** The board's status cell for one page. */
 function statusOf(page: NotionPage): string | null {
-  const key = resolvePropertyKey(Object.keys(page.properties ?? {}), ACCOUNT_STATUS_COLUMN);
+  const key = resolveStatusKey(page.properties);
   return key ? (page.properties?.[key]?.status?.name ?? null) : null;
 }
 
