@@ -1,5 +1,10 @@
 import { test, expect } from "bun:test";
-import { buildStatusLines, STALE_AFTER_MIN, type HealthInput } from "./health-lines";
+import {
+  buildStatusLines,
+  STALE_AFTER_MIN,
+  WRITE_BACK_STALE_AFTER_MIN,
+  type HealthInput,
+} from "./health-lines";
 
 const NOW = Date.parse("2026-08-31T12:00:00Z");
 const minsAgo = (n: number): string => new Date(NOW - n * 60_000).toISOString();
@@ -57,22 +62,48 @@ test("a failure outranks staleness rather than being masked by it", () => {
   expect(line).toMatchObject({ tone: "bad", label: "Notion: board writes failing" });
 });
 
-test("staleness is reported against the stalest half, not the first one checked", () => {
-  const line = notionOf({
-    notion: { ok: true, checkedAt: minsAgo(STALE_AFTER_MIN + 30), note: null },
-    notionBudget: { ok: true, checkedAt: minsAgo(STALE_AFTER_MIN * 10), note: null },
-  })!;
-  expect(line).toMatchObject({ tone: "warn", label: "Notion: board writes stale" });
-});
-
-test("a service one minute inside the window is not called stale", () => {
-  // Boundary: the jobs run hourly, so a run at exactly the threshold is a normal gap, not an outage.
+test("the daily write-back is not called stale on the hourly threshold", () => {
+  // `syncNotionDailyBudgets` runs only under runCycle({ full: true }), once per calendar day. Judged
+  // by the hourly window it would sit amber ~22h out of every 24, and a badge that cries wolf daily
+  // is a badge nobody reads — which is the exact failure this line exists to prevent.
   expect(
-    notionOf({ notionBudget: { ok: true, checkedAt: minsAgo(STALE_AFTER_MIN), note: null } })!.tone,
+    notionOf({ notionBudget: { ok: true, checkedAt: minsAgo(STALE_AFTER_MIN + 60), note: null } })!
+      .tone,
   ).toBe("ok");
   expect(
-    notionOf({ notionBudget: { ok: true, checkedAt: minsAgo(STALE_AFTER_MIN + 1), note: null } })!
-      .tone,
+    notionOf({ notionBudget: { ok: true, checkedAt: minsAgo(23 * 60), note: null } })!.tone,
+  ).toBe("ok");
+  expect(
+    notionOf({
+      notionBudget: { ok: true, checkedAt: minsAgo(WRITE_BACK_STALE_AFTER_MIN + 60), note: null },
+    })!,
+  ).toMatchObject({ tone: "warn", label: "Notion: board writes stale" });
+});
+
+test("staleness is judged against each half's own window, not one shared clock", () => {
+  // A 35h-old write-back is healthy; a 2.5h-old read sync is not. Comparing raw ages would invert it.
+  expect(
+    notionOf({
+      notion: { ok: true, checkedAt: minsAgo(STALE_AFTER_MIN + 30), note: null },
+      notionBudget: { ok: true, checkedAt: minsAgo(WRITE_BACK_STALE_AFTER_MIN - 60), note: null },
+    })!,
+  ).toMatchObject({ tone: "warn", label: "Notion: sync stale" });
+  // Once both have blown their own window, the older one is the one worth naming.
+  expect(
+    notionOf({
+      notion: { ok: true, checkedAt: minsAgo(STALE_AFTER_MIN + 30), note: null },
+      notionBudget: { ok: true, checkedAt: minsAgo(WRITE_BACK_STALE_AFTER_MIN * 3), note: null },
+    })!,
+  ).toMatchObject({ tone: "warn", label: "Notion: board writes stale" });
+});
+
+test("a service one minute inside its window is not called stale", () => {
+  // Boundary: a run at exactly the threshold is a normal gap, not an outage.
+  expect(
+    notionOf({ notion: { ok: true, checkedAt: minsAgo(STALE_AFTER_MIN), note: null } })!.tone,
+  ).toBe("ok");
+  expect(
+    notionOf({ notion: { ok: true, checkedAt: minsAgo(STALE_AFTER_MIN + 1), note: null } })!.tone,
   ).toBe("warn");
 });
 
@@ -89,7 +120,7 @@ test("no Notion line at all until one of the two jobs has run", () => {
 });
 
 test("an unparseable timestamp reads as never-checked instead of painting the service green", () => {
-  // `(now - NaN) / 60_000 > 120` is false, so an unguarded comparison would report a dead service OK.
+  // `(now - NaN) / 60_000 > threshold` is false, so an unguarded comparison reports a dead service OK.
   const line = notionOf({ notionBudget: { ok: true, checkedAt: "not a date", note: null } })!;
   expect(line.tone).toBe("ok");
   expect(line.title).toContain("writes never");

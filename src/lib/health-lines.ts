@@ -34,9 +34,18 @@ export interface StatusLine {
   title: string;
 }
 
-/** Every background job here runs on the hourly cycle, so two missed cycles is the first
- *  unambiguous sign the worker is down rather than merely between runs. */
+/** The Meta token check and the `notion` read sync run on EVERY cycle, i.e. hourly, so two missed
+ *  cycles is the first unambiguous sign the worker is down rather than merely between runs. */
 export const STALE_AFTER_MIN = 120;
+
+/**
+ * The write-back's own window. `syncNotionDailyBudgets` runs only under `runCycle({ full: true })`,
+ * which `worker.ts` fires on the first tick of each new calendar day — so consecutive runs sit ~24h
+ * apart and the hourly threshold above would paint it amber for twenty-two hours out of every
+ * twenty-four. A badge that cries wolf daily is a badge nobody reads, which is the failure this
+ * whole line exists to prevent. 36h = a full daily slot missed, with slack for restart jitter.
+ */
+export const WRITE_BACK_STALE_AFTER_MIN = 36 * 60;
 
 /** `Date.parse`, or null when there is no usable timestamp. A malformed one must read as "never
  *  checked" rather than sliding through the `> STALE_AFTER_MIN` comparison as NaN, which is false
@@ -136,7 +145,7 @@ function notionLine(d: HealthInput, now: number): StatusLine | null {
   const wAge = ageMin(write?.checkedAt, now);
   const stale: { which: string; age: number }[] = [];
   if (read && rAge !== null && rAge > STALE_AFTER_MIN) stale.push({ which: "sync", age: rAge });
-  if (write && wAge !== null && wAge > STALE_AFTER_MIN)
+  if (write && wAge !== null && wAge > WRITE_BACK_STALE_AFTER_MIN)
     stale.push({ which: "board writes", age: wAge });
   if (stale.length > 0) {
     const worst = stale.reduce((a, b) => (b.age > a.age ? b : a));
