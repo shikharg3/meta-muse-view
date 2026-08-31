@@ -3,15 +3,17 @@
  *
  * Two panes because there are two different questions. Left answers "what can I measure": the
  * catalog, grouped and searchable, since 112 flat checkboxes is a haystack. Right answers "what
- * will my report look like": the picked keys in order, with ↑/↓. The selected array IS the column
- * order the engine renders, so this dialog is the only place that order is authored — which is why
- * ticking a box appends rather than slotting the metric into catalog position.
+ * will my report look like": the picked keys in order, reordered by dragging a row or nudging it
+ * with ↑/↓. The selected array IS the column order the engine renders, so this dialog is the only
+ * place that order is authored — which is why ticking a box appends rather than slotting the metric
+ * into catalog position.
  */
 import { useMemo, useState } from "react";
-import { ChevronDown, ChevronUp, Search, X } from "lucide-react";
+import { ChevronDown, ChevronUp, GripVertical, Search, X } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { GROUP_LABELS, REPORT_METRICS, metric } from "@/lib/report-catalog";
 import type { MetricGroup, ReportMetric } from "@/lib/report-catalog";
+import { cn } from "@/lib/utils";
 
 interface ColumnPickerDialogProps {
   open: boolean;
@@ -42,6 +44,10 @@ export function ColumnPickerDialog({
 }: ColumnPickerDialogProps) {
   const [query, setQuery] = useState("");
   const [showAll, setShowAll] = useState(false);
+  // `to` is an insert-BEFORE index against the current array, which is what the hover geometry
+  // below produces directly. One object rather than two states: a `from` without a `to` is not a
+  // drag, and the pair is always written together.
+  const [drag, setDrag] = useState<{ from: number; to: number } | null>(null);
 
   // Membership is tested once per rendered row on every keystroke and every toggle; `includes` on
   // both arrays would make that quadratic over a 112-metric catalog.
@@ -85,6 +91,29 @@ export function ColumnPickerDialog({
     [next[index], next[target]] = [next[target], next[index]];
     onChange(next);
   };
+
+  /**
+   * Relocate one key, rather than swap two. Dragging row 20 to the top must land it at 1; a swap
+   * would trade it with row 1 and scramble everything between.
+   */
+  const relocate = (from: number, to: number) => {
+    if (to === from || to === from + 1) return; // the identity move, in its two spellings
+    const next = selected.slice();
+    const [key] = next.splice(from, 1);
+    next.splice(to > from ? to - 1 : to, 0, key);
+    onChange(next);
+  };
+
+  const commitDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    if (drag) relocate(drag.from, drag.to);
+    setDrag(null);
+  };
+
+  // Draw the indicator only where the drop would actually change the order: both edges of your own
+  // row resolve to the identity move, and a line there promises something that will not happen.
+  const dropAt =
+    drag !== null && drag.to !== drag.from && drag.to !== drag.from + 1 ? drag.to : null;
 
   // Drop the search on close: reopening into a stale query looks like a half-empty catalog.
   // `Show all` is a deliberate preference, so it survives.
@@ -160,10 +189,24 @@ export function ColumnPickerDialog({
           </div>
 
           <div className="flex min-h-0 flex-1 flex-col md:w-72 md:flex-none">
-            <div className="shrink-0 px-4 py-3 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-              Column order
+            <div className="flex shrink-0 items-baseline gap-2 px-4 py-3">
+              <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Column order
+              </span>
+              {selected.length > 1 && (
+                <span className="text-[10px] normal-case text-muted-foreground/70">
+                  drag to reorder
+                </span>
+              )}
             </div>
-            <div className="min-h-0 flex-1 space-y-1 overflow-y-auto px-4 pb-4">
+            <div
+              className="min-h-0 flex-1 space-y-1 overflow-y-auto px-4 pb-4"
+              // The rows own the hover geometry; the container only has to accept the drop, so
+              // releasing in the padding under the list lands instead of snapping back.
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={commitDrop}
+              onDragEnd={() => setDrag(null)}
+            >
               {selected.length === 0 ? (
                 <p className="py-10 text-center text-xs text-muted-foreground">
                   No columns yet. Tick metrics on the left — they land here in the order you pick
@@ -173,9 +216,43 @@ export function ColumnPickerDialog({
                 selected.map((key, i) => (
                   <div
                     key={key}
-                    className="flex items-center gap-1 rounded-md border border-border bg-background py-1 pl-2 pr-1"
+                    draggable
+                    onDragStart={(e) => {
+                      setDrag({ from: i, to: i });
+                      // Firefox refuses to start a drag with an empty payload. The authoritative
+                      // index is in state; this is only here to satisfy the platform.
+                      e.dataTransfer.setData("text/plain", key);
+                      e.dataTransfer.effectAllowed = "move";
+                    }}
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      e.dataTransfer.dropEffect = "move";
+                      const box = e.currentTarget.getBoundingClientRect();
+                      const to = e.clientY < box.top + box.height / 2 ? i : i + 1;
+                      // dragover fires on every pixel of travel; only a changed target earns a
+                      // re-render of the list.
+                      setDrag((prev) => (prev === null || prev.to === to ? prev : { ...prev, to }));
+                    }}
+                    onDrop={commitDrop}
+                    className={cn(
+                      "relative flex cursor-grab items-center gap-1 rounded-md border border-border bg-background py-1 pl-1 pr-1 active:cursor-grabbing",
+                      drag?.from === i && "opacity-40",
+                    )}
                   >
-                    <span className="w-5 shrink-0 text-right font-mono text-[10px] text-muted-foreground">
+                    {/* Where the drop will land. Absolute and pointer-events-none on purpose: an
+                        indicator in the flow would push the row out from under the cursor, and
+                        Chrome abandons a drag whose target moves away mid-hover. */}
+                    {dropAt === i && (
+                      <div className="pointer-events-none absolute -top-[3px] left-0 right-0 h-0.5 rounded-full bg-primary" />
+                    )}
+                    {dropAt === selected.length && i === selected.length - 1 && (
+                      <div className="pointer-events-none absolute -bottom-[3px] left-0 right-0 h-0.5 rounded-full bg-primary" />
+                    )}
+                    <GripVertical
+                      aria-hidden
+                      className="size-3.5 shrink-0 text-muted-foreground/60"
+                    />
+                    <span className="w-4 shrink-0 text-right font-mono text-[10px] text-muted-foreground">
                       {i + 1}
                     </span>
                     {/* A saved template can name a key the catalog has since dropped, and an
