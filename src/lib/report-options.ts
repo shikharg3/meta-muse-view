@@ -25,7 +25,8 @@ export const REPORT_COLUMNS: ReportColumnDef[] = REPORT_METRICS.map((m) => ({
 
 export const DEFAULT_REPORT_COLUMN_KEYS = ["spend", "impressions", "ctr", "cpc", "results"];
 
-/** Report dimensions (keys must match the server's Breakdown union). All compose with "Split by day". */
+/** Report dimensions (keys must match the server's Breakdown union). All compose with any
+ *  `time_increment` — the two are independent axes, as they are in the Insights API. */
 export const REPORT_BREAKDOWNS: { key: string; label: string }[] = [
   { key: "none", label: "Total (no breakdown)" },
   { key: "campaign", label: "By campaign" },

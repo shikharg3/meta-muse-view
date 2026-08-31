@@ -236,10 +236,11 @@ export const TOOLS: AnthropicTool[] = [
           description:
             "Row dimension. Entity grains: campaign / adset / ad (one row per entity; same-named entities merge). Meta dimensions: platform, placement (platform·position·device), device, age, gender, age_gender, country, region, market (DMA), hour / hour_audience (hour-of-day), frequency, product, and dynamic-creative asset dims (image/video/title/body/cta/description/link_asset). 'day' = daily totals. Default none (single total row).",
         },
-        split_by_day: {
-          type: "boolean",
+        time_increment: {
+          type: "string",
+          enum: ["all_days", "1", "7", "28", "monthly"],
           description:
-            "Additionally split EVERY dimension row by day (e.g. breakdown=adset + split_by_day → one row per ad set per day). Works with all dimensions.",
+            "Meta's time_increment: the time axis. all_days = one row per dimension value over the whole range (default). 1 = one row per day, 7 = 7-day buckets from the range start, 28 = 28-day buckets, monthly = calendar months clipped to the range. Combines with any breakdown (breakdown=adset + time_increment=1 → one row per ad set per day). NOTE: reach, frequency, cost-per-1k-reached and the unique_* metrics are counts of distinct people that Meta de-duplicates per row, so they are withheld from any row wider than a single day on a single account — ask for time_increment=1 when the user wants them.",
         },
       },
       required: ["subject"],
@@ -546,7 +547,7 @@ async function generateReportTool(input: Record<string, unknown>): Promise<unkno
   const range = resolveRange(input);
   if (!range)
     return { error: "What date range? e.g. 'last 7 days' or specific since/until dates." };
-  const bd = parseBreakdown(input.breakdown, input.split_by_day);
+  const bd = parseBreakdown(input.breakdown, input.time_increment);
   return await runReport({
     name: subject.name,
     accountIds: subject.accountIds,
@@ -554,6 +555,6 @@ async function generateReportTool(input: Record<string, unknown>): Promise<unkno
     until: range.until,
     columns: normalizeColumns(Array.isArray(input.columns) ? input.columns.map(String) : []),
     breakdown: bd.dim,
-    byDay: bd.byDay,
+    timeIncrement: bd.timeIncrement,
   });
 }

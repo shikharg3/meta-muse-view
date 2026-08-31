@@ -7,12 +7,19 @@ import { trailingRange } from "@/sync/jobs/insights";
 import type { InsightRow } from "@/meta/types";
 import { getClientRow, effectiveAccountIds } from "@/sync/jobs/clients";
 import { DEFAULT_REPORT_COLUMN_KEYS } from "@/lib/report-options";
-import { metric, type ReportColumnKind } from "@/lib/report-catalog";
+import { metric, isAdditive, type ReportColumnKind } from "@/lib/report-catalog";
 import { resolvePreset } from "@/lib/date-presets";
+import {
+  bucketFor,
+  bucketLabel,
+  isTimeIncrement,
+  resolveTimeIncrement,
+  type TimeIncrement,
+} from "@/lib/time-increment";
 import { ownedCampaignIds } from "@/server/fns/campaign-attribution";
 
 // Every dimension a report can break down by. Entity dims read insights_daily at that level;
-// meta dims read the synced insights_breakdown_daily types. All compose with `byDay`.
+// meta dims read the synced insights_breakdown_daily types. All compose with `timeIncrement`.
 export type Breakdown =
   | "none"
   | "campaign"
@@ -52,9 +59,10 @@ export interface ReportPayload {
   subtitle: string;
   note: string | null;
   columns: ReportColumn[];
-  rows: (string | number)[][];
+  /** A null cell is a metric that cannot be reported at this granularity — see `isAdditive`. */
+  rows: (string | number | null)[][];
   /** Totals row aligned to columns, or null when there's only one (already-total) row. */
-  totals: (string | number)[] | null;
+  totals: (string | number | null)[] | null;
   rowCount: number;
   filename: string;
 }
@@ -72,6 +80,12 @@ interface Agg {
   results: number;
   events: Map<string, number>;
   eventValues: Map<string, number>;
+  /**
+   * How many of Meta's own rows were folded in. One means every metric in this bucket is Meta's
+   * verbatim figure; more means the de-duplicated metrics would be a double count, because a person
+   * reached on two days — or by two of the client's accounts — appears in both rows.
+   */
+  nativeRows: number;
 }
 
 // "Results" is objective-dependent in Ads Manager (traffic→link clicks,
@@ -190,27 +204,34 @@ export function normalizeColumns(input: string[]): string[] {
 
 export interface ResolvedBreakdown {
   dim: Breakdown;
-  byDay: boolean;
+  timeIncrement: TimeIncrement;
 }
 
 /**
- * Free-text / legacy breakdown input (+ optional split-by-day flag) → dimension + byDay.
+ * Free-text / legacy breakdown input (+ an explicit granularity) → dimension + `time_increment`.
  * Accepts exact registry keys, legacy composites ("day", "<dim>_day"), and natural phrasings
  * ("daily by ad set", "device platform", "age and gender", "headline").
  */
-export function parseBreakdown(input: unknown, splitByDay?: unknown): ResolvedBreakdown {
+export function parseBreakdown(input: unknown, increment?: unknown): ResolvedBreakdown {
   let v = String(input ?? "")
     .toLowerCase()
     .trim();
-  let byDay = Boolean(splitByDay);
-  if (["day", "daily", "by day", "date"].includes(v)) return { dim: "none", byDay: true };
+  // A composite like "adset_day" or a phrasing like "daily by ad set" names the granularity inside
+  // the breakdown, which is how the chat tool has always been asked for it. An explicit increment
+  // still wins: it is the caller stating the axis rather than us inferring it from prose.
+  let inferred: TimeIncrement | null = null;
+  if (["day", "daily", "by day", "date"].includes(v))
+    return { dim: "none", timeIncrement: isTimeIncrement(increment) ? increment : "1" };
   if (v.endsWith("_day")) {
-    byDay = true;
+    inferred = "1";
     v = v.slice(0, -4);
   } else if (v.includes("day") || v.includes("daily") || (v !== "date" && v.includes("date"))) {
-    byDay = true;
+    inferred = "1";
   }
-  if (v in REPORT_DIMS) return { dim: v as Breakdown, byDay };
+  const timeIncrement = isTimeIncrement(increment)
+    ? increment
+    : (inferred ?? resolveTimeIncrement(increment));
+  if (v in REPORT_DIMS) return { dim: v as Breakdown, timeIncrement };
   const has = (...subs: string[]): boolean => subs.some((s) => v.includes(s));
   const dim = ((): Breakdown => {
     if (has("image")) return "image_asset";
@@ -238,7 +259,7 @@ export function parseBreakdown(input: unknown, splitByDay?: unknown): ResolvedBr
     if (/\bads?\b/.test(v)) return "ad";
     return "none";
   })();
-  return { dim, byDay };
+  return { dim, timeIncrement };
 }
 
 export interface BuildSpec {
@@ -247,8 +268,8 @@ export interface BuildSpec {
   until: string;
   columns: string[];
   breakdown: Breakdown;
-  /** Additionally split every dimension row by day (key = "date · value"). */
-  byDay: boolean;
+  /** Meta's `time_increment`: the row granularity along the time axis. */
+  timeIncrement: TimeIncrement;
   /** campaign_id → objective, for objective-aware "results". */
   objectiveByCampaign: Record<string, string>;
   /** Cost markup fraction (e.g. 0.1 = +10%) applied to spend for client-facing reports. */
@@ -499,6 +520,7 @@ const emptyAgg = (): Agg => ({
   results: 0,
   events: new Map(),
   eventValues: new Map(),
+  nativeRows: 0,
 });
 
 const addTo = (m: Map<string, number>, key: string, n: number): void => {
@@ -512,6 +534,7 @@ function accumulate(
   objectiveByCampaign: Record<string, string>,
   fields: readonly string[],
 ): void {
+  a.nativeRows++;
   for (const f of fields) addTo(a.scalars, f, fieldValue((r as Record<string, unknown>)[f]));
   a.results += resultValue(r, objectiveByCampaign[String(r.campaign_id ?? "")]);
   for (const act of (r.actions as { action_type: string; value: string }[] | undefined) ?? [])
@@ -521,6 +544,7 @@ function accumulate(
 }
 
 const mergeAgg = (into: Agg, from: Agg): void => {
+  into.nativeRows += from.nativeRows;
   for (const [k, v] of from.scalars) addTo(into.scalars, k, v);
   into.results += from.results;
   for (const [k, v] of from.events) addTo(into.events, k, v);
@@ -579,6 +603,15 @@ function resolveMetric(key: string, a: Agg, memo: Map<string, number>): number {
 
 const MAX_ROWS = 500;
 
+/** Download-name suffix per granularity. Meta's key is machine-y; the filename is for a human. */
+const FILENAME_SUFFIX: Record<TimeIncrement, string> = {
+  all_days: "",
+  "1": "_daily",
+  "7": "_weekly",
+  "28": "_28d",
+  monthly: "_monthly",
+};
+
 /**
  * Aggregate a client's synced rows (from the injected source) by the breakdown key and shape them
  * into a tabular report. A client-facing cost markup, when set, inflates spend before the derived
@@ -610,14 +643,22 @@ export async function buildReport(
     contributors++;
     for (const r of rows) {
       const dimVal = (): string => String(r[DIM_VALUE_KEY] ?? "—");
+      // The time axis is Meta's `time_increment`, resolved to the bucket this row's date falls in.
+      // `all_days` has no time axis at all, which is why it keeps the old "Total" / bare-value keys.
+      const period =
+        spec.timeIncrement === "all_days"
+          ? null
+          : bucketLabel(
+              bucketFor(String(r.date_start), spec.since, spec.until, spec.timeIncrement),
+            );
       const key =
-        dim === "none"
-          ? spec.byDay
-            ? r.date_start
-            : "Total"
-          : spec.byDay
-            ? `${r.date_start} · ${dimVal()}`
-            : dimVal();
+        period === null
+          ? dim === "none"
+            ? "Total"
+            : dimVal()
+          : dim === "none"
+            ? period
+            : `${period} · ${dimVal()}`;
       let a = aggByKey.get(key);
       if (!a) {
         a = emptyAgg();
@@ -638,8 +679,10 @@ export async function buildReport(
     }
   }
 
-  // Order rows: chronological when split by day (keys start with the date), spend-first else.
-  if (spec.byDay) order.sort();
+  const hasTimeAxis = spec.timeIncrement !== "all_days";
+  // Order rows: chronological when there is a time axis (keys start with the bucket's ISO start
+  // date), spend-first otherwise.
+  if (hasTimeAxis) order.sort();
   else if (dim !== "none")
     order.sort(
       (x, y) =>
@@ -647,12 +690,15 @@ export async function buildReport(
     );
   const limited = order.slice(0, MAX_ROWS);
 
-  const hasDimCol = dim !== "none" || spec.byDay;
-  const dimLabel =
-    dim === "none"
-      ? "Date"
-      : spec.byDay
-        ? `Date · ${REPORT_DIMS[dim].label}`
+  const hasDimCol = dim !== "none" || hasTimeAxis;
+  const timeLabel = spec.timeIncrement === "1" ? "Date" : "Period";
+  // Evaluated even when there is no dimension column, so the "none" case must not reach REPORT_DIMS.
+  const dimLabel = !hasDimCol
+    ? ""
+    : dim === "none"
+      ? timeLabel
+      : hasTimeAxis
+        ? `${timeLabel} · ${REPORT_DIMS[dim].label}`
         : REPORT_DIMS[dim].label;
   const columns: ReportColumn[] = [
     ...(hasDimCol ? [{ key: "_dim", label: dimLabel, kind: "text" as const }] : []),
@@ -662,11 +708,16 @@ export async function buildReport(
     }),
   ];
 
-  const metricCells = (a: Agg): number[] => {
+  // A metric Meta de-duplicates is Meta's own figure while a bucket holds exactly one of Meta's rows,
+  // and a double count the moment it holds two. There is no third option — the distinct-person count
+  // for a wider window is not a function of the narrower ones — so the cell is withheld, never summed.
+  const dedupCols = cols.filter((k) => !isAdditive(k));
+  const metricCells = (a: Agg): (number | null)[] => {
     const memo = new Map<string, number>();
-    return cols.map((k) => resolveMetric(k, a, memo));
+    const summable = a.nativeRows <= 1;
+    return cols.map((k) => (summable || isAdditive(k) ? resolveMetric(k, a, memo) : null));
   };
-  const rows: (string | number)[][] = limited.map((key) => {
+  const rows: (string | number | null)[][] = limited.map((key) => {
     const a = aggByKey.get(key)!;
     return hasDimCol ? [key, ...metricCells(a)] : metricCells(a);
   });
@@ -676,23 +727,32 @@ export async function buildReport(
   // hand-restated version did.
   const total = emptyAgg();
   for (const a of aggByKey.values()) mergeAgg(total, a);
-  const totals = hasDimCol ? (["Total", ...metricCells(total)] as (string | number)[]) : null;
+  const totals = hasDimCol ? ["Total", ...metricCells(total)] : null;
 
   const dimNote = hasDimCol ? ` · by ${dimLabel.toLowerCase()}` : "";
-  const accNote =
+  const withheld =
+    dedupCols.length > 0 &&
+    (total.nativeRows > 1 || limited.some((k) => aggByKey.get(k)!.nativeRows > 1));
+  const notes = [
     contributors < spec.accountIds.length
       ? `${contributors} of ${spec.accountIds.length} accounts have data in this range.`
-      : null;
+      : null,
+    withheld
+      ? `${dedupCols.map((k) => metric(k)!.label).join(", ")} withheld where a row covers more than ` +
+        `one of Meta's own rows: Meta counts distinct people per day and per account, so these cannot ` +
+        `be summed. Daily rows on a single-account client report them exactly.`
+      : null,
+  ].filter((n): n is string => n !== null);
 
   return {
     title: `${subjectName} — performance report`,
     subtitle: `${spec.since} → ${spec.until}${dimNote}${spec.markup ? ` · incl. ${Math.round(spec.markup * 100)}% markup` : ""}`,
-    note: accNote,
+    note: notes.length > 0 ? notes.join(" ") : null,
     columns,
     rows,
     totals,
     rowCount: rows.length,
-    filename: `${slug(subjectName)}_${spec.since}_${spec.until}${dim === "none" ? (spec.byDay ? "_by_day" : "") : `_by_${dim}${spec.byDay ? "_day" : ""}`}`,
+    filename: `${slug(subjectName)}_${spec.since}_${spec.until}${dim === "none" ? "" : `_by_${dim}`}${FILENAME_SUFFIX[spec.timeIncrement]}`,
   };
 }
 
@@ -725,7 +785,7 @@ export interface ReportArgs {
   until: string;
   columns: string[];
   breakdown: Breakdown;
-  byDay: boolean;
+  timeIncrement: TimeIncrement;
   markup?: number;
   campaignIds?: string[];
 }
@@ -752,7 +812,7 @@ export async function runReport(args: ReportArgs): Promise<ReportPayload | { err
     until: args.until,
     columns: args.columns,
     breakdown: args.breakdown,
-    byDay: args.byDay,
+    timeIncrement: args.timeIncrement,
     objectiveByCampaign: await objectiveMap(args.accountIds),
     markup: args.markup,
     campaignIds: args.campaignIds,
@@ -830,6 +890,9 @@ export interface ClientReportInput {
   until?: string;
   columns: string[];
   breakdown: string;
+  /** Meta's `time_increment`. `splitByDay` is the pre-Meta-vocabulary spelling, still read from
+   *  templates and frozen runs saved before this existed. */
+  timeIncrement?: string;
   splitByDay?: boolean;
   markup?: number;
   campaignIds?: string[];
@@ -849,7 +912,10 @@ export async function reportForClient(
   if (!range) return { error: "Pick a valid date range." };
   const columns = normalizeColumns(input.columns);
   if (columns.length === 0) return { error: "Select at least one column." };
-  const bd = parseBreakdown(input.breakdown, input.splitByDay);
+  const bd = parseBreakdown(
+    input.breakdown,
+    input.timeIncrement ?? resolveTimeIncrement(undefined, input.splitByDay),
+  );
   const accountIds = effectiveAccountIds(row);
   // On accounts shared with another client, restrict to the campaigns whose names attribute to THIS
   // client, intersected with any explicit campaign selection.
@@ -867,7 +933,7 @@ export async function reportForClient(
     until: range.until,
     columns,
     breakdown: bd.dim,
-    byDay: bd.byDay,
+    timeIncrement: bd.timeIncrement,
     markup: input.markup,
     campaignIds,
   });

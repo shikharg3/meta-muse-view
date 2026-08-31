@@ -364,3 +364,42 @@ const BY_KEY: Record<string, ReportMetric> = Object.fromEntries(
 );
 
 export const metric = (key: string): ReportMetric | undefined => BY_KEY[key];
+
+/**
+ * Metrics Meta de-duplicates per query window: counts of distinct PEOPLE, not events. Summing them
+ * across rows double-counts anyone who appears in two of those rows, and the true figure is not
+ * recoverable by any arithmetic — measured against the Graph API, 29 daily rows sum to 492,054 reach
+ * where the native 29-day window returns 246,122, and two 7-day windows one day apart return 61,055
+ * and 65,586. So a bucket assembled from more than one Meta row must withhold them.
+ */
+const DEDUPED_BY_META = [
+  "reach",
+  "unique_clicks",
+  "full_view_reach",
+  "unique_inline_link_clicks",
+  "unique_outbound_clicks",
+];
+
+/** Memoised because `isAdditive` is asked once per column per rendered row. */
+const ADDITIVE_MEMO = new Map<string, boolean>();
+
+/**
+ * Whether `key` may be summed across Meta rows. A derived metric inherits the answer from its
+ * dependencies: `frequency` is impressions/reach, so it is only as summable as `reach` is.
+ */
+export function isAdditive(key: string): boolean {
+  const memo = ADDITIVE_MEMO.get(key);
+  if (memo !== undefined) return memo;
+  const m = BY_KEY[key];
+  // Unknown keys are never rendered, so the answer only has to be safe, not meaningful.
+  const additive =
+    m === undefined
+      ? true
+      : DEDUPED_BY_META.includes(key)
+        ? false
+        : m.source.kind === "derived"
+          ? m.source.deps.every(isAdditive)
+          : true;
+  ADDITIVE_MEMO.set(key, additive);
+  return additive;
+}

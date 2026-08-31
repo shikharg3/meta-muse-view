@@ -726,7 +726,8 @@ export const reportTemplates = pgTable(
     clientId: text("client_id").references(() => clients.id, { onDelete: "cascade" }),
     columns: jsonb("columns").notNull(), // string[] catalog keys, IN USER ORDER
     breakdown: text("breakdown").notNull().default("none"),
-    splitByDay: boolean("split_by_day").notNull().default(false),
+    // Meta's `time_increment` verbatim: "all_days" | "1" | "7" | "28" | "monthly".
+    timeIncrement: text("time_increment").notNull().default("all_days"),
     markup: doublePrecision("markup"),
     rangePreset: text("range_preset"), // a DATE_PRESETS key; null = ask at run time
     campaignIds: jsonb("campaign_ids"), // only legal when clientId is set

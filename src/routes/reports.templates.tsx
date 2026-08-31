@@ -10,6 +10,8 @@ import { createFileRoute, Link, useRouter } from "@tanstack/react-router";
 import { Columns3, Pencil, Play, Plus, Trash2, X } from "lucide-react";
 import { BreakdownPicker } from "@/components/reports/BreakdownPicker";
 import { ColumnPickerDialog } from "@/components/reports/ColumnPickerDialog";
+import { TimeIncrementPicker } from "@/components/reports/TimeIncrementPicker";
+import { DEFAULT_TIME_INCREMENT, TIME_INCREMENTS, type TimeIncrement } from "@/lib/time-increment";
 import { listClients } from "@/lib/api/clients";
 import { deleteReportTemplate, listReportTemplates, saveReportTemplate } from "@/lib/api/reports";
 import { DATE_PRESETS } from "@/lib/date-presets";
@@ -32,7 +34,7 @@ interface TemplateForm {
   clientId: string;
   columns: string[];
   breakdown: string;
-  splitByDay: boolean;
+  timeIncrement: TimeIncrement;
   /** Percent, as typed. Stored as a fraction — see `submit`. String so the field can be empty. */
   markupPct: string;
   rangePreset: string;
@@ -51,7 +53,7 @@ const BLANK_FORM: TemplateForm = {
   clientId: "",
   columns: DEFAULT_REPORT_COLUMN_KEYS,
   breakdown: "none",
-  splitByDay: false,
+  timeIncrement: DEFAULT_TIME_INCREMENT,
   markupPct: "",
   rangePreset: "",
   campaignIds: null,
@@ -91,7 +93,7 @@ function Templates() {
       clientId: t.clientId ?? "",
       columns: t.columns,
       breakdown: t.breakdown,
-      splitByDay: t.splitByDay,
+      timeIncrement: t.timeIncrement,
       markupPct: t.markup === null ? "" : String(Math.round(t.markup * 100)),
       rangePreset: t.rangePreset ?? "",
       campaignIds: t.campaignIds,
@@ -114,7 +116,7 @@ function Templates() {
         clientId: draft.clientId || null,
         columns: draft.columns,
         breakdown: draft.breakdown,
-        splitByDay: draft.splitByDay,
+        timeIncrement: draft.timeIncrement,
         markup: pct ? pct / 100 : null,
         rangePreset: draft.rangePreset || null,
         campaignIds: keepCampaigns ? draft.campaignIds : null,
@@ -239,8 +241,20 @@ function Templates() {
                 <BreakdownPicker
                   breakdown={form.breakdown}
                   onBreakdownChange={(key) => setForm({ ...form, breakdown: key })}
-                  splitByDay={form.splitByDay}
-                  onSplitByDayChange={(v) => setForm({ ...form, splitByDay: v })}
+                />
+              </div>
+            </div>
+
+            <div>
+              <span className={LABEL}>Granularity</span>
+              <div className="mt-1">
+                {/* No `withheld` warning here: a template carries no client or range, so which
+                    metrics have data — and how many accounts a run will span — is unknowable until
+                    the run itself. The builder warns at that point. */}
+                <TimeIncrementPicker
+                  value={form.timeIncrement}
+                  onChange={(v) => setForm({ ...form, timeIncrement: v })}
+                  withheld={[]}
                 />
               </div>
             </div>
@@ -348,8 +362,11 @@ function Templates() {
                     <td className="px-3 py-3 text-right tabular-nums">{t.columns.length}</td>
                     <td className="px-3 py-3">
                       <div className="text-xs">{breakdownLabel(t.breakdown)}</div>
-                      {t.splitByDay && (
-                        <div className="text-[11px] text-muted-foreground">split by day</div>
+                      {t.timeIncrement !== DEFAULT_TIME_INCREMENT && (
+                        <div className="text-[11px] text-muted-foreground">
+                          {TIME_INCREMENTS.find((i) => i.key === t.timeIncrement)?.label ??
+                            t.timeIncrement}
+                        </div>
                       )}
                     </td>
                     <td className="px-3 py-3 text-xs">

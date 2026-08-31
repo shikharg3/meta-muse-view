@@ -5,8 +5,16 @@ import { downloadBlob, downloadCsvRows } from "@/lib/download";
 import { stampReportExport } from "@/lib/api/reports";
 import type { ReportColumn, ReportPayload } from "@/server/agent/report";
 
+/**
+ * A null cell is a metric this row cannot report — Meta de-duplicates it per row, so it is withheld
+ * rather than summed (see `isAdditive`). It prints as an em dash everywhere, including CSV and PDF:
+ * a blank would read as zero, and a zero would be a lie.
+ */
+const WITHHELD = "—";
+
 /** Format a raw cell value for display, per its column kind. */
-function fmtCell(value: string | number, kind: ReportColumn["kind"]): string {
+function fmtCell(value: string | number | null, kind: ReportColumn["kind"]): string {
+  if (value === null) return WITHHELD;
   if (typeof value === "string") return value;
   switch (kind) {
     case "money":
@@ -23,7 +31,8 @@ function fmtCell(value: string | number, kind: ReportColumn["kind"]): string {
 }
 
 /** Plain value for CSV/PDF (numbers rounded, no currency symbols). */
-function rawCell(value: string | number, kind: ReportColumn["kind"]): string {
+function rawCell(value: string | number | null, kind: ReportColumn["kind"]): string {
+  if (value === null) return WITHHELD;
   if (typeof value === "string") return value;
   if (kind === "int") return String(Math.round(value));
   return value.toFixed(2);

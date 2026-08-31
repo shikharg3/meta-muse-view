@@ -19,6 +19,9 @@ import { DATE_PRESETS } from "@/lib/date-presets";
 import { ColumnPickerDialog } from "@/components/reports/ColumnPickerDialog";
 import { RangePicker, type RangeValue } from "@/components/reports/RangePicker";
 import { BreakdownPicker } from "@/components/reports/BreakdownPicker";
+import { TimeIncrementPicker } from "@/components/reports/TimeIncrementPicker";
+import { isAdditive, metric } from "@/lib/report-catalog";
+import { DEFAULT_TIME_INCREMENT, TIME_INCREMENTS, type TimeIncrement } from "@/lib/time-increment";
 import { getReportCatalog } from "@/lib/api/report-catalog";
 import { getClientCampaigns } from "@/lib/api/clients";
 
@@ -32,7 +35,8 @@ export interface ReportRequest {
   until?: string;
   columns: string[];
   breakdown: string;
-  splitByDay?: boolean;
+  /** Meta's `time_increment`. */
+  timeIncrement?: TimeIncrement;
   markup?: number;
   campaignIds?: string[];
   summary: string;
@@ -66,8 +70,10 @@ export function ReportBuilder({ clients, busy, onSubmit, onClose, lockedClient, 
   // metric rather than an empty list, which is the safe direction to fail in.
   const [availableKeys, setAvailableKeys] = useState<string[] | null>(null);
   const [breakdown, setBreakdown] = useState(initial?.breakdown ?? "none");
-  // default = daily totals (old "By day")
-  const [splitByDay, setSplitByDay] = useState(initial?.splitByDay ?? true);
+  // Meta's own default: one row per breakdown value across the whole range.
+  const [timeIncrement, setTimeIncrement] = useState<TimeIncrement>(
+    initial?.timeIncrement ?? DEFAULT_TIME_INCREMENT,
+  );
   const [markupPct, setMarkupPct] = useState(
     initial?.markup ? Math.round(initial.markup * 100) : 0,
   );
@@ -130,6 +136,13 @@ export function ReportBuilder({ clients, busy, onSubmit, onClose, lockedClient, 
 
   const customIncomplete = !("preset" in range) && (!range.since || !range.until);
   const canSubmit = !!clientId && columns.length > 0 && !customIncomplete && !busy;
+  // Which chosen columns this granularity cannot report. Only the time axis is checked here: a
+  // multi-account client also withholds them at daily granularity, but the account count is the
+  // engine's business and the payload's note says so on the way back.
+  const withheldMetrics =
+    timeIncrement === "1"
+      ? []
+      : columns.filter((k) => !isAdditive(k)).map((k) => metric(k)?.label ?? k);
 
   const submit = () => {
     if (!canSubmit) return;
@@ -139,6 +152,11 @@ export function ReportBuilder({ clients, busy, onSubmit, onClose, lockedClient, 
       "preset" in range
         ? (DATE_PRESETS.find((p) => p.key === range.preset)?.label ?? range.preset)
         : `${range.since} → ${range.until}`;
+    const incrementLabel =
+      timeIncrement === DEFAULT_TIME_INCREMENT
+        ? ""
+        : ` × ${(TIME_INCREMENTS.find((t) => t.key === timeIncrement)?.label ?? timeIncrement).toLowerCase()}`;
+
     // Only send ids when a proper non-empty subset is chosen; all/none = every campaign.
     const allCampaigns = campaigns.length > 0 && selectedCampaigns.size === campaigns.length;
     const campaignIds =
@@ -153,10 +171,10 @@ export function ReportBuilder({ clients, busy, onSubmit, onClose, lockedClient, 
         : { since: range.since, until: range.until }),
       columns,
       breakdown,
-      splitByDay,
+      timeIncrement,
       markup: markupPct ? markupPct / 100 : undefined,
       campaignIds,
-      summary: `${clientName} · ${rangeLabel.toLowerCase()} · ${bd.toLowerCase()}${splitByDay ? " × day" : ""} · ${columns.length} columns${markupPct ? ` · +${markupPct}% markup` : ""}${campaignIds ? ` · ${campaignIds.length} campaigns` : ""}`,
+      summary: `${clientName} · ${rangeLabel.toLowerCase()} · ${bd.toLowerCase()}${incrementLabel} · ${columns.length} columns${markupPct ? ` · +${markupPct}% markup` : ""}${campaignIds ? ` · ${campaignIds.length} campaigns` : ""}`,
     });
   };
 
@@ -222,7 +240,7 @@ export function ReportBuilder({ clients, busy, onSubmit, onClose, lockedClient, 
         </Popover>
       </Field>
 
-      {/* Campaigns — optional filter; applies to Total / By-day reports */}
+      {/* Campaigns — optional filter; restricts which rows are aggregated, at any granularity */}
       {campaigns.length > 0 && (
         <Field label={`Campaigns (${selectedCampaigns.size}/${campaigns.length})`}>
           <div className="space-y-1.5">
@@ -241,7 +259,7 @@ export function ReportBuilder({ clients, busy, onSubmit, onClose, lockedClient, 
               >
                 None
               </button>
-              <span className="ml-auto text-muted-foreground">applies to Total / By-day</span>
+              <span className="ml-auto text-muted-foreground">applies to every report</span>
             </div>
             <div className="flex max-h-32 flex-wrap gap-1.5 overflow-auto">
               {campaigns.map((c) => (
@@ -285,13 +303,16 @@ export function ReportBuilder({ clients, busy, onSubmit, onClose, lockedClient, 
         />
       </Field>
 
-      {/* Breakdown — renders its own split-by-day control alongside the trigger */}
+      {/* Breakdown and granularity are separate Insights parameters, so they are separate controls */}
       <Field label="Breakdown">
-        <BreakdownPicker
-          breakdown={breakdown}
-          onBreakdownChange={setBreakdown}
-          splitByDay={splitByDay}
-          onSplitByDayChange={setSplitByDay}
+        <BreakdownPicker breakdown={breakdown} onBreakdownChange={setBreakdown} />
+      </Field>
+
+      <Field label="Granularity">
+        <TimeIncrementPicker
+          value={timeIncrement}
+          onChange={setTimeIncrement}
+          withheld={withheldMetrics}
         />
       </Field>
 

@@ -8,6 +8,7 @@ import {
 } from "./report";
 import type { ReportRowSource } from "./report";
 import type { InsightRow } from "@/meta/types";
+import type { TimeIncrement } from "@/lib/time-increment";
 import { REPORT_METRICS } from "@/lib/report-catalog";
 
 const rowSource =
@@ -40,13 +41,13 @@ test("normalizeColumns maps aliases, dedupes, drops unknowns", () => {
 });
 
 test("parseBreakdown recognizes synonyms, legacy composites, and defaults to none", () => {
-  expect(parseBreakdown("by day")).toEqual({ dim: "none", byDay: true });
-  expect(parseBreakdown("Daily")).toEqual({ dim: "none", byDay: true });
-  expect(parseBreakdown("platform")).toEqual({ dim: "platform", byDay: false });
-  expect(parseBreakdown(undefined)).toEqual({ dim: "none", byDay: false });
-  expect(parseBreakdown("nonsense")).toEqual({ dim: "none", byDay: false });
+  expect(parseBreakdown("by day")).toEqual({ dim: "none", timeIncrement: "1" });
+  expect(parseBreakdown("Daily")).toEqual({ dim: "none", timeIncrement: "1" });
+  expect(parseBreakdown("platform")).toEqual({ dim: "platform", timeIncrement: "all_days" });
+  expect(parseBreakdown(undefined)).toEqual({ dim: "none", timeIncrement: "all_days" });
+  expect(parseBreakdown("nonsense")).toEqual({ dim: "none", timeIncrement: "all_days" });
   // split flag composes with any dimension
-  expect(parseBreakdown("region", true)).toEqual({ dim: "region", byDay: true });
+  expect(parseBreakdown("region", true)).toEqual({ dim: "region", timeIncrement: "1" });
 });
 
 test("resolveRange handles days, explicit dates, and rejects empty", () => {
@@ -99,7 +100,7 @@ test("buildReport aggregates by day with objective-aware results", async () => {
       until: "2026-06-02",
       columns: ["spend", "results", "cpc", "ctr", "cpm"],
       breakdown: "none",
-      byDay: true,
+      timeIncrement: "1",
       objectiveByCampaign: { c1: "OUTCOME_LEADS", c2: "OUTCOME_TRAFFIC" },
     },
     "PlayW3",
@@ -110,7 +111,7 @@ test("buildReport aggregates by day with objective-aware results", async () => {
   expect(p.rows[1]).toEqual(["2026-06-02", 150, 25, 2, 5, 100]);
   expect(p.totals).toEqual(["Total", 300, 60, 2, 5, 100]);
   expect(p.rowCount).toBe(2);
-  expect(p.filename).toBe("playw3_2026-06-01_2026-06-02_by_day");
+  expect(p.filename).toBe("playw3_2026-06-01_2026-06-02_daily");
 });
 
 test("buildReport with breakdown none yields a single total row and no dimension column", async () => {
@@ -125,7 +126,7 @@ test("buildReport with breakdown none yields a single total row and no dimension
       until: "2026-06-01",
       columns: ["spend", "ctr"],
       breakdown: "none",
-      byDay: false,
+      timeIncrement: "all_days",
       objectiveByCampaign: {},
     },
     "Acme",
@@ -148,7 +149,7 @@ test("buildReport skips accounts that error and notes it", async () => {
       until: "2026-06-01",
       columns: ["spend"],
       breakdown: "none",
-      byDay: true,
+      timeIncrement: "1",
       objectiveByCampaign: {},
     },
     "Mixed",
@@ -169,7 +170,7 @@ test("buildReport applies a client markup to spend and derived cost metrics", as
       until: "2026-06-01",
       columns: ["spend", "cpc"],
       breakdown: "none",
-      byDay: false,
+      timeIncrement: "all_days",
       objectiveByCampaign: {},
       markup: 0.1,
     },
@@ -204,7 +205,7 @@ test("buildReport exposes de-duplicated funnel event columns and cost-per-event"
       until: "2026-06-01",
       columns: ["purchases", "leads", "registrations", "landing_page_views", "cost_per_purchase"],
       breakdown: "none",
-      byDay: false,
+      timeIncrement: "all_days",
       objectiveByCampaign: {},
     },
     "Acme",
@@ -214,18 +215,21 @@ test("buildReport exposes de-duplicated funnel event columns and cost-per-event"
 });
 
 test("parseBreakdown recognizes ad-set and combined day × ad-set phrasings", () => {
-  expect(parseBreakdown("ad set")).toEqual({ dim: "adset", byDay: false });
-  expect(parseBreakdown("adset")).toEqual({ dim: "adset", byDay: false });
-  expect(parseBreakdown("daily by ad set")).toEqual({ dim: "adset", byDay: true });
-  expect(parseBreakdown("day and adset")).toEqual({ dim: "adset", byDay: true });
-  expect(parseBreakdown("adset_day")).toEqual({ dim: "adset", byDay: true }); // legacy composite
-  expect(parseBreakdown("device platform")).toEqual({ dim: "device", byDay: false });
-  expect(parseBreakdown("age and gender")).toEqual({ dim: "age_gender", byDay: false });
-  expect(parseBreakdown("dma")).toEqual({ dim: "market", byDay: false });
-  expect(parseBreakdown("hourly")).toEqual({ dim: "hour", byDay: false });
-  expect(parseBreakdown("headline")).toEqual({ dim: "title_asset", byDay: false });
-  expect(parseBreakdown("by campaign")).toEqual({ dim: "campaign", byDay: false });
-  expect(parseBreakdown("by ad")).toEqual({ dim: "ad", byDay: false });
+  expect(parseBreakdown("ad set")).toEqual({ dim: "adset", timeIncrement: "all_days" });
+  expect(parseBreakdown("adset")).toEqual({ dim: "adset", timeIncrement: "all_days" });
+  expect(parseBreakdown("daily by ad set")).toEqual({ dim: "adset", timeIncrement: "1" });
+  expect(parseBreakdown("day and adset")).toEqual({ dim: "adset", timeIncrement: "1" });
+  expect(parseBreakdown("adset_day")).toEqual({ dim: "adset", timeIncrement: "1" }); // legacy composite
+  expect(parseBreakdown("device platform")).toEqual({ dim: "device", timeIncrement: "all_days" });
+  expect(parseBreakdown("age and gender")).toEqual({
+    dim: "age_gender",
+    timeIncrement: "all_days",
+  });
+  expect(parseBreakdown("dma")).toEqual({ dim: "market", timeIncrement: "all_days" });
+  expect(parseBreakdown("hourly")).toEqual({ dim: "hour", timeIncrement: "all_days" });
+  expect(parseBreakdown("headline")).toEqual({ dim: "title_asset", timeIncrement: "all_days" });
+  expect(parseBreakdown("by campaign")).toEqual({ dim: "campaign", timeIncrement: "all_days" });
+  expect(parseBreakdown("by ad")).toEqual({ dim: "ad", timeIncrement: "all_days" });
 });
 
 test("buildReport adset_day yields one row per ad set per day, chronological", async () => {
@@ -244,7 +248,7 @@ test("buildReport adset_day yields one row per ad set per day, chronological", a
       until: "2026-07-02",
       columns: ["spend"],
       breakdown: "adset",
-      byDay: true,
+      timeIncrement: "1",
       objectiveByCampaign: {},
     },
     "X",
@@ -274,7 +278,7 @@ test("buildReport adset merges same-named ad sets and sorts by spend", async () 
       until: "2026-07-01",
       columns: ["spend"],
       breakdown: "adset",
-      byDay: false,
+      timeIncrement: "all_days",
       objectiveByCampaign: {},
     },
     "X",
@@ -353,13 +357,13 @@ const LEGACY_22 = [
   "cost_per_purchase",
 ];
 
-const goldenSpec = (o: { byDay: boolean; markup?: number }) => ({
+const goldenSpec = (o: { timeIncrement: TimeIncrement; markup?: number }) => ({
   accountIds: ["act_1"],
   since: "2026-01-01",
   until: "2026-01-02",
   columns: LEGACY_22,
   breakdown: "none" as const,
-  byDay: o.byDay,
+  timeIncrement: o.timeIncrement,
   objectiveByCampaign: { c1: "OUTCOME_SALES" },
   markup: o.markup,
 });
@@ -367,7 +371,7 @@ const goldenSpec = (o: { byDay: boolean; markup?: number }) => ({
 test("characterization: every legacy column, one total row", async () => {
   const p = await buildReport(
     rowSource({ act_1: goldenRows }),
-    goldenSpec({ byDay: false }),
+    goldenSpec({ timeIncrement: "all_days" }),
     "Acme",
   );
   expect(p.columns.map((c) => c.key)).toEqual([
@@ -395,11 +399,14 @@ test("characterization: every legacy column, one total row", async () => {
     "cost_per_purchase",
   ]);
   const r = p.rows[0];
-  expect(r.slice(0, 5)).toEqual([150, 14000, 11500, 700, 550]);
+  // Reach is null, not 11,500. The two golden rows are two of Meta's own rows, and Meta counts
+  // distinct people per row — 11,500 was the sum of two days' reach, which double-counts anyone
+  // present on both. `all_days` therefore withholds it; see the dedicated test below.
+  expect(r.slice(0, 5)).toEqual([150, 14000, null, 700, 550]);
   expect(r[5]).toBe(5); // ctr
   expect(r[6] as number).toBeCloseTo(0.214285, 5); // cpc
   expect(r[7] as number).toBeCloseTo(10.714285, 5); // cpm
-  expect(r[8] as number).toBeCloseTo(1.217391, 5); // frequency
+  expect(r[8]).toBeNull(); // frequency — impressions/reach, so it inherits reach's withholding
   expect(r[9]).toBe(14); // results — OUTCOME_SALES counts purchases
   expect(r[11]).toBe(14); // conversions — omni_purchase
   expect(r[12]).toBe(3400); // conversion_value
@@ -415,7 +422,7 @@ test("characterization: every legacy column, one total row", async () => {
 test("characterization: markup inflates spend and derived costs, never delivery", async () => {
   const p = await buildReport(
     rowSource({ act_1: goldenRows }),
-    goldenSpec({ byDay: true, markup: 0.1 }),
+    goldenSpec({ timeIncrement: "1", markup: 0.1 }),
     "Acme",
   );
   const d1 = p.rows[0]; // index 0 is the _dim cell, so every metric shifts by one
@@ -429,7 +436,7 @@ test("characterization: markup inflates spend and derived costs, never delivery"
 test("totals include event and cost-per columns, not zeros", async () => {
   const p = await buildReport(
     rowSource({ act_1: goldenRows }),
-    goldenSpec({ byDay: true }),
+    goldenSpec({ timeIncrement: "1" }),
     "Acme",
   );
   const t = p.totals!;
@@ -444,19 +451,58 @@ test("totals include event and cost-per columns, not zeros", async () => {
 test("every catalog metric renders through the engine", async () => {
   const p = await buildReport(
     rowSource({ act_1: goldenRows }),
-    { ...goldenSpec({ byDay: false }), columns: REPORT_METRICS.map((m) => m.key) },
+    { ...goldenSpec({ timeIncrement: "1" }), columns: REPORT_METRICS.map((m) => m.key) },
     "Acme",
   );
-  expect(p.columns.length).toBe(REPORT_METRICS.length);
+  expect(p.columns.length).toBe(REPORT_METRICS.length + 1); // + the Date column
+  // Daily granularity on a single account means every bucket is exactly one of Meta's rows, so
+  // nothing is withheld and every metric — de-duplicated ones included — must resolve to a number.
   for (const [i, cell] of p.rows[0].entries()) {
+    if (p.columns[i].key === "_dim") continue;
     expect(Number.isFinite(cell as number), `${p.columns[i].key} produced ${cell}`).toBe(true);
   }
+});
+
+test("de-duplicated metrics are withheld once a row covers more than one Meta row", async () => {
+  const columns = ["spend", "reach", "frequency", "cpp", "unique_clicks"];
+  // Same rows, same range: only the granularity differs.
+  const wide = await buildReport(
+    rowSource({ act_1: goldenRows }),
+    { ...goldenSpec({ timeIncrement: "all_days" }), columns },
+    "Acme",
+  );
+  const daily = await buildReport(
+    rowSource({ act_1: goldenRows }),
+    { ...goldenSpec({ timeIncrement: "1" }), columns },
+    "Acme",
+  );
+
+  // Spend still sums; the four de-duplicated metrics are withheld rather than double-counted.
+  expect(wide.rows[0]).toEqual([150, null, null, null, null]);
+  expect(wide.note).toContain("withheld");
+  expect(wide.note).toContain("Reach");
+
+  // One row per day = one Meta row per bucket, so the same metrics report exactly. Daily granularity
+  // adds the Date column, so every metric index shifts by one.
+  expect(daily.rows).toHaveLength(2);
+  expect(daily.rows[0][0]).toBe("2026-01-01");
+  expect(daily.rows[0][2]).toBe(8000); // reach, Meta's own figure for that day
+  expect(daily.rows[0][3]).toBe(1.25); // frequency = 10000 impressions / 8000 reach
+  // The note still fires, because the totals row below spans both days even though no data row does.
+  expect(daily.note).toContain("withheld");
+  // The totals row spans both days, so it withholds them again — a 2-day reach is not 8000 + 3500.
+  expect(daily.totals?.[0]).toBe("Total");
+  expect(daily.totals?.[1]).toBe(150); // spend still sums
+  expect(daily.totals?.[2]).toBeNull(); // reach does not
 });
 
 test("an unknown column key is dropped rather than rendered", async () => {
   const p = await buildReport(
     rowSource({ act_1: goldenRows }),
-    { ...goldenSpec({ byDay: false }), columns: ["spend", "not_a_real_metric", "purchases"] },
+    {
+      ...goldenSpec({ timeIncrement: "all_days" }),
+      columns: ["spend", "not_a_real_metric", "purchases"],
+    },
     "Acme",
   );
   expect(p.columns.map((c) => c.key)).toEqual(["spend", "purchases"]);
@@ -467,7 +513,7 @@ test("a metric with no promoted column reads through to the report", async () =>
   // `unique_clicks` is not a column on insights_daily; it exists only inside the synced raw blob.
   const p = await buildReport(
     rowSource({ act_1: [row("2026-01-01", "c1", { spend: "10", unique_clicks: "7" })] }),
-    { ...goldenSpec({ byDay: false }), columns: ["spend", "unique_clicks"] },
+    { ...goldenSpec({ timeIncrement: "all_days" }), columns: ["spend", "unique_clicks"] },
     "Acme",
   );
   expect(p.rows[0]).toEqual([10, 7]);

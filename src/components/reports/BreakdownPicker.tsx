@@ -15,8 +15,6 @@ import { REPORT_BREAKDOWNS } from "@/lib/report-options";
 interface BreakdownPickerProps {
   breakdown: string;
   onBreakdownChange: (key: string) => void;
-  splitByDay: boolean;
-  onSplitByDayChange: (v: boolean) => void;
 }
 
 /**
@@ -46,12 +44,7 @@ const GROUPS: { label: string; keys: string[]; adLevelOnly?: boolean }[] = [
   },
 ];
 
-export function BreakdownPicker({
-  breakdown,
-  onBreakdownChange,
-  splitByDay,
-  onSplitByDayChange,
-}: BreakdownPickerProps) {
+export function BreakdownPicker({ breakdown, onBreakdownChange }: BreakdownPickerProps) {
   const [open, setOpen] = useState(false);
 
   const sections = useMemo(() => {
@@ -147,15 +140,6 @@ export function BreakdownPicker({
           </Command>
         </PopoverContent>
       </Popover>
-      <label className="flex items-center gap-1.5 text-xs text-muted-foreground whitespace-nowrap cursor-pointer">
-        <input
-          type="checkbox"
-          checked={splitByDay}
-          onChange={(e) => onSplitByDayChange(e.target.checked)}
-          className="size-3.5 accent-primary"
-        />
-        Split by day
-      </label>
     </div>
   );
 }

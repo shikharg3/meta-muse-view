@@ -473,7 +473,7 @@ test("runReport says breakdown-not-synced (not 'no data') when totals exist for 
     until: today,
     columns: ["spend"],
     markup: undefined,
-    byDay: false,
+    timeIncrement: "all_days" as const,
   };
   // Campaign-level rows exist for today, but no breakdown rows are seeded → actionable error.
   const bd = await runReport({ ...args, breakdown: "platform" });
@@ -542,7 +542,7 @@ test("breakdown reports honor selected campaigns and never double-count levels",
     until: today,
     columns: ["spend"],
     markup: undefined,
-    byDay: false,
+    timeIncrement: "all_days" as const,
     breakdown: "platform" as const,
   };
   // Unscoped: the account rollup only — $100, NOT $200 (account + campaign double-count).
@@ -564,7 +564,7 @@ test("adset_day report: one row per ad set per day, honoring campaign scoping", 
     until: today,
     columns: ["spend"],
     markup: undefined,
-    byDay: false,
+    timeIncrement: "all_days" as const,
   };
   // Unscoped by-ad-set: California merges across both campaigns (100 + 50), Texas stays 80.
   const byAdset = await runReport({ ...base, breakdown: "adset" });
@@ -578,7 +578,7 @@ test("adset_day report: one row per ad set per day, honoring campaign scoping", 
   const scoped = await runReport({
     ...base,
     breakdown: "adset",
-    byDay: true,
+    timeIncrement: "1" as const,
     campaignIds: ["c_broad"],
   });
   if ("error" in scoped) throw new Error(scoped.error);
@@ -622,7 +622,7 @@ test("placement reports read the synced triple and render joined values", async 
     until: today,
     columns: ["spend"],
     breakdown: "placement",
-    byDay: false,
+    timeIncrement: "all_days" as const,
     markup: undefined,
   });
   if ("error" in p) throw new Error(p.error);
@@ -655,7 +655,7 @@ test("asset-dim reports label rows from the dims object, not '[object Object]'",
     until: today,
     columns: ["spend"],
     breakdown: "video_asset",
-    byDay: false,
+    timeIncrement: "all_days" as const,
     markup: undefined,
   });
   if ("error" in p) throw new Error(p.error);

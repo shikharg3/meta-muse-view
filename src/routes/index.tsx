@@ -194,7 +194,7 @@ function Ask() {
           until: req.until,
           columns: req.columns,
           breakdown: req.breakdown,
-          splitByDay: req.splitByDay,
+          timeIncrement: req.timeIncrement,
           markup: req.markup,
           campaignIds: req.campaignIds,
         },

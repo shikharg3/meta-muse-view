@@ -3,6 +3,7 @@ import { and, desc, eq, isNotNull, isNull, lt } from "drizzle-orm";
 import { db, schema } from "@/db/client";
 import { resolvePreset } from "@/lib/date-presets";
 import { metric } from "@/lib/report-catalog";
+import { resolveTimeIncrement, type TimeIncrement } from "@/lib/time-increment";
 import {
   reportForClient,
   resolveRange,
@@ -19,7 +20,7 @@ import { audit, requireAdmin } from "./auth";
 //     client_id text REFERENCES clients(id) ON DELETE CASCADE,
 //     columns jsonb NOT NULL,
 //     breakdown text NOT NULL DEFAULT 'none',
-//     split_by_day boolean NOT NULL DEFAULT false,
+//     time_increment text NOT NULL DEFAULT 'all_days',
 //     markup double precision,
 //     range_preset text,
 //     campaign_ids jsonb,
@@ -45,6 +46,18 @@ import { audit, requireAdmin } from "./auth";
 //   );
 //   CREATE INDEX IF NOT EXISTS report_runs_exported_idx ON report_runs (exported_at, created_at);
 //   CREATE INDEX IF NOT EXISTS report_runs_client_idx ON report_runs (client_id, exported_at);
+//
+// Migration for tables created before `time_increment` replaced the split-by-day boolean. Meta has
+// no boolean here — the axis is `all_days | 1 | 7 | 28 | monthly` — and summing daily rows into a
+// wider one silently double-counts every de-duplicated metric, so the column had to become the
+// granularity itself rather than a flag beside it:
+//
+//   ALTER TABLE report_templates ADD COLUMN IF NOT EXISTS time_increment text;
+//   UPDATE report_templates SET time_increment = CASE WHEN split_by_day THEN '1' ELSE 'all_days' END
+//     WHERE time_increment IS NULL;
+//   ALTER TABLE report_templates ALTER COLUMN time_increment SET DEFAULT 'all_days';
+//   ALTER TABLE report_templates ALTER COLUMN time_increment SET NOT NULL;
+//   ALTER TABLE report_templates DROP COLUMN IF EXISTS split_by_day;
 
 /** Drafts older than this are pruned by the sync worker — see `pruneReportDrafts`. */
 const DRAFT_RETENTION_DAYS = 7;
@@ -55,7 +68,8 @@ export interface TemplateInput {
   clientId?: string | null;
   columns: string[];
   breakdown?: string;
-  splitByDay?: boolean;
+  /** Meta's `time_increment`. */
+  timeIncrement?: string;
   markup?: number | null;
   rangePreset?: string | null;
   campaignIds?: string[] | null;
@@ -72,7 +86,7 @@ export interface TemplateView extends TemplateInput {
   clientId: string | null;
   clientName: string | null;
   breakdown: string;
-  splitByDay: boolean;
+  timeIncrement: TimeIncrement;
   markup: number | null;
   rangePreset: string | null;
   campaignIds: string[] | null;
@@ -136,7 +150,7 @@ export async function fetchTemplates(): Promise<TemplateView[]> {
       clientName: schema.clients.name,
       columns: schema.reportTemplates.columns,
       breakdown: schema.reportTemplates.breakdown,
-      splitByDay: schema.reportTemplates.splitByDay,
+      timeIncrement: schema.reportTemplates.timeIncrement,
       markup: schema.reportTemplates.markup,
       rangePreset: schema.reportTemplates.rangePreset,
       campaignIds: schema.reportTemplates.campaignIds,
@@ -151,6 +165,9 @@ export async function fetchTemplates(): Promise<TemplateView[]> {
     columns: asStringArray(r.columns),
     // Absent, not empty: a generic template stores NULL, and `[]` would read as "no campaigns".
     campaignIds: r.campaignIds === null ? null : asStringArray(r.campaignIds),
+    // A row written before the column existed, or by a future version, still has to resolve to a
+    // granularity the engine understands rather than reach the builder as an unknown string.
+    timeIncrement: resolveTimeIncrement(r.timeIncrement),
     updatedAt: r.updatedAt.toISOString(),
   }));
 }
@@ -184,7 +201,7 @@ export async function saveTemplate(
     clientId,
     columns: input.columns.filter((k) => metric(k) !== undefined),
     breakdown: input.breakdown?.trim() || "none",
-    splitByDay: input.splitByDay ?? false,
+    timeIncrement: resolveTimeIncrement(input.timeIncrement),
     markup: input.markup ?? null,
     rangePreset: input.rangePreset?.trim() || null,
     // `validateTemplate` already rejects campaign ids without a client, so this is not that check.
