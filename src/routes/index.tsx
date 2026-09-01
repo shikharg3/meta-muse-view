@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Sparkles,
@@ -6,7 +6,6 @@ import {
   Square,
   AlertCircle,
   FileText,
-  Plus,
   History,
   Trash2,
   Pencil,
@@ -16,14 +15,12 @@ import {
   RefreshCw,
   MessageSquarePlus,
 } from "lucide-react";
-import { saveReport } from "@/lib/api/chat";
 import {
   listConversations,
   getConversation,
   renameConversation,
   deleteConversation,
 } from "@/lib/api/conversations";
-import { generateClientReport } from "@/lib/api/report";
 import { listClients } from "@/lib/api/clients";
 import type { ChatEvent, MessageExtras } from "@/server/agent/events";
 import type {
@@ -33,13 +30,14 @@ import type {
 } from "@/server/fns/conversations";
 import type { ReportPayload } from "@/server/agent/report";
 import type { Kpis } from "@/lib/types";
-import { ReportBuilder, type ReportRequest } from "@/components/chat/ReportBuilder";
 import { ReportBlock } from "@/components/chat/ReportBlock";
 import { Markdown } from "@/components/chat/Markdown";
 import { SeriesChart } from "@/components/chat/SeriesChart";
 import { ToolTraceLive, ToolTraceSummary } from "@/components/chat/ToolTrace";
 import { closeTrace, type TraceItem } from "@/components/chat/trace";
 import { streamChat } from "@/components/chat/stream";
+import { ThreadMeter, ThreadNudge } from "@/components/chat/ThreadMeter";
+import { NUDGE_TURNS, NUDGE_COST, fmtCost } from "@/components/chat/thread-cost";
 import { deriveFollowUps, starterPrompts } from "@/components/chat/suggestions";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { fmtCurrency, fmtCompact, fmtPct, fmtRelTime } from "@/lib/format";
@@ -81,8 +79,6 @@ interface UiMessage {
 const SLASH_HINT =
   "Tip: type /reports to generate a CSV/PDF, e.g. /reports last 7 days for PlayW3 by day with spend, results, cpc, ctr, cpm";
 
-const fmtCost = (usd: number): string => (usd >= 1 ? `$${usd.toFixed(2)}` : `$${usd.toFixed(4)}`);
-
 /**
  * Rehydrate persisted messages (payload jsonb → typed cards/series/report/toolCalls/error).
  * Rows written before a payload field existed simply lack the key, so every read is defaulted —
@@ -114,8 +110,8 @@ function Ask() {
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [followUps, setFollowUps] = useState<string[]>([]);
-  const [builderOpen, setBuilderOpen] = useState(false);
-  const [menuOpen, setMenuOpen] = useState(false);
+  /** Turn count at which the nudge was last waved away; it returns after another NUDGE_TURNS. */
+  const [nudgeDismissedAt, setNudgeDismissedAt] = useState(0);
   const scrollRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
   // Token deltas arrive far faster than anyone can read. They pile up here and flush on a timer, so
@@ -129,6 +125,19 @@ function Ask() {
 
   // Abort an in-flight turn if the tab navigates away mid-answer.
   useEffect(() => () => abortRef.current?.abort(), []);
+
+  // A discoverable shortcut matters here: the whole cost problem started with someone never finding
+  // the button. Shift+O avoids Ctrl/Cmd+N, which the browser owns.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "o") {
+        e.preventDefault();
+        newChat();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
 
   /** Mutate the in-flight assistant message. It is always the last one, so no index bookkeeping. */
   const patchLast = useCallback((fn: (m: UiMessage) => UiMessage) => {
@@ -157,7 +166,7 @@ function Ask() {
     setActiveId(null);
     setMessages([]);
     setFollowUps([]);
-    setBuilderOpen(false);
+    setNudgeDismissedAt(0);
   };
 
   const loadConversation = async (id: string) => {
@@ -167,7 +176,7 @@ function Ask() {
     setActiveId(id);
     setMessages(toUiMessages(stored));
     setFollowUps([]);
-    setBuilderOpen(false);
+    setNudgeDismissedAt(0);
   };
 
   const removeConversation = async (id: string) => {
@@ -186,7 +195,6 @@ function Ask() {
     if (q === "" || streaming) return;
     setInput("");
     setFollowUps([]);
-    setBuilderOpen(false);
     setStreaming(true);
     setMessages((prev) => [
       ...prev,
@@ -329,67 +337,19 @@ function Ask() {
     void send(q);
   };
 
-  // Direct (no-LLM) report path from the builder: run it, persist it to the thread, and render it.
-  const runReport = async (req: ReportRequest) => {
-    setBuilderOpen(false);
-    if (streaming) return;
-    setMessages((prev) => [...prev, { role: "user", content: `📄 Report — ${req.summary}` }]);
-    setStreaming(true);
-    try {
-      const res = await generateClientReport({
-        data: {
-          clientId: req.clientId,
-          days: req.days,
-          since: req.since,
-          until: req.until,
-          columns: req.columns,
-          breakdown: req.breakdown,
-          timeIncrement: req.timeIncrement,
-          markup: req.markup,
-          campaignIds: req.campaignIds,
-        },
-      });
-      if ("error" in res) {
-        setMessages((prev) => [...prev, { role: "assistant", content: "", error: res.error }]);
-      } else {
-        const saved = await saveReport({
-          data: {
-            conversationId: activeId,
-            summary: req.summary,
-            clientName: req.clientName,
-            report: res,
-          },
-        });
-        setActiveId(saved.conversationId);
-        setMessages((prev) => [
-          ...prev,
-          { role: "assistant", content: `Here's your report for ${req.clientName}.`, report: res },
-        ]);
-        setFollowUps(
-          deriveFollowUps({
-            question: req.summary,
-            toolCalls: [],
-            hasCards: false,
-            hasSeries: false,
-            hasReport: true,
-            clientNames: clients.map((c) => c.name),
-          }),
-        );
-        void refreshList();
-      }
-    } catch (e) {
-      setMessages((prev) => [
-        ...prev,
-        { role: "assistant", content: "", error: e instanceof Error ? e.message : String(e) },
-      ]);
-    } finally {
-      setStreaming(false);
-    }
-  };
-
   const empty = messages.length === 0;
   const activeTitle = conversations.find((c) => c.id === activeId)?.title ?? "New chat";
   const starters = starterPrompts(clients);
+
+  // Counted from the messages on screen rather than the stored summary, so the meter moves with the
+  // answer instead of waiting for the list to refetch.
+  const threadTurns = messages.filter((m) => m.role === "assistant").length;
+  const threadCost = messages.reduce((sum, m) => sum + (m.costUsd ?? 0), 0);
+  const overThreshold = threadTurns >= NUDGE_TURNS || threadCost >= NUDGE_COST;
+  // 0 = never dismissed. After a dismissal it stays quiet for another NUDGE_TURNS questions, so it
+  // cannot be waved away once and then never seen again on a thread that keeps growing.
+  const recentlyDismissed = nudgeDismissedAt > 0 && threadTurns - nudgeDismissedAt < NUDGE_TURNS;
+  const showNudge = !streaming && overThreshold && !recentlyDismissed;
 
   return (
     <div className="flex flex-col h-[calc(100vh-3.5rem)]">
@@ -402,10 +362,12 @@ function Ask() {
           onRename={(id, t) => void rename(id, t)}
         />
         <span className="text-sm font-medium truncate flex-1 min-w-0">{activeTitle}</span>
+        <ThreadMeter turns={threadTurns} costUsd={threadCost} />
         <button
           onClick={newChat}
           disabled={streaming}
-          className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card hover:bg-accent px-2.5 h-8 text-xs font-medium disabled:opacity-50"
+          title="Start a fresh chat  (Ctrl/⌘ + Shift + O)"
+          className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-primary px-3 h-8 text-xs font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-50"
         >
           <MessageSquarePlus className="size-3.5" /> New chat
         </button>
@@ -423,20 +385,6 @@ function Ask() {
                 Plain-English questions about clients, accounts, and campaigns. Every number is
                 pulled live from your synced data.
               </p>
-              <div className="grid sm:grid-cols-2 gap-2.5 mt-7 w-full">
-                <button
-                  onClick={() => setBuilderOpen(true)}
-                  className="flex items-center gap-3 text-left rounded-lg border border-primary/30 bg-primary/5 hover:bg-primary/10 px-4 py-3 transition-colors"
-                >
-                  <div className="size-8 rounded-md bg-primary/15 grid place-items-center shrink-0">
-                    <FileText className="size-4 text-primary" />
-                  </div>
-                  <div className="min-w-0">
-                    <div className="text-sm font-medium">/reports</div>
-                    <div className="text-xs text-muted-foreground">Build a CSV/PDF report</div>
-                  </div>
-                </button>
-              </div>
               <div className="grid sm:grid-cols-2 gap-2.5 mt-8 w-full">
                 {starters.map((s) => (
                   <button
@@ -448,9 +396,16 @@ function Ask() {
                   </button>
                 ))}
               </div>
-              <p className="text-[11px] text-muted-foreground mt-4 flex items-center gap-1.5">
-                <FileText className="size-3" /> {SLASH_HINT}
+              <p className="mt-6 text-[11px] text-muted-foreground">
+                One chat = one topic. Starting a fresh chat for a new question keeps answers sharp
+                and costs less — every question re-sends the chat it lives in.
               </p>
+              <Link
+                to="/reports/new"
+                className="mt-2 inline-flex items-center gap-1.5 text-[11px] font-medium text-primary hover:underline"
+              >
+                <FileText className="size-3" /> Need a CSV or PDF? Build it on the Reports page
+              </Link>
             </div>
           ) : (
             <div className="space-y-6">
@@ -481,15 +436,13 @@ function Ask() {
 
       <div className="border-t border-border bg-background/80 backdrop-blur">
         <div className="mx-auto max-w-3xl px-4 md:px-6 py-3">
-          {builderOpen && (
-            <div className="mb-3">
-              <ReportBuilder
-                clients={clients}
-                busy={streaming}
-                onSubmit={(r) => void runReport(r)}
-                onClose={() => setBuilderOpen(false)}
-              />
-            </div>
+          {showNudge && (
+            <ThreadNudge
+              turns={threadTurns}
+              costUsd={threadCost}
+              onNewChat={newChat}
+              onDismiss={() => setNudgeDismissedAt(threadTurns)}
+            />
           )}
           <form
             onSubmit={(e) => {
@@ -498,47 +451,13 @@ function Ask() {
             }}
             className="flex items-end gap-2"
           >
-            <Popover open={menuOpen} onOpenChange={setMenuOpen}>
-              <PopoverTrigger asChild>
-                <button
-                  type="button"
-                  title="Powers"
-                  className="h-[42px] w-[42px] grid place-items-center rounded-lg border border-border bg-card hover:bg-accent shrink-0 text-muted-foreground"
-                >
-                  <Plus className="size-4" />
-                </button>
-              </PopoverTrigger>
-              <PopoverContent
-                align="start"
-                side="top"
-                className="p-1.5 w-64"
-                onOpenAutoFocus={(e) => e.preventDefault()}
-                onCloseAutoFocus={(e) => e.preventDefault()}
-              >
-                <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold px-2 py-1">
-                  Powers
-                </div>
-                <button
-                  onClick={() => {
-                    setMenuOpen(false);
-                    setBuilderOpen(true);
-                  }}
-                  className="w-full flex items-center gap-2.5 text-left rounded-md hover:bg-accent px-2 py-2"
-                >
-                  <FileText className="size-4 text-primary shrink-0" />
-                  <div>
-                    <div className="text-xs font-medium">/reports</div>
-                    <div className="text-[11px] text-muted-foreground">Build a CSV/PDF report</div>
-                  </div>
-                </button>
-              </PopoverContent>
-            </Popover>
+            {/* The "+ powers" menu held exactly one item — a report builder that duplicates the
+                Reports section. Removed rather than kept as a second, worse way in. */}
             <textarea
               value={input}
               onChange={(e) => {
                 const v = e.target.value;
                 setInput(v);
-                setMenuOpen(v === "/");
               }}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
@@ -547,7 +466,7 @@ function Ask() {
                 }
               }}
               rows={1}
-              placeholder="Ask about a client, account, or campaign…  (type / for powers)"
+              placeholder="Ask about a client, account, or campaign…"
               className="flex-1 resize-none rounded-lg border border-border bg-card px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 max-h-40"
             />
             {streaming ? (
@@ -694,8 +613,23 @@ function ConversationMenu({
                     className="min-w-0 flex-1 text-left"
                   >
                     <div className="text-xs font-medium truncate">{c.title}</div>
-                    <div className="text-[10px] text-muted-foreground">
-                      {fmtRelTime(c.updatedAt)}
+                    <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
+                      <span>{fmtRelTime(c.updatedAt)}</span>
+                      {c.turns > 0 && (
+                        <>
+                          <span className="text-border">·</span>
+                          <span className="font-mono tabular-nums">{c.turns}Q</span>
+                          <span
+                            className={cn(
+                              "font-mono tabular-nums",
+                              c.costUsd >= 3 && "font-semibold text-destructive",
+                              c.costUsd >= 1 && c.costUsd < 3 && "text-warning",
+                            )}
+                          >
+                            {fmtCost(c.costUsd)}
+                          </span>
+                        </>
+                      )}
                     </div>
                   </button>
                   <button
@@ -789,7 +723,17 @@ function Message({ message, onRetry }: { message: UiMessage; onRetry?: () => voi
         {!message.streaming && (
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 pt-0.5">
             <ToolTraceSummary items={trace} />
-            <div className="flex items-center gap-0.5 opacity-0 transition-opacity group-hover/msg:opacity-100 focus-within:opacity-100">
+            {message.costUsd != null && message.costUsd > 0 && (
+              // Sits next to the tool summary rather than floated far right in 10px grey, which is
+              // where it was when nobody noticed the cost of anything.
+              <span
+                className="font-mono text-[11px] text-muted-foreground"
+                title="Model cost for this question (incl. prompt caching). The running total for the whole chat is in the header."
+              >
+                {fmtCost(message.costUsd)}
+              </span>
+            )}
+            <div className="ml-auto flex items-center gap-0.5 opacity-0 transition-opacity group-hover/msg:opacity-100 focus-within:opacity-100">
               {message.content !== "" && (
                 <button
                   onClick={copy}
@@ -809,14 +753,6 @@ function Message({ message, onRetry }: { message: UiMessage; onRetry?: () => voi
                 </button>
               )}
             </div>
-            {message.costUsd != null && message.costUsd > 0 && (
-              <span
-                className="ml-auto text-[10px] font-mono text-muted-foreground"
-                title="Model cost for this turn (incl. prompt caching)"
-              >
-                {fmtCost(message.costUsd)}
-              </span>
-            )}
           </div>
         )}
       </div>

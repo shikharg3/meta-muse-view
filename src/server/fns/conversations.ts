@@ -30,6 +30,10 @@ export interface ConversationSummary {
   id: string;
   title: string;
   updatedAt: string;
+  /** Answered questions in the thread. Drives the "this is getting long" nudge. */
+  turns: number;
+  /** What the thread has cost so far. One thread reached $59 before anyone noticed. */
+  costUsd: number;
 }
 
 /**
@@ -82,11 +86,21 @@ export async function listConversations(userId: string): Promise<ConversationSum
       id: schema.conversations.id,
       title: schema.conversations.title,
       updatedAt: schema.conversations.updatedAt,
+      turns: sql<number>`count(${schema.chatMessages.id}) filter (where ${schema.chatMessages.role} = 'assistant')`,
+      costUsd: sql<number>`coalesce(sum(${schema.chatMessages.costUsd}), 0)`,
     })
     .from(schema.conversations)
+    .leftJoin(schema.chatMessages, eq(schema.chatMessages.conversationId, schema.conversations.id))
     .where(eq(schema.conversations.userId, userId))
+    .groupBy(schema.conversations.id)
     .orderBy(desc(schema.conversations.updatedAt));
-  return rows.map((r) => ({ id: r.id, title: r.title, updatedAt: r.updatedAt.toISOString() }));
+  return rows.map((r) => ({
+    id: r.id,
+    title: r.title,
+    updatedAt: r.updatedAt.toISOString(),
+    turns: Number(r.turns),
+    costUsd: Number(r.costUsd),
+  }));
 }
 
 /** Full rows including replay. Server-only — see `ClientMessagePayload`. */
