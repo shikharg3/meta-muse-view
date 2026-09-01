@@ -1,13 +1,16 @@
 import { createFileRoute, redirect, Link, useNavigate } from "@tanstack/react-router";
+import { useMemo } from "react";
 import { Network, Table2 } from "lucide-react";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { PagePendingSkeleton } from "@/components/dashboard/TableSkeleton";
 import { StatusPill } from "@/components/dashboard/StatusPill";
-import { InfraGraphCanvas } from "@/components/infra/InfraGraphCanvas";
+import { InfraPageGroups } from "@/components/infra/InfraPageGroups";
+import { InfraSpineCanvas } from "@/components/infra/InfraSpineCanvas";
 import { RiskBadge } from "@/components/infra/RiskBadge";
 import { getInfraRiskMap } from "@/lib/api/infrastructure";
 import { getCurrentUser } from "@/lib/api/auth";
 import { isAdmin } from "@/lib/auth/roles";
+import { buildSpine } from "@/lib/infra-spine";
 import { cn } from "@/lib/utils";
 import type { InfraRiskRow } from "@/server/fns/infra/risk";
 
@@ -106,6 +109,8 @@ function InfrastructurePage() {
   const { counts } = map;
   const view: InfraView = Route.useSearch().view ?? "map";
   const navigate = useNavigate({ from: "/infrastructure/" });
+  // Presentation grouping, not a second source of truth: the verdicts already came from the server.
+  const spine = useMemo(() => buildSpine(map.graph), [map.graph]);
 
   const tiles = [
     { label: "Profiles", value: counts.profiles, to: "/infrastructure/profiles" },
@@ -168,7 +173,19 @@ function InfrastructurePage() {
       </div>
 
       {view === "map" ? (
-        <InfraGraphCanvas graph={map.graph} />
+        <div className="space-y-8">
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+              <h2 className="text-sm font-semibold">Access spine</h2>
+              <span className="text-[11px] text-muted-foreground">
+                Admin profiles sit inside the Business Manager they hold. A profile drawn outside is
+                shared between several — one ban takes out every card it points at.
+              </span>
+            </div>
+            <InfraSpineCanvas spine={spine} />
+          </div>
+          <InfraPageGroups groups={spine.pageGroups} unattached={spine.unattached} />
+        </div>
       ) : (
         <>
           <RiskSection

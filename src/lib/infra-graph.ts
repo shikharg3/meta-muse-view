@@ -147,38 +147,3 @@ function toNode(kind: InfraNodeKind, e: Entity): InfraGraphNode {
     detail: e.detail,
   };
 }
-
-/**
- * The triage view: every node that is not safe, plus everything one hop away in either direction.
- *
- * Neighbours are what turn a list of broken things back into a map — a critical BM is only actionable
- * next to the profiles that were supposed to reach it. Two hops was tried on paper and reintroduces
- * the whole graph, because BMs are hubs.
- */
-export function focusOnRisk(graph: InfraGraph): InfraGraph {
-  const keep = new Set(graph.nodes.filter((n) => n.risk.level !== "safe").map((n) => n.id));
-  if (keep.size === 0) return { nodes: [], edges: [] };
-  for (const e of graph.edges) {
-    if (keep.has(e.source)) keep.add(e.target);
-    else if (keep.has(e.target)) keep.add(e.source);
-  }
-  return subgraph(graph, keep);
-}
-
-/** Restrict to a node set, dropping every edge that loses an endpoint. */
-export function subgraph(graph: InfraGraph, keep: ReadonlySet<string>): InfraGraph {
-  return {
-    nodes: graph.nodes.filter((n) => keep.has(n.id)),
-    edges: graph.edges.filter((e) => keep.has(e.source) && keep.has(e.target)),
-  };
-}
-
-/** Node ids reachable from `id` in one hop, `id` included. Drives click-to-focus dimming. */
-export function neighbourhood(graph: InfraGraph, id: string): Set<string> {
-  const near = new Set<string>([id]);
-  for (const e of graph.edges) {
-    if (e.source === id) near.add(e.target);
-    if (e.target === id) near.add(e.source);
-  }
-  return near;
-}

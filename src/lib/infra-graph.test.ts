@@ -1,14 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import {
-  buildInfraGraph,
-  focusOnRisk,
-  neighbourhood,
-  nodeId,
-  subgraph,
-  type InfraGraph,
-  type InfraGraphInput,
-} from "./infra-graph";
-import { redundancy, type Risk } from "./infra-risk";
+import { buildInfraGraph, nodeId, type InfraGraph, type InfraGraphInput } from "./infra-graph";
+import type { Risk } from "./infra-risk";
 
 const SAFE: Risk = { level: "safe", label: "Redundant" };
 const CRITICAL: Risk = { level: "critical", label: "No backup" };
@@ -164,86 +156,6 @@ describe("buildInfraGraph", () => {
   test("BM overdue verification rides along on the node", () => {
     const g = buildInfraGraph(input({ bms: [{ ...entity("b1"), usable: true, overdue: true }] }));
     expect(g.nodes[0].overdue).toBe(true);
-  });
-});
-
-describe("focusOnRisk", () => {
-  const risky = buildInfraGraph(
-    input({
-      profiles: [
-        { ...entity("p_attached"), usable: true },
-        { ...entity("p_orphan"), usable: true },
-      ],
-      bms: [
-        { ...entity("b_broken", CRITICAL), usable: false, overdue: true },
-        { ...entity("b_fine"), usable: true, overdue: false },
-      ],
-      adAccounts: [entity("act_far")],
-      profileBm: [{ profileId: "p_attached", bmId: "b_broken" }],
-      bmAdAccount: [{ bmId: "b_fine", adAccountId: "act_far" }],
-    }),
-  );
-
-  test("keeps at-risk nodes and their one-hop neighbours", () => {
-    const focused = focusOnRisk(risky);
-    expect(focused.nodes.map((n) => n.id).sort()).toEqual(["bm:b_broken", "profile:p_attached"]);
-  });
-
-  test("drops safe nodes that are not adjacent to anything at risk", () => {
-    const kept = new Set(focusOnRisk(risky).nodes.map((n) => n.id));
-    expect(kept.has("profile:p_orphan")).toBe(false);
-    expect(kept.has("adAccount:act_far")).toBe(false);
-  });
-
-  test("an entirely healthy registry focuses to nothing rather than to everything", () => {
-    const healthy = buildInfraGraph(
-      input({
-        profiles: [{ ...entity("p1"), usable: true }],
-        bms: [{ ...entity("b1"), usable: true, overdue: false }],
-        profileBm: [{ profileId: "p1", bmId: "b1" }],
-      }),
-    );
-    expect(focusOnRisk(healthy)).toEqual({ nodes: [], edges: [] });
-  });
-
-  test("a warning is at risk too, not just a critical", () => {
-    const g = buildInfraGraph(
-      input({ bms: [{ ...entity("b1", WARNING), usable: true, overdue: false }] }),
-    );
-    expect(focusOnRisk(g).nodes.map((n) => n.id)).toEqual(["bm:b1"]);
-    expect(redundancy(1).level).toBe("warning"); // the rule this test is standing in for
-  });
-});
-
-describe("subgraph", () => {
-  test("an edge whose endpoint was filtered out goes with it", () => {
-    const g = buildInfraGraph(
-      input({
-        profiles: [{ ...entity("p1"), usable: true }],
-        bms: [{ ...entity("b1"), usable: true, overdue: false }],
-        profileBm: [{ profileId: "p1", bmId: "b1" }],
-      }),
-    );
-    expect(subgraph(g, new Set(["bm:b1"]))).toEqual({ nodes: [g.nodes[1]], edges: [] });
-  });
-});
-
-describe("neighbourhood", () => {
-  test("reaches both upstream and downstream, and includes the node itself", () => {
-    const g = buildInfraGraph(
-      input({
-        profiles: [{ ...entity("p1"), usable: true }],
-        bms: [{ ...entity("b1"), usable: true, overdue: false }],
-        adAccounts: [entity("act_1"), entity("act_2")],
-        profileBm: [{ profileId: "p1", bmId: "b1" }],
-        bmAdAccount: [{ bmId: "b1", adAccountId: "act_1" }],
-      }),
-    );
-    expect([...neighbourhood(g, "bm:b1")].sort()).toEqual([
-      "adAccount:act_1",
-      "bm:b1",
-      "profile:p1",
-    ]);
   });
 });
 
