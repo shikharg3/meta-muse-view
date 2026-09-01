@@ -24,6 +24,8 @@ const schema = z.object({
   // Telegram alert delivery (optional): bot token + target chat/channel id.
   TELEGRAM_BOT_TOKEN: z.string().optional(),
   TELEGRAM_ALERT_CHAT_ID: z.string().optional(),
+  // Daily performance report target; unset = the alert chat above.
+  TELEGRAM_REPORT_CHAT_ID: z.string().optional(),
   // Emails auto-approved as admins on first sign-up/login (comma-separated, lowercased).
   AUTH_BOOTSTRAP_ADMINS: z
     .string()

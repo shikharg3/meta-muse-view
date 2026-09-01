@@ -248,6 +248,10 @@ export const metaCredentials = pgTable("meta_credentials", {
   // not a secret (it is visible to anyone in the channel) so it stays readable for the settings UI.
   telegramTokenEnc: text("telegram_token_enc"),
   telegramChatId: text("telegram_chat_id"),
+  // Where the daily performance report goes, when that is NOT the alert channel. Alerts are an ops
+  // signal for a small channel; the report is a team-wide digest. Null = fall back to
+  // `telegram_chat_id`, so an unconfigured deploy still posts somewhere rather than silently not at all.
+  telegramReportChatId: text("telegram_report_chat_id"),
   updatedAt: timestamp("updated_at", { withTimezone: true }),
 });
 

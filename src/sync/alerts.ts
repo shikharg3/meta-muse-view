@@ -1,6 +1,6 @@
 import { and, eq, gte, inArray, sql } from "drizzle-orm";
 import { db, schema } from "@/db/client";
-import { getTelegramCredentials } from "@/lib/credentials";
+import { getReportChatCredentials, getTelegramCredentials } from "@/lib/credentials";
 import { accountStatus } from "@/server/agg";
 import { addDays } from "@/lib/range";
 import { loadCampaignOwnership } from "@/server/fns/campaign-attribution";
@@ -101,22 +101,36 @@ export async function detectSpendDropAlerts(): Promise<number> {
 }
 
 /**
- * Send a message to the configured Telegram channel; returns ok/error (never throws). Exported so
- * the check-in escalation reuses one Telegram path.
+ * Send a message to the configured Telegram ALERT channel; returns ok/error (never throws). Exported
+ * so the check-in escalation reuses one Telegram path.
  */
 export async function sendAlertChannelMessage(
   text: string,
 ): Promise<{ ok: boolean; error?: string }> {
-  const creds = await getTelegramCredentials();
+  return sendTo(await getTelegramCredentials(), text);
+}
+
+/**
+ * Send a message to the chat the DAILY REPORT is configured for, which is a different audience from
+ * the alert channel (see `getReportChatCredentials`). Falls back to the alert chat when unset.
+ */
+export async function sendReportChannelMessage(
+  text: string,
+): Promise<{ ok: boolean; error?: string }> {
+  return sendTo(await getReportChatCredentials(), text);
+}
+
+/** The one place a Telegram message is actually put on the wire. Never throws. */
+async function sendTo(
+  creds: { token: string; chatId: string } | null,
+  text: string,
+): Promise<{ ok: boolean; error?: string }> {
   if (!creds)
     return {
       ok: false,
       error: "Telegram not configured — set the bot token and chat id in Settings.",
     };
-  const res = await new TelegramClient(creds.token).sendMessage({
-    chatId: creds.chatId,
-    text,
-  });
+  const res = await new TelegramClient(creds.token).sendMessage({ chatId: creds.chatId, text });
   return res.ok ? { ok: true } : { ok: false, error: res.error };
 }
 

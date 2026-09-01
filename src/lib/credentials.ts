@@ -190,6 +190,42 @@ export async function getTelegramCredentials(
   return { token, chatId };
 }
 
+/**
+ * Telegram bot token + the chat the DAILY REPORT goes to.
+ *
+ * Separate from the alert channel on purpose: alerts are an ops signal for whoever watches the
+ * channel, while the report is a team-wide digest, and the two audiences are different chats.
+ *
+ * Falls back to the alert chat when no report chat is configured, so the report still lands
+ * somewhere instead of silently going nowhere — the same "works before anyone opens Settings"
+ * bootstrap the alert credentials use. Resolution order per half: stored row, then env.
+ */
+export async function getReportChatCredentials(
+  e: Pick<
+    Env,
+    | "APP_ENCRYPTION_KEY"
+    | "TELEGRAM_BOT_TOKEN"
+    | "TELEGRAM_ALERT_CHAT_ID"
+    | "TELEGRAM_REPORT_CHAT_ID"
+  > = env(),
+): Promise<TelegramCredentials | null> {
+  const [row] = await db
+    .select({
+      tokenEnc: schema.metaCredentials.telegramTokenEnc,
+      chatId: schema.metaCredentials.telegramChatId,
+      reportChatId: schema.metaCredentials.telegramReportChatId,
+    })
+    .from(schema.metaCredentials)
+    .where(eq(schema.metaCredentials.id, "singleton"));
+  const token = row?.tokenEnc
+    ? decryptSecret(row.tokenEnc, e.APP_ENCRYPTION_KEY)
+    : e.TELEGRAM_BOT_TOKEN;
+  const chatId =
+    row?.reportChatId || e.TELEGRAM_REPORT_CHAT_ID || row?.chatId || e.TELEGRAM_ALERT_CHAT_ID;
+  if (!token || !chatId) return null;
+  return { token, chatId };
+}
+
 /** Telegram fields live on the same singleton row; blank token keeps the stored one. */
 export async function saveTelegramCredentials(token: string, chatId: string): Promise<void> {
   const key = env().APP_ENCRYPTION_KEY;

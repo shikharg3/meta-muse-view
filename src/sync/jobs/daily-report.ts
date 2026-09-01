@@ -5,11 +5,11 @@
  */
 import { eq, sql } from "drizzle-orm";
 import { db, schema } from "@/db/client";
-import { getTelegramCredentials } from "@/lib/credentials";
+import { getReportChatCredentials } from "@/lib/credentials";
 import { aggregateEngagements, MAX_ATTEMPTS } from "@/lib/daily-report";
 import { renderDailyReport } from "@/lib/daily-report-render";
 import { fetchDailyEngagementRows, yesterdayWindow } from "@/server/fns/daily-report";
-import { sendAlertChannelMessage } from "@/sync/alerts";
+import { sendReportChannelMessage } from "@/sync/alerts";
 import { recordServiceHealth } from "@/sync/state";
 
 /** What one completed run did. Null means the gate produced nothing (see `sendDailyPerformanceReport`). */
@@ -35,7 +35,7 @@ export interface DailyReportRun {
  * was finally set.
  */
 export async function sendDailyPerformanceReport(now: Date): Promise<DailyReportRun | null> {
-  if (!(await getTelegramCredentials())) return null;
+  if (!(await getReportChatCredentials())) return null;
 
   const w = yesterdayWindow(now);
   const date = w.since;
@@ -69,7 +69,7 @@ export async function sendDailyPerformanceReport(now: Date): Promise<DailyReport
   for (let i = alreadySent; i < chunks.length; i++) {
     // `chunks[i]` is in-bounds by the loop condition, but this project does not enable
     // `noUncheckedIndexedAccess`, so the non-null assertion is the honest form of what TS cannot see.
-    const res = await sendAlertChannelMessage(chunks[i]!);
+    const res = await sendReportChannelMessage(chunks[i]!);
     if (!res.ok) {
       const error = res.error ?? "unknown Telegram error";
       await db

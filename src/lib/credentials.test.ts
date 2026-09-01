@@ -1,7 +1,12 @@
 import { test, expect, beforeEach } from "bun:test";
 import { sql } from "drizzle-orm";
 import { db, schema } from "@/db/client";
-import { saveCredentials, saveTelegramCredentials, getTelegramCredentials } from "./credentials";
+import {
+  saveCredentials,
+  saveTelegramCredentials,
+  getTelegramCredentials,
+  getReportChatCredentials,
+} from "./credentials";
 
 beforeEach(async () => {
   await db.execute(sql`truncate table meta_credentials, token_health cascade`);
@@ -71,4 +76,59 @@ test("Telegram is unconfigured unless both halves resolve", async () => {
   // ...and a chat id with no bot behind it likewise.
   await db.execute(sql`truncate table meta_credentials cascade`);
   expect(await getTelegramCredentials(withEnv(undefined, "-100env"))).toBeNull();
+});
+
+/** Env for the report-chat resolver, which reads one key more than the alert resolver. */
+const withReportEnv = (token?: string, chatId?: string, reportChatId?: string) => ({
+  APP_ENCRYPTION_KEY: process.env.APP_ENCRYPTION_KEY as string,
+  TELEGRAM_BOT_TOKEN: token,
+  TELEGRAM_ALERT_CHAT_ID: chatId,
+  TELEGRAM_REPORT_CHAT_ID: reportChatId,
+});
+
+const storeReportChat = (chatId: string | null) =>
+  db
+    .insert(schema.metaCredentials)
+    .values({ id: "singleton", telegramReportChatId: chatId })
+    .onConflictDoUpdate({
+      target: schema.metaCredentials.id,
+      set: { telegramReportChatId: chatId },
+    });
+
+test("the report chat falls back to the alert chat, and a configured one wins", async () => {
+  // Unconfigured: the report must still land somewhere rather than silently going nowhere.
+  expect(await getReportChatCredentials(withReportEnv("tok", "-100alert"))).toEqual({
+    token: "tok",
+    chatId: "-100alert",
+  });
+
+  // Env report chat overrides the alert chat.
+  expect(
+    await getReportChatCredentials(withReportEnv("tok", "-100alert", "-100envreport")),
+  ).toEqual({ token: "tok", chatId: "-100envreport" });
+
+  // Stored report chat beats both.
+  await storeReportChat("-100dbreport");
+  expect(
+    await getReportChatCredentials(withReportEnv("tok", "-100alert", "-100envreport")),
+  ).toEqual({ token: "tok", chatId: "-100dbreport" });
+
+  // Cleared again: back to the alert chat, not to "" (which would read as unconfigured).
+  await storeReportChat(null);
+  expect(await getReportChatCredentials(withReportEnv("tok", "-100alert"))).toEqual({
+    token: "tok",
+    chatId: "-100alert",
+  });
+});
+
+test("the report chat does NOT leak into the alert channel", async () => {
+  // Alerts and the report are different audiences; configuring one must not redirect the other.
+  await saveTelegramCredentials("tok", "-100alert");
+  await storeReportChat("-100report");
+  expect((await getTelegramCredentials(withReportEnv("tok", "-100alert")))?.chatId).toBe(
+    "-100alert",
+  );
+  expect((await getReportChatCredentials(withReportEnv("tok", "-100alert")))?.chatId).toBe(
+    "-100report",
+  );
 });
