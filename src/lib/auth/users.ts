@@ -141,6 +141,11 @@ export async function ensureBasicAuthUser(): Promise<UserRow> {
 export interface AdminUser extends PublicUser {
   lastLoginAt: string | null;
   createdAt: string;
+  /**
+   * Email listed in `AUTH_SUPERADMINS`. Their superadmin role is owned by the environment and
+   * re-applied by `ensureBootstrap` on every login, so it cannot be changed from this table.
+   */
+  envPinned: boolean;
 }
 export async function listAllUsers(): Promise<AdminUser[]> {
   const rows = await db.select().from(schema.users).orderBy(schema.users.createdAt);
@@ -148,6 +153,7 @@ export async function listAllUsers(): Promise<AdminUser[]> {
     ...toPublicUser(u),
     lastLoginAt: u.lastLoginAt?.toISOString() ?? null,
     createdAt: u.createdAt.toISOString(),
+    envPinned: isSuperadminEmail(u.email),
   }));
 }
 export async function setUserStatus(id: string, status: UserStatus): Promise<void> {

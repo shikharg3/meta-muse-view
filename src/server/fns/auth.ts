@@ -18,6 +18,7 @@ import {
   type UserStatus,
   type UserRole,
 } from "@/lib/auth/users";
+import { roleChangeError } from "@/lib/auth/roles";
 
 /** Resolve the signed-in user from the session cookie (fresh role/status from DB). */
 export async function currentUser(): Promise<PublicUser | null> {
@@ -84,12 +85,19 @@ export async function updateUserRole(
   role: UserRole,
 ): Promise<{ ok: boolean; error?: string }> {
   const me = await currentUser();
-  if (!me || !isAdmin(me.role)) return { ok: false, error: "Forbidden" };
-  if (me.id === id) return { ok: false, error: "You can't change your own role." };
+  if (!me) return { ok: false, error: "Forbidden" };
   const target = (await listAllUsers()).find((u) => u.id === id);
-  // Only a superadmin may grant or remove the superadmin role.
-  if ((role === "superadmin" || target?.role === "superadmin") && !isSuperadmin(me.role))
-    return { ok: false, error: "Only a superadmin can manage the superadmin role." };
+  // Every rule lives in `roleChangeError`, which is pure and unit-tested. This fn only supplies the
+  // actor and target it had to read from the session and the database.
+  const error = roleChangeError({
+    actorId: me.id,
+    actorRole: me.role,
+    targetId: id,
+    targetRole: target?.role,
+    targetEnvPinned: target?.envPinned ?? false,
+    nextRole: role,
+  });
+  if (error) return { ok: false, error };
   await setUserRole(id, role);
   await audit("user.role", `set ${target?.email ?? id} to ${role}`);
   return { ok: true };

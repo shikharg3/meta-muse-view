@@ -53,6 +53,20 @@ function UsersAdmin() {
     await setUserRole({ data: { id, role } });
     await router.invalidate();
   };
+  /**
+   * Granting and revoking superadmin are confirmed, unlike the admin/member toggle: superadmin is the
+   * role that can reset passwords, read every user's chat history, see finance, and hand out
+   * superadmin itself, so it should not be one stray click away.
+   */
+  const setSuperadmin = async (id: string, email: string, grant: boolean) => {
+    const msg = grant
+      ? `Make ${email} a superadmin?\n\nThey will be able to reset any password, read all chat history, view finance, and promote other superadmins.`
+      : `Revoke superadmin from ${email}?\n\nThey stay an admin.`;
+    if (!window.confirm(msg)) return;
+    const r = await setUserRole({ data: { id, role: grant ? "superadmin" : "admin" } });
+    if (!r.ok) window.alert(r.error ?? "Role change failed.");
+    await router.invalidate();
+  };
   const remove = async (id: string, email: string) => {
     if (!window.confirm(`Delete ${email}? This removes their account and access.`)) return;
     await deleteUser({ data: { id } });
@@ -100,7 +114,18 @@ function UsersAdmin() {
                     </div>
                     <div className="text-[11px] text-muted-foreground font-mono">{u.email}</div>
                   </td>
-                  <td className="px-3 py-3 capitalize text-muted-foreground">{u.role}</td>
+                  <td className="px-3 py-3 capitalize text-muted-foreground">
+                    {u.role}
+                    {u.envPinned && (
+                      // Explains why this row has no superadmin button: the env owns the role.
+                      <span
+                        title="Pinned as superadmin by AUTH_SUPERADMINS — re-applied on every login"
+                        className="ml-1.5 rounded bg-muted px-1.5 py-0.5 text-[10px] font-medium normal-case text-muted-foreground"
+                      >
+                        pinned
+                      </span>
+                    )}
+                  </td>
                   <td className="px-3 py-3">
                     <span
                       className={cn(
@@ -137,6 +162,20 @@ function UsersAdmin() {
                         className="h-7 px-2.5 rounded-md border border-border text-xs font-medium hover:bg-accent"
                       >
                         {u.role === "admin" ? "Make member" : "Make admin"}
+                      </button>
+                    )}
+                    {/*
+                      Superadmin grant/revoke, superadmin-only — the server refuses it for anyone
+                      else, this just stops offering an action that would be rejected. An env-pinned
+                      account gets no button at all: the role is re-applied on their next login, so
+                      revoking it here would appear to work and then undo itself.
+                    */}
+                    {isSuperadmin(meRole) && !self && !u.envPinned && (
+                      <button
+                        onClick={() => void setSuperadmin(u.id, u.email, !isSuperadmin(u.role))}
+                        className="h-7 px-2.5 rounded-md border border-border text-xs font-medium hover:bg-accent"
+                      >
+                        {isSuperadmin(u.role) ? "Revoke superadmin" : "Make superadmin"}
                       </button>
                     )}
                     {!self && u.status !== "rejected" && (
