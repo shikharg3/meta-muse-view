@@ -1,80 +1,8 @@
 import { FileText, Download } from "lucide-react";
-import { fmtCurrency, fmtNumber, fmtPct } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import { downloadBlob, downloadCsvRows } from "@/lib/download";
+import { downloadReportCsv, downloadReportPdf, showCell } from "@/lib/report-export";
 import { stampReportExport } from "@/lib/api/reports";
-import type { ReportColumn, ReportPayload } from "@/server/agent/report";
-
-/**
- * A null cell is a metric this row cannot report — Meta de-duplicates it per row, so it is withheld
- * rather than summed (see `isAdditive`). It prints as an em dash everywhere, including CSV and PDF:
- * a blank would read as zero, and a zero would be a lie.
- */
-const WITHHELD = "—";
-
-/** Format a raw cell value for display, per its column kind. */
-function fmtCell(value: string | number | null, kind: ReportColumn["kind"]): string {
-  if (value === null) return WITHHELD;
-  if (typeof value === "string") return value;
-  switch (kind) {
-    case "money":
-      return fmtCurrency(value);
-    case "pct":
-      return fmtPct(value);
-    case "int":
-      return fmtNumber(value);
-    case "float":
-      return value.toFixed(2);
-    default:
-      return String(value);
-  }
-}
-
-/** Plain value for CSV/PDF (numbers rounded, no currency symbols). */
-function rawCell(value: string | number | null, kind: ReportColumn["kind"]): string {
-  if (value === null) return WITHHELD;
-  if (typeof value === "string") return value;
-  if (kind === "int") return String(Math.round(value));
-  return value.toFixed(2);
-}
-
-function reportMatrix(report: ReportPayload): string[][] {
-  const body = report.rows.map((r) => r.map((v, i) => rawCell(v, report.columns[i].kind)));
-  if (report.totals) body.push(report.totals.map((v, i) => rawCell(v, report.columns[i].kind)));
-  return body;
-}
-
-function downloadCsv(report: ReportPayload) {
-  downloadCsvRows(
-    [report.columns.map((c) => c.label), ...reportMatrix(report)],
-    `${report.filename}.csv`,
-  );
-}
-
-async function downloadPdf(report: ReportPayload) {
-  // Exception (ts-no-dynamic-import): jspdf + autotable are heavy and only needed on an explicit
-  // PDF export click, so they are lazy-loaded to stay out of the main bundle.
-  const { default: jsPDF } = await import("jspdf");
-  const { default: autoTable } = await import("jspdf-autotable");
-  const landscape = report.columns.length > 6;
-  const doc = new jsPDF({ orientation: landscape ? "landscape" : "portrait" });
-  doc.setFontSize(13);
-  doc.text(report.title, 14, 16);
-  doc.setFontSize(9);
-  doc.setTextColor(120);
-  doc.text(report.subtitle + (report.note ? `  (${report.note})` : ""), 14, 22);
-  autoTable(doc, {
-    head: [report.columns.map((c) => c.label)],
-    body: reportMatrix(report),
-    startY: 27,
-    styles: { fontSize: 8 },
-    headStyles: { fillColor: [37, 99, 235] },
-    ...(report.totals
-      ? { footStyles: { fillColor: [241, 245, 249], textColor: 20, fontStyle: "bold" } }
-      : {}),
-  });
-  doc.save(`${report.filename}.pdf`);
-}
+import type { ReportPayload } from "@/server/agent/report";
 
 export function ReportBlock({ report, runId }: { report: ReportPayload; runId?: string }) {
   // Fire-and-forget: a failed stamp must never block or undo a download the user already has.
@@ -100,7 +28,7 @@ export function ReportBlock({ report, runId }: { report: ReportPayload; runId?: 
         </div>
         <button
           onClick={() => {
-            downloadCsv(report);
+            downloadReportCsv(report);
             stamp("csv");
           }}
           className="h-8 px-3 rounded-md border border-border text-xs font-medium inline-flex items-center gap-1.5 hover:bg-accent"
@@ -113,7 +41,7 @@ export function ReportBlock({ report, runId }: { report: ReportPayload; runId?: 
           </span>
         )}
         <button
-          onClick={() => void downloadPdf(report).then(() => stamp("pdf"))}
+          onClick={() => void downloadReportPdf(report).then(() => stamp("pdf"))}
           className="h-8 px-3 rounded-md bg-primary text-primary-foreground text-xs font-medium inline-flex items-center gap-1.5"
         >
           <Download className="size-3.5" /> PDF
@@ -155,7 +83,7 @@ export function ReportBlock({ report, runId }: { report: ReportPayload; runId?: 
                       ci === 0 && stickyDim && "sticky left-0 z-10 bg-card",
                     )}
                   >
-                    {fmtCell(v, report.columns[ci].kind)}
+                    {showCell(v, report.columns[ci].kind)}
                   </td>
                 ))}
               </tr>
@@ -173,7 +101,7 @@ export function ReportBlock({ report, runId }: { report: ReportPayload; runId?: 
                       ci === 0 && stickyDim && "sticky left-0 z-10 bg-muted/50",
                     )}
                   >
-                    {fmtCell(v, report.columns[ci].kind)}
+                    {showCell(v, report.columns[ci].kind)}
                   </td>
                 ))}
               </tr>

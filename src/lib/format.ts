@@ -1,8 +1,8 @@
-export function fmtCurrency(n: number, currency = "USD") {
+export function fmtCurrency(n: number, currency = "USD", maximumFractionDigits = 0) {
   return new Intl.NumberFormat("en-US", {
     style: "currency",
     currency,
-    maximumFractionDigits: 0,
+    maximumFractionDigits,
   }).format(n);
 }
 export function fmtNumber(n: number) {

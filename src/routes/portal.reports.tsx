@@ -2,8 +2,9 @@ import { createFileRoute } from "@tanstack/react-router";
 import { Download, FileText, Table2 } from "lucide-react";
 import { useState } from "react";
 
-import { downloadCsvRows } from "@/lib/download";
 import { fmtCurrency, fmtNumber } from "@/lib/format";
+import type { ReportColumnKind } from "@/lib/report-catalog";
+import { downloadReportCsv, downloadReportPdf, type ReportDoc } from "@/lib/report-export";
 import { Eyebrow, Panel, SectionHead, Segmented } from "@/portal/components/bits";
 import { PageIntro } from "@/portal/components/Shell";
 import { pct, usd2 } from "@/portal/format";
@@ -47,50 +48,69 @@ const GROUPS: { value: Group; label: string }[] = [
 interface Col {
   key: string;
   label: string;
+  kind: ReportColumnKind;
   /** Display form for the on-screen preview. */
   show: (d: Derived) => string;
-  /** Plain form for CSV and PDF — no symbols, so spreadsheets can total the column. */
-  raw: (d: Derived) => string;
+  /** Raw number, which the exporter formats for CSV cells and draws as chart bars. */
+  num: (d: Derived) => number;
 }
 
 const COLS: Col[] = [
   {
     key: "spend",
     label: "Spend",
+    kind: "money",
     show: (d) => fmtCurrency(d.spend),
-    raw: (d) => d.spend.toFixed(2),
+    num: (d) => d.spend,
   },
   {
     key: "impressions",
     label: "Views",
+    kind: "int",
     show: (d) => fmtNumber(d.impressions),
-    raw: (d) => String(d.impressions),
+    num: (d) => d.impressions,
   },
   {
     key: "clicks",
     label: "Clicks",
+    kind: "int",
     show: (d) => fmtNumber(d.clicks),
-    raw: (d) => String(d.clicks),
+    num: (d) => d.clicks,
   },
-  { key: "ctr", label: "Click rate", show: (d) => pct(d.ctr, 2), raw: (d) => d.ctr.toFixed(2) },
-  { key: "regs", label: EVENT.reg, show: (d) => fmtNumber(d.regs), raw: (d) => String(d.regs) },
+  {
+    key: "ctr",
+    label: "Click rate",
+    kind: "pct",
+    show: (d) => pct(d.ctr, 2),
+    num: (d) => d.ctr,
+  },
+  {
+    key: "regs",
+    label: EVENT.reg,
+    kind: "int",
+    show: (d) => fmtNumber(d.regs),
+    num: (d) => d.regs,
+  },
   {
     key: "costPerReg",
     label: `Cost per ${EVENT.reg.toLowerCase().replace(/s$/, "")}`,
+    kind: "money",
     show: (d) => (d.regs ? usd2(d.costPerReg) : "—"),
-    raw: (d) => d.costPerReg.toFixed(2),
+    num: (d) => d.costPerReg,
   },
   {
     key: "deposits",
     label: EVENT.dep,
+    kind: "int",
     show: (d) => fmtNumber(d.deposits),
-    raw: (d) => String(d.deposits),
+    num: (d) => d.deposits,
   },
   {
     key: "costPerDep",
     label: `Cost per ${EVENT.dep.toLowerCase().replace(/s$/, "")}`,
+    kind: "money",
     show: (d) => (d.deposits ? usd2(d.costPerDep) : "—"),
-    raw: (d) => d.costPerDep.toFixed(2),
+    num: (d) => d.costPerDep,
   },
 ];
 const DEFAULT_COLS = ["spend", "impressions", "clicks", "ctr", "regs", "costPerReg"];
@@ -127,35 +147,17 @@ function Reports() {
   const subtitle = `${longDay(win.since)} to ${longDay(win.until)} · ${FRESHNESS.attribution} · reported in USD`;
   const filename = `${brandLabel.toLowerCase().replace(/\s+/g, "-")}-${group}-${win.since}-to-${win.until}`;
 
-  const matrix = (): string[][] => [
-    ["Row", ...cols.map((c) => c.label)],
-    ...rows.map((r) => [r.label, ...cols.map((c) => c.raw(r.d))]),
-    ["Total", ...cols.map((c) => c.raw(totals))],
-  ];
-
-  const exportPdf = async () => {
-    // Exception (ts-no-dynamic-import): jspdf + autotable are heavy and only needed on an explicit
-    // export click, so they stay out of the main bundle — same pattern as the internal ReportBlock.
-    const { default: jsPDF } = await import("jspdf");
-    const { default: autoTable } = await import("jspdf-autotable");
-    const doc = new jsPDF({ orientation: cols.length > 5 ? "landscape" : "portrait" });
-    doc.setFontSize(14);
-    doc.text(title, 14, 16);
-    doc.setFontSize(9);
-    doc.setTextColor(120);
-    doc.text(subtitle, 14, 22);
-    const [head, ...body] = matrix();
-    autoTable(doc, {
-      head: [head],
-      body: body.slice(0, -1),
-      foot: [body[body.length - 1]],
-      startY: 27,
-      styles: { fontSize: 8 },
-      headStyles: { fillColor: [24, 26, 32] },
-      footStyles: { fillColor: [236, 226, 205], textColor: 20, fontStyle: "bold" },
-    });
-    doc.save(`${filename}.pdf`);
-  };
+  const doc = (): ReportDoc => ({
+    title,
+    subtitle,
+    columns: [
+      { key: "_dim", label: groupLabel, kind: "text" },
+      ...cols.map((c) => ({ key: c.key, label: c.label, kind: c.kind })),
+    ],
+    rows: rows.map((r) => [r.label, ...cols.map((c) => c.num(r.d))]),
+    totals: ["Total", ...cols.map((c) => c.num(totals))],
+    filename,
+  });
 
   return (
     <>
@@ -223,7 +225,7 @@ function Reports() {
               <button
                 type="button"
                 className="pf-btn"
-                onClick={() => downloadCsvRows(matrix(), `${filename}.csv`)}
+                onClick={() => downloadReportCsv(doc())}
                 disabled={cols.length === 0}
               >
                 <Table2 className="size-4" /> Spreadsheet
@@ -231,7 +233,7 @@ function Reports() {
               <button
                 type="button"
                 className="pf-btn pf-btn-gold"
-                onClick={() => void exportPdf()}
+                onClick={() => void downloadReportPdf(doc())}
                 disabled={cols.length === 0}
               >
                 <Download className="size-4" /> PDF
