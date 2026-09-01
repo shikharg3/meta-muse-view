@@ -2,6 +2,7 @@ import { test, expect } from "bun:test";
 import {
   buildReportPdf,
   chartableColumns,
+  clientSubtitle,
   plainCell,
   showCell,
   type ReportDoc,
@@ -105,6 +106,24 @@ test("every report carries the wordmark and a totals row", async () => {
   // The logo is an image XObject; a dropped addImage would leave the header a bare violet band.
   expect(pdf.output()).toContain("/Image");
   expect(pdf.output("arraybuffer").byteLength).toBeGreaterThan(2000);
+});
+
+test("a client-facing subtitle never names the commission", () => {
+  // The four shapes production actually holds: runs issued before the disclosure was removed carry
+  // it frozen in their immutable payload, and re-exporting one must not print our margin.
+  expect(clientSubtitle("2026-08-24 → 2026-08-30 · by date · incl. 10% markup")).toBe(
+    "2026-08-24 → 2026-08-30 · by date",
+  );
+  expect(clientSubtitle("2026-08-21 → 2026-08-27 · by date · ad set · incl. 25% markup")).toBe(
+    "2026-08-21 → 2026-08-27 · by date · ad set",
+  );
+  expect(clientSubtitle("2026-08-24 → 2026-08-30 · by date · campaign · incl. 10% markup")).toBe(
+    "2026-08-24 → 2026-08-30 · by date · campaign",
+  );
+  // A subtitle with nothing to hide is returned untouched.
+  expect(clientSubtitle("2026-08-01 → 2026-08-06 · by date")).toBe(
+    "2026-08-01 → 2026-08-06 · by date",
+  );
 });
 
 test("the PDF renders for a single already-total row with no dimension column", async () => {

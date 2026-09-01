@@ -206,6 +206,17 @@ function fit(doc: jsPDF, text: string, maxW: number): string {
   return `${s}…`;
 }
 
+/**
+ * Strip any commission disclosure from a subtitle bound for a client's page.
+ *
+ * `buildReport` no longer writes one, but every report issued before that carries "· incl. 15%
+ * markup" frozen inside its stored payload, and re-exporting one from the archive would print our
+ * margin. Issued snapshots are immutable by contract, so the scrub happens here — the last step
+ * before ink — rather than by rewriting history in the database.
+ */
+export const clientSubtitle = (s: string): string =>
+  s.replace(/\s*·?\s*incl\.\s*\d+(\.\d+)?\s*%\s*markup/gi, "");
+
 // ------------------------------------------------------------------ pdf blocks
 
 /** Logo band, title, range and note. Returns the y the next block starts at. */
@@ -248,7 +259,7 @@ function drawHeader(doc: jsPDF, d: ReportDoc, pageW: number, w: number): number 
   doc.setFontSize(8.4);
   ink(doc, DOT.graphite);
   y += 6.2;
-  doc.text(pdfText(d.subtitle), MARGIN, y);
+  doc.text(pdfText(clientSubtitle(d.subtitle)), MARGIN, y);
 
   if (d.note) {
     // The withheld-metrics note is two sentences long, so it wraps instead of running off the page.
@@ -527,7 +538,8 @@ export async function buildReportPdf(d: ReportDoc): Promise<jsPDF> {
   });
   doc.setDocumentProperties({
     title: d.title,
-    subject: d.subtitle,
+    // Document properties are one click away in every PDF viewer, so they are client-facing too.
+    subject: clientSubtitle(d.subtitle),
     author: "DOT",
     creator: "DOT Analytics",
   });
