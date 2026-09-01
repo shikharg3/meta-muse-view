@@ -786,9 +786,13 @@ export async function buildReport(
       : null,
   ].filter((n): n is string => n !== null);
 
+  // The subtitle is printed verbatim on the client's PDF, so it states the window and the axes and
+  // NOTHING about the commission: the markup is inside the spend figures by design, and naming the
+  // percentage would hand the client our margin. The rate stays recoverable internally from
+  // `report_runs.params` and the template that produced the run.
   return {
     title: `${subjectName} — performance report`,
-    subtitle: `${spec.since} → ${spec.until}${dimNote}${spec.markup ? ` · incl. ${Math.round(spec.markup * 100)}% markup` : ""}`,
+    subtitle: `${spec.since} → ${spec.until}${dimNote}`,
     note: notes.length > 0 ? notes.join(" ") : null,
     columns,
     rows,

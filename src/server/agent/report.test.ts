@@ -179,7 +179,9 @@ test("buildReport applies a client markup to spend and derived cost metrics", as
   // spend 100 -> 110 (+10%); cpc = 110 / 50 clicks = 2.2
   expect(p.rows[0][0]).toBeCloseTo(110, 6); // spend +10%
   expect(p.rows[0][1]).toBeCloseTo(2.2, 6); // cpc from marked-up spend
-  expect(p.subtitle).toContain("10% markup");
+  // The payload is what the client's PDF prints, so it must never name the commission rate.
+  expect(p.subtitle).not.toContain("markup");
+  expect(p.subtitle).not.toContain("10%");
 });
 
 test("buildReport exposes de-duplicated funnel event columns and cost-per-event", async () => {
