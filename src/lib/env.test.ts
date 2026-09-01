@@ -11,7 +11,10 @@ test("parses minimal env and defaults the API version", () => {
 });
 
 test("splits ad account ids", () => {
-  expect(parseEnv({ ...base, META_AD_ACCOUNT_IDS: "act_1, act_2" }).META_AD_ACCOUNT_IDS).toEqual(["act_1", "act_2"]);
+  expect(parseEnv({ ...base, META_AD_ACCOUNT_IDS: "act_1, act_2" }).META_AD_ACCOUNT_IDS).toEqual([
+    "act_1",
+    "act_2",
+  ]);
 });
 
 test("throws when APP_ENCRYPTION_KEY is missing or wrong length", () => {

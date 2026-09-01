@@ -8,7 +8,10 @@ beforeEach(async () => {
 
 test("round-trips an account row", async () => {
   await db.insert(schema.accounts).values({
-    id: "act_1", name: "Test Co", currency: "USD", status: "ACTIVE",
+    id: "act_1",
+    name: "Test Co",
+    currency: "USD",
+    status: "ACTIVE",
   });
   const rows = await db.select().from(schema.accounts);
   expect(rows).toHaveLength(1);

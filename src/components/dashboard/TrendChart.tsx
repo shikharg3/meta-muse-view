@@ -1,5 +1,12 @@
 import {
-  Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis, Legend,
+  Area,
+  AreaChart,
+  CartesianGrid,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+  Legend,
 } from "recharts";
 
 interface Point {
@@ -26,8 +33,18 @@ export function TrendChart({ data }: { data: Point[] }) {
             </linearGradient>
           </defs>
           <CartesianGrid stroke="var(--color-border)" strokeDasharray="3 3" vertical={false} />
-          <XAxis dataKey="date" tick={{ fill: "var(--color-muted-foreground)", fontSize: 10 }} tickLine={false} axisLine={false} />
-          <YAxis tick={{ fill: "var(--color-muted-foreground)", fontSize: 10 }} tickLine={false} axisLine={false} width={48} />
+          <XAxis
+            dataKey="date"
+            tick={{ fill: "var(--color-muted-foreground)", fontSize: 10 }}
+            tickLine={false}
+            axisLine={false}
+          />
+          <YAxis
+            tick={{ fill: "var(--color-muted-foreground)", fontSize: 10 }}
+            tickLine={false}
+            axisLine={false}
+            width={48}
+          />
           <Tooltip
             contentStyle={{
               background: "var(--color-popover)",
@@ -38,8 +55,22 @@ export function TrendChart({ data }: { data: Point[] }) {
             labelStyle={{ color: "var(--color-muted-foreground)", fontSize: 10 }}
           />
           <Legend wrapperStyle={{ fontSize: 11, color: "var(--color-muted-foreground)" }} />
-          <Area name="Spend ($)" type="monotone" dataKey="spend" stroke="var(--color-primary)" strokeWidth={2} fill="url(#gSpend)" />
-          <Area name="Conversions" type="monotone" dataKey="conversions" stroke="var(--color-chart-2)" strokeWidth={2} fill="url(#gConv)" />
+          <Area
+            name="Spend ($)"
+            type="monotone"
+            dataKey="spend"
+            stroke="var(--color-primary)"
+            strokeWidth={2}
+            fill="url(#gSpend)"
+          />
+          <Area
+            name="Conversions"
+            type="monotone"
+            dataKey="conversions"
+            stroke="var(--color-chart-2)"
+            strokeWidth={2}
+            fill="url(#gConv)"
+          />
         </AreaChart>
       </ResponsiveContainer>
     </div>

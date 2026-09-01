@@ -1,12 +1,9 @@
 import { createServerFn } from "@tanstack/react-start";
-import { sendChatTurn, saveReportTurn } from "@/server/fns/chat";
+import { saveReportTurn } from "@/server/fns/chat";
 import type { ReportPayload } from "@/server/agent/report";
 
-/** Send one message to a conversation (creating it if conversationId is null); the server loads
- *  history, runs the agent, persists the turn, and returns the reply + cost + conversationId. */
-export const sendChat = createServerFn({ method: "POST" })
-  .inputValidator((d: { conversationId: string | null; message: string }) => d)
-  .handler(({ data }) => sendChatTurn(data));
+// Conversational turns POST to /api/chat/stream (see src/server/agent/stream.ts) so the answer can
+// render while it is still being produced. A server fn cannot do that — it returns one value.
 
 /** Persist a builder-generated report into the (new or existing) conversation thread. */
 export const saveReport = createServerFn({ method: "POST" })

@@ -3,6 +3,7 @@ import "./lib/error-capture";
 import { consumeLastCapturedError } from "./lib/error-capture";
 import { renderErrorPage } from "./lib/error-page";
 import { handleAuth } from "./lib/auth/gate";
+import { handleChatStream } from "./server/agent/stream";
 
 type ServerEntry = {
   fetch: (request: Request, env: unknown, ctx: unknown) => Promise<Response> | Response;
@@ -45,6 +46,12 @@ export default {
       // except the login/signup pages and static assets.
       const authResponse = await handleAuth(request);
       if (authResponse) return authResponse;
+
+      // Served here rather than as a server fn: server fns serialise one whole return value, and
+      // this endpoint's entire purpose is to emit events while the turn is still running.
+      if (new URL(request.url).pathname === "/api/chat/stream") {
+        return await handleChatStream(request);
+      }
 
       const handler = await getServerEntry();
       const response = await handler.fetch(request, env, ctx);

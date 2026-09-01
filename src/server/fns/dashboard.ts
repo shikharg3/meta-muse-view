@@ -218,7 +218,7 @@ export async function windowDeltas(w: DateWindow, entityId?: string): Promise<Kp
 }
 
 /** Daily account-level series for trend charts and KPI sparklines. */
-async function fetchTrend(w: DateWindow, entityId?: string): Promise<TrendPoint[]> {
+export async function fetchTrend(w: DateWindow, entityId?: string): Promise<TrendPoint[]> {
   const conds = [
     eq(schema.insightsDaily.level, "account"),
     gte(schema.insightsDaily.date, w.since),
@@ -1138,6 +1138,16 @@ const SUPPLEMENT_DIMS = [
   "hourly_stats_aggregated_by_advertiser_time_zone",
 ];
 
+/** One aggregated breakdown row, per account, before the per-dimension fold. */
+interface BreakdownAggRow {
+  accountId: string;
+  breakdownType: string;
+  breakdownValue: string;
+  spend: number;
+  conversions: number;
+  revenue: number;
+}
+
 export async function fetchBreakdowns(
   w: DateWindow,
   scope?: { accountIds?: string[]; campaignId?: string },
@@ -1155,9 +1165,11 @@ export async function fetchBreakdowns(
   const shaped = () => empty as BreakdownDims;
   if (!scope?.campaignId && scope?.accountIds && scope.accountIds.length === 0) return shaped();
 
-  const pull = async (conds: SQL[]) => {
-    const rows = await db
+  /** Grouped by account too: the supplement merge below has to reason per account. */
+  const pull = async (conds: SQL[]) =>
+    db
       .select({
+        accountId: schema.insightsBreakdownDaily.accountId,
         breakdownType: schema.insightsBreakdownDaily.breakdownType,
         breakdownValue: schema.insightsBreakdownDaily.breakdownValue,
         spend: sql<number>`coalesce(sum(${schema.insightsBreakdownDaily.spend}),0)`,
@@ -1167,28 +1179,19 @@ export async function fetchBreakdowns(
       .from(schema.insightsBreakdownDaily)
       .where(and(...conds))
       .groupBy(
+        schema.insightsBreakdownDaily.accountId,
         schema.insightsBreakdownDaily.breakdownType,
         schema.insightsBreakdownDaily.breakdownValue,
       );
-    for (const r of rows) {
-      const key = BREAKDOWN_KEY[r.breakdownType] ?? (r.breakdownType as keyof BreakdownDims);
-      if (!(key in empty)) continue;
-      const label = key === "placement" ? r.breakdownValue.replace(/\|/g, " · ") : r.breakdownValue;
-      empty[key].push({
-        label,
-        spend: num(r.spend),
-        conversions: num(r.conversions),
-        roas: num(r.revenue) / Math.max(1, num(r.spend)),
-      });
-    }
-  };
 
   const window = [
     gte(schema.insightsBreakdownDaily.date, w.since),
     lte(schema.insightsBreakdownDaily.date, w.until),
   ];
+
+  let rows: BreakdownAggRow[];
   if (scope?.campaignId) {
-    await pull([
+    rows = await pull([
       eq(schema.insightsBreakdownDaily.level, "campaign"),
       eq(schema.insightsBreakdownDaily.entityId, scope.campaignId),
       ...window,
@@ -1197,13 +1200,48 @@ export async function fetchBreakdowns(
     const acctFilter = scope?.accountIds
       ? [inArray(schema.insightsBreakdownDaily.accountId, scope.accountIds)]
       : [];
-    await pull([eq(schema.insightsBreakdownDaily.level, "account"), ...window, ...acctFilter]);
-    await pull([
-      eq(schema.insightsBreakdownDaily.level, "campaign"),
-      inArray(schema.insightsBreakdownDaily.breakdownType, SUPPLEMENT_DIMS),
-      ...window,
-      ...acctFilter,
+    const [accountRows, campaignRows] = await Promise.all([
+      pull([eq(schema.insightsBreakdownDaily.level, "account"), ...window, ...acctFilter]),
+      pull([
+        eq(schema.insightsBreakdownDaily.level, "campaign"),
+        inArray(schema.insightsBreakdownDaily.breakdownType, SUPPLEMENT_DIMS),
+        ...window,
+        ...acctFilter,
+      ]),
     ]);
+    // The campaign pull SUPPLEMENTS accounts that have no account-level rows for that dimension —
+    // it does not add to ones that do. Some accounts carry both, and summing them counted their
+    // spend twice (measured: one region appearing as two near-identical rows, doubling the total).
+    const covered = new Set(accountRows.map((r) => `${r.accountId}|${r.breakdownType}`));
+    rows = [
+      ...accountRows,
+      ...campaignRows.filter((r) => !covered.has(`${r.accountId}|${r.breakdownType}`)),
+    ];
+  }
+
+  // Fold the per-account rows into one row per dimension value.
+  const totals = new Map<
+    string,
+    { key: keyof BreakdownDims; label: string; spend: number; conversions: number; revenue: number }
+  >();
+  for (const r of rows) {
+    const key = BREAKDOWN_KEY[r.breakdownType] ?? (r.breakdownType as keyof BreakdownDims);
+    if (!(key in empty)) continue;
+    const label = key === "placement" ? r.breakdownValue.replace(/\|/g, " · ") : r.breakdownValue;
+    const at = `${key}|${label}`;
+    const acc = totals.get(at) ?? { key, label, spend: 0, conversions: 0, revenue: 0 };
+    acc.spend += num(r.spend);
+    acc.conversions += num(r.conversions);
+    acc.revenue += num(r.revenue);
+    totals.set(at, acc);
+  }
+  for (const t of totals.values()) {
+    empty[t.key].push({
+      label: t.label,
+      spend: t.spend,
+      conversions: t.conversions,
+      roas: t.revenue / Math.max(1, t.spend),
+    });
   }
   for (const k of Object.keys(empty)) empty[k].sort((a, b) => b.spend - a.spend);
   return shaped();

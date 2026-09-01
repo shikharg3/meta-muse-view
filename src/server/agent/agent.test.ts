@@ -2,9 +2,13 @@ import { test, expect, beforeEach } from "bun:test";
 import { eq, sql } from "drizzle-orm";
 import { db, schema } from "@/db/client";
 import { resolveClient, runTool } from "./tools";
+import type { ToolContext } from "./tools/kit";
 import { runReport } from "./report";
-import { runAgentLoop, type ChatResult } from "./chat";
+import { runAgentLoop, MAX_ITERATIONS, type ChatResult } from "./chat";
 import type { CreateMessageParams, AnthropicResponse, LlmClient } from "./anthropic";
+
+/** The agent tests exercise every tool, including admin-gated ones. */
+const CTX: ToolContext = { userId: "test-user", role: "superadmin" };
 
 async function seed() {
   await db.execute(
@@ -198,7 +202,7 @@ test("resolveClient falls back to a Notion brand title, mapping it to its agency
   // A pure client-NAME match still wins over brand fallback.
   expect(await resolveClient("wild")).toMatchObject({ id: "wildcasino-ag" });
   // get_client_stats scopes to the brand row's OWN account — the sibling row's act_556 is excluded.
-  const stats = (await runTool("get_client_stats", { client: "Lucky Rebel", days: 7 })) as {
+  const stats = (await runTool("get_client_stats", { client: "Lucky Rebel", days: 7 }, CTX)) as {
     client: string;
     matchedBrand?: string;
     brandNote?: string;
@@ -211,7 +215,7 @@ test("resolveClient falls back to a Notion brand title, mapping it to its agency
 }, 20000);
 
 test("get_client_stats returns grounded KPIs across the client's accounts", async () => {
-  const r = (await runTool("get_client_stats", { client: "wild", days: 7 })) as {
+  const r = (await runTool("get_client_stats", { client: "wild", days: 7 }, CTX)) as {
     client: string;
     kpis: { spend: number; ctr: number };
     accounts: unknown[];
@@ -229,7 +233,7 @@ test("get_client_stats reports each account's Meta status (disabled flagged, not
     .update(schema.accounts)
     .set({ status: "2", disableReason: 1 })
     .where(eq(schema.accounts.id, "act_111"));
-  const r = (await runTool("get_client_stats", { client: "wild", days: 7 })) as {
+  const r = (await runTool("get_client_stats", { client: "wild", days: 7 }, CTX)) as {
     accounts: { id: string; status: string | null; disableReason: string | null }[];
   };
   const acct = r.accounts.find((a) => a.id === "act_111");
@@ -247,7 +251,7 @@ test("list_accounts joins Meta status to the owning client's Notion status (susp
     .update(schema.clients)
     .set({ notionAccountIds: ["act_333", "act_111"] })
     .where(eq(schema.clients.id, "old-farside"));
-  const { accounts: rows, unsyncedActiveAccounts } = (await runTool("list_accounts", {})) as {
+  const { accounts: rows, unsyncedActiveAccounts } = (await runTool("list_accounts", {}, CTX)) as {
     mappingSyncedAt: string | null;
     unsyncedActiveAccounts: { client: string; clientStatus: string | null; accountId: string }[];
     accounts: {
@@ -301,14 +305,14 @@ test("list_accounts joins Meta status to the owning client's Notion status (susp
 }, 20000);
 
 test("runTool returns error data for unknown tools rather than throwing", async () => {
-  expect(await runTool("bogus", {})).toEqual({ error: "Unknown tool: bogus" });
+  expect(await runTool("bogus", {}, CTX)).toEqual({ error: "Unknown tool: bogus" });
 });
 
 // Scripted fake LLM: first reply asks for a tool, second reply ends the turn.
 function scriptedLlm(steps: AnthropicResponse[]): LlmClient {
   let i = 0;
   return {
-    createMessage: async (_p: CreateMessageParams) => steps[Math.min(i++, steps.length - 1)],
+    send: async (_p: CreateMessageParams) => steps[Math.min(i++, steps.length - 1)],
   };
 }
 
@@ -337,10 +341,13 @@ test("runAgentLoop executes requested tools, captures KPI cards, and terminates"
     llm,
     "system",
     [{ role: "user", content: "stats for Wild last 7 days" }],
-    { model: "claude-opus-4-8", effort: "xhigh" },
+    { model: "claude-opus-4-8", effort: "xhigh", ctx: CTX },
   );
   expect(out.reply).toContain("$200");
-  expect(out.toolCalls).toEqual([{ name: "get_client_stats", ok: true }]);
+  expect(out.toolCalls).toMatchObject([
+    { name: "get_client_stats", label: "client stats", ok: true },
+  ]);
+  expect(out.toolCalls[0].ms).toBeGreaterThanOrEqual(0);
   expect(out.cards).toMatchObject({ title: "wildcasino.ag" });
   expect(out.cards?.kpis.spend).toBeCloseTo(200);
 }, 20000);
@@ -356,9 +363,13 @@ test("runAgentLoop stops at the iteration cap if the model never finishes", asyn
   const out = await runAgentLoop(looping, "system", [{ role: "user", content: "loop" }], {
     model: "claude-opus-4-8",
     effort: "low",
+    ctx: CTX,
   });
   expect(out.reply).toContain("couldn't finish");
-  expect(out.toolCalls.length).toBe(5); // MAX_ITERATIONS
+  // Bound to the constant, not a copy of it: the number changed once and only this line noticed.
+  expect(out.toolCalls.length).toBe(MAX_ITERATIONS);
+  // Every attempt is still reported, so the trace explains where the budget went.
+  expect(out.toolCalls.every((t) => t.name === "list_clients")).toBe(true);
 }, 20000);
 
 test("aggregate tools honor an explicit since/until day (yesterday ≠ days=1)", async () => {
@@ -374,10 +385,12 @@ test("aggregate tools honor an explicit since/until day (yesterday ≠ days=1)",
   });
   // days=1 resolves to TODAY only → today's seeded spend (200), not yesterday's. This is the bug
   // that produced "$0 yesterday": today is often ~empty until it completes.
-  const todayOnly = (await runTool("get_overview", { days: 1 })) as { kpis: { spend: number } };
+  const todayOnly = (await runTool("get_overview", { days: 1 }, CTX)) as {
+    kpis: { spend: number };
+  };
   expect(todayOnly.kpis.spend).toBeCloseTo(200);
   // since=until=yesterday → yesterday's spend (500), the correct answer.
-  const yest = (await runTool("get_overview", { since: yesterday, until: yesterday })) as {
+  const yest = (await runTool("get_overview", { since: yesterday, until: yesterday }, CTX)) as {
     kpis: { spend: number };
   };
   expect(yest.kpis.spend).toBeCloseTo(500);
@@ -386,13 +399,13 @@ test("aggregate tools honor an explicit since/until day (yesterday ≠ days=1)",
 test("resolveClient and list_clients exclude archived (off-board) clients", async () => {
   // "Farside" exists only as an archived (removedAt) client, so it must not resolve or be listed.
   expect(await resolveClient("Farside")).toHaveProperty("error");
-  const listed = (await runTool("list_clients", { days: 7 })) as { name: string }[];
+  const listed = (await runTool("list_clients", { days: 7 }, CTX)) as { name: string }[];
   expect(listed.some((c) => c.name === "Farside")).toBe(false);
   expect(listed.some((c) => c.name === "wildcasino.ag")).toBe(true);
 }, 20000);
 
 test("list_active_campaigns returns spending campaigns mapped to their current client", async () => {
-  const camps = (await runTool("list_active_campaigns", { days: 7 })) as {
+  const camps = (await runTool("list_active_campaigns", { days: 7 }, CTX)) as {
     name: string;
     client: string | null;
     spend: number;
@@ -413,17 +426,21 @@ test("list_active_campaigns returns spending campaigns mapped to their current c
 
 test("get_ad_sets returns per-ad-set conversions and sums by name (state) across campaigns", async () => {
   // Ungrouped: one row per ad set — California appears under both campaigns.
-  const ungrouped = (await runTool("get_ad_sets", { subject: "Statewise", days: 30 })) as {
+  const ungrouped = (await runTool("get_ad_sets", { subject: "Statewise", days: 30 }, CTX)) as {
     adSets: { name: string; parent: string; spend: number }[];
   };
   expect(ungrouped.adSets.map((a) => a.name).sort()).toEqual(["California", "California", "Texas"]);
 
   // group_by_name: the two California ad sets collapse into one; spend + conversions sum.
-  const grouped = (await runTool("get_ad_sets", {
-    subject: "Statewise",
-    group_by_name: true,
-    days: 30,
-  })) as {
+  const grouped = (await runTool(
+    "get_ad_sets",
+    {
+      subject: "Statewise",
+      group_by_name: true,
+      days: 30,
+    },
+    CTX,
+  )) as {
     groupedByName: boolean;
     adSets: {
       name: string;
@@ -443,7 +460,11 @@ test("get_ad_sets returns per-ad-set conversions and sums by name (state) across
 }, 20000);
 
 test("get_ad_sets level='ad' returns ad-level rows under their ad set", async () => {
-  const r = (await runTool("get_ad_sets", { subject: "Statewise", level: "ad", days: 30 })) as {
+  const r = (await runTool(
+    "get_ad_sets",
+    { subject: "Statewise", level: "ad", days: 30 },
+    CTX,
+  )) as {
     level: string;
     ads: { name: string; parent: string; spend: number }[];
   };
@@ -455,7 +476,7 @@ test("get_ad_sets level='ad' returns ad-level rows under their ad set", async ()
 }, 20000);
 
 test("get_ad_sets resolves a campaign subject to just its ad sets", async () => {
-  const r = (await runTool("get_ad_sets", { subject: "SW Broad", days: 30 })) as {
+  const r = (await runTool("get_ad_sets", { subject: "SW Broad", days: 30 }, CTX)) as {
     adSets: { name: string }[];
   };
   // SW Broad holds California + Texas (not the LAL campaign's California).

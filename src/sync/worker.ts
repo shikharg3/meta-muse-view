@@ -9,6 +9,7 @@ import {
   sendDailyLists,
 } from "./jobs/checkin";
 import { sendDailyPerformanceReport } from "./jobs/daily-report";
+import { runDueSchedules } from "./jobs/ask-schedules";
 import { pruneReportDrafts } from "@/server/fns/reports";
 import { atOrAfter, berlinNow } from "@/lib/berlin-time";
 import { FIRST_PROMPT_AT, REMINDER_AT, FINAL_NOTICE_AT } from "@/lib/checkin";
@@ -119,6 +120,17 @@ async function notificationsLoop(): Promise<void> {
             `[daily-report] sent ${report.date}: ` +
               `${report.engagements} engagement(s) in ${report.messages} message(s)`,
           );
+      }
+
+      // Saved Ask questions. Each row claims its own date before answering, so this is a no-op on
+      // every tick after the first for that schedule.
+      const scheduled = await runDueSchedules(now);
+      for (const run of scheduled) {
+        console.log(
+          run.ok
+            ? `[ask-schedule] answered "${run.question}"`
+            : `[ask-schedule] FAILED "${run.question}": ${run.error}`,
+        );
       }
 
       // Flush BEFORE polling, not after. `flushPendingComments` is bounded by a LIMIT, so even a

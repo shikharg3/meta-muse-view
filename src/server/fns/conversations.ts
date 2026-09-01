@@ -1,6 +1,8 @@
 import { and, asc, desc, eq, sql } from "drizzle-orm";
 import { db, schema } from "@/db/client";
-import type { ChatResult, ToolTrace } from "@/server/agent/chat";
+import type { MessageExtras } from "@/server/agent/events";
+import type { ReplayedTool } from "@/server/agent/chat";
+import type { TokenUsage } from "@/server/agent/pricing";
 
 // Idempotent prod migration (run once on the droplet before deploying):
 //
@@ -30,19 +32,43 @@ export interface ConversationSummary {
   updatedAt: string;
 }
 
-/** Rich per-message payload persisted as jsonb (all fields JSON-serializable). */
-export interface MessagePayload {
-  cards: ChatResult["cards"];
-  report: ChatResult["report"];
-  toolCalls: ToolTrace[];
+/**
+ * Rich per-message payload persisted as jsonb (all fields JSON-serializable).
+ *
+ * `replay` is the consequential one: the tool results this turn fetched, fed back into the next
+ * turn's context. Without it the model saw its own prose and nothing behind it, so every follow-up
+ * re-ran the whole tool chain. Every field is optional on read — rows written before a field existed
+ * must keep loading.
+ */
+export interface MessagePayload extends Partial<MessageExtras> {
+  /** Tool results captured this turn, replayed into the next one. */
+  replay?: ReplayedTool[];
+  /** Which model answered, so cost can be attributed after the fact. */
+  model?: string;
+  /** Raw token counts; `cost_usd` is derived from these and the rates of the day. */
+  usage?: TokenUsage;
   error?: string;
 }
+
+/**
+ * What the browser gets. Deliberately NOT the full payload.
+ *
+ * `replay` holds every tool result the turn fetched — thousands of characters per turn that the UI
+ * never renders. Shipping it would put the entire conversation's raw data through the wire on every
+ * thread open, and TanStack's serializer rejects its `Record<string, unknown>` anyway.
+ */
+export type ClientMessagePayload = Omit<MessagePayload, "replay" | "usage">;
 
 export interface StoredMessage {
   role: "user" | "assistant";
   content: string;
-  payload: MessagePayload | null;
+  payload: ClientMessagePayload | null;
   costUsd: number | null;
+}
+
+/** Server-side view, replay included. Only the streaming turn needs this. */
+export interface StoredMessageFull extends Omit<StoredMessage, "payload"> {
+  payload: MessagePayload | null;
 }
 
 function normalizeTitle(title: string): string {
@@ -63,10 +89,11 @@ export async function listConversations(userId: string): Promise<ConversationSum
   return rows.map((r) => ({ id: r.id, title: r.title, updatedAt: r.updatedAt.toISOString() }));
 }
 
-export async function getConversation(
+/** Full rows including replay. Server-only — see `ClientMessagePayload`. */
+export async function getConversationFull(
   userId: string,
   conversationId: string,
-): Promise<StoredMessage[] | null> {
+): Promise<StoredMessageFull[] | null> {
   const [owned] = await db
     .select({ id: schema.conversations.id })
     .from(schema.conversations)
@@ -92,6 +119,19 @@ export async function getConversation(
     payload: r.payload as MessagePayload | null,
     costUsd: r.costUsd,
   }));
+}
+
+export async function getConversation(
+  userId: string,
+  conversationId: string,
+): Promise<StoredMessage[] | null> {
+  const full = await getConversationFull(userId, conversationId);
+  if (!full) return null;
+  return full.map((m) => {
+    if (!m.payload) return { ...m, payload: null };
+    const { replay: _replay, usage: _usage, ...client } = m.payload;
+    return { ...m, payload: client };
+  });
 }
 
 export async function createConversation(userId: string, title: string): Promise<string> {

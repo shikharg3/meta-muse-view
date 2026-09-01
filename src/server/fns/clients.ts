@@ -22,7 +22,7 @@ import {
   loadCampaignOwnership,
   type CampaignRef,
 } from "./campaign-attribution";
-import { forecastBudgetEnd, PACE_DAYS } from "@/lib/budget-forecast";
+import { forecastBudgetEnd, paceWindow, PACE_DAYS } from "@/lib/budget-forecast";
 
 const num = (v: unknown): number => Number(v ?? 0);
 /** Server-side calendar day (UTC), the reference point for budget pacing. */
@@ -123,6 +123,14 @@ export interface ClientRanked extends ClientSummary {
   impressions: number;
   results: number;
   resultLabel: string;
+  /** Contracted engagement budget in $ from the Notion campaigns board ("Budget ($)"); null = the
+   *  engagement has no budget tracked. This is the CONTRACT, not anything Meta reports. */
+  budget: number | null;
+  /** Engagement start (Notion "Actual Start Date"), YYYY-MM-DD; null = not recorded. Budget spend is
+   *  only ever counted from here — these ad accounts carry previous engagements. */
+  startDate: string | null;
+  /** Planned end (Notion "End Date (Estimated)"), YYYY-MM-DD; null = not recorded. */
+  endDate: string | null;
 }
 
 /**
@@ -189,6 +197,9 @@ export async function fetchClientsRanked(w: DateWindow): Promise<ClientRanked[]>
         impressions,
         results: resultVal,
         resultLabel,
+        budget: r.budget ?? null,
+        startDate: r.startDate ? String(r.startDate) : null,
+        endDate: r.endDate ? String(r.endDate) : null,
       };
     })
     .sort((a, b) => b.spend - a.spend);
@@ -419,6 +430,135 @@ function budgetOf(
     daysRemaining: f.daysRemaining,
     forecastReason: f.reason,
   };
+}
+
+/** One client's contract budget and burn-down, as measured by the all-clients pacing sweep. */
+export interface ClientBudgetPacing {
+  id: string;
+  name: string;
+  /** Notion board status (Live, Paused, Full Budget Finished, …). */
+  status: string | null;
+  /** Set when the client has dropped off the Notion board; its history is retained. */
+  removedAt: string | null;
+  accountCount: number;
+  /** Contracted total in $ from Notion's "Budget ($)"; null = the engagement isn't budget-tracked. */
+  total: number | null;
+  /** Spend since `startDate`, $. Zero when no start date is recorded — there is nothing to count
+   *  from, NOT a claim that nothing was spent. */
+  spent: number;
+  remaining: number | null;
+  startDate: string | null;
+  /** Notion's estimated end date — what was planned, never a measurement. */
+  plannedEndDate: string | null;
+  /** $/day over the trailing pace window. */
+  dailyPace: number;
+  /** Complete days the pace was averaged over; null = the engagement is too young to average. */
+  paceDays: number | null;
+  projectedEndDate: string | null;
+  daysRemaining: number | null;
+  forecastReason: string | null;
+}
+
+/**
+ * Contract budget + burn-down for EVERY client, for the "who needs attention this week" sweep.
+ *
+ * `fetchClientDetail` already answers this for ONE client, but it pulls a whole campaign→ad-set→ad
+ * tree to do it, so looping it over the board is not an option. This reads the two spends the
+ * forecast needs — since the engagement started, and over the trailing pace window — in ONE query of
+ * daily account rows, then windows them per client in memory. Both windows differ per client (every
+ * engagement has its own start date), so pushing them into SQL would mean one round trip per distinct
+ * start date: measured against production that is 39 queries and ~8.7s over the ops SSH tunnel, where
+ * the single scan is 15k rows in 1.6s.
+ *
+ * Both spends are clamped to the engagement's own start date, never lifetime: these ad accounts are
+ * recycled between engagements, and an unclamped sum would report almost every client as exhausted
+ * and every new one as already burning at the previous client's rate.
+ *
+ * Deliberately account-level, exactly like `fetchClientsRanked`: two clients sharing an ad account
+ * each see the whole account's spend. `fetchClientDetail` is the attribution-aware figure — prefer it
+ * whenever the question is about one client.
+ */
+export async function fetchClientBudgetPacing(): Promise<ClientBudgetPacing[]> {
+  const rows = await db.select().from(schema.clients);
+  if (rows.length === 0) return [];
+  const cents = (n: number): number => Math.round(n * 100) / 100;
+  const today = todayYmd();
+  // Today is excluded from the pace: it is partial until the next sync and would drag the average down.
+  const yesterday = addDays(today, -1);
+
+  const jobs = rows.map((r) => {
+    const startDate = r.startDate ? String(r.startDate) : null;
+    return {
+      row: r,
+      ids: effectiveAccountIds(r),
+      startDate,
+      pace: paceWindow({ startDate, until: yesterday }),
+    };
+  });
+
+  const accountIds = [...new Set(jobs.flatMap((j) => j.ids))];
+  // Nothing earlier than this can matter: the oldest engagement start, or the pace window when every
+  // engagement starts later (or none records a start at all).
+  const floor = jobs.reduce(
+    (min, j) => (j.startDate !== null && j.startDate < min ? j.startDate : min),
+    addDays(yesterday, -(PACE_DAYS - 1)),
+  );
+  const daily = accountIds.length
+    ? await db
+        .select({
+          entityId: schema.insightsDaily.entityId,
+          date: schema.insightsDaily.date,
+          spend: schema.insightsDaily.spend,
+        })
+        .from(schema.insightsDaily)
+        .where(
+          and(
+            eq(schema.insightsDaily.level, "account"),
+            inArray(schema.insightsDaily.entityId, accountIds),
+            gte(schema.insightsDaily.date, floor),
+          ),
+        )
+    : [];
+
+  const byAccount = new Map<string, { date: string; spend: number }[]>();
+  for (const d of daily) {
+    const day = { date: String(d.date), spend: num(d.spend) };
+    const list = byAccount.get(d.entityId);
+    if (list) list.push(day);
+    else byAccount.set(d.entityId, [day]);
+  }
+
+  return jobs.map((j) => {
+    let spentTotal = 0;
+    let paceTotal = 0;
+    for (const id of j.ids) {
+      for (const day of byAccount.get(id) ?? []) {
+        if (j.startDate !== null && day.date >= j.startDate) spentTotal += day.spend;
+        if (j.pace && day.date >= j.pace.from && day.date <= yesterday) paceTotal += day.spend;
+      }
+    }
+    const spent = cents(spentTotal);
+    const dailyPace = j.pace ? cents(paceTotal / j.pace.days) : 0;
+    const total = j.row.budget ?? null;
+    const f = forecastBudgetEnd({ total, spent, dailyPace, today });
+    return {
+      id: j.row.id,
+      name: j.row.name,
+      status: j.row.status,
+      removedAt: j.row.removedAt?.toISOString() ?? null,
+      accountCount: j.ids.length,
+      total,
+      spent,
+      remaining: total != null ? cents(total - spent) : null,
+      startDate: j.startDate,
+      plannedEndDate: j.row.endDate ? String(j.row.endDate) : null,
+      dailyPace,
+      paceDays: j.pace?.days ?? null,
+      projectedEndDate: f.projectedEndDate,
+      daysRemaining: f.daysRemaining,
+      forecastReason: f.reason,
+    };
+  });
 }
 
 const ACT_RE = /^act_\d{6,}$/;

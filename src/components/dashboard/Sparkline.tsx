@@ -1,6 +1,12 @@
 import { Bar, BarChart, ResponsiveContainer } from "recharts";
 
-export function Sparkline({ data, color = "var(--color-primary)" }: { data: number[]; color?: string }) {
+export function Sparkline({
+  data,
+  color = "var(--color-primary)",
+}: {
+  data: number[];
+  color?: string;
+}) {
   const d = data.map((v, i) => ({ i, v }));
   return (
     <div className="h-6 w-20">

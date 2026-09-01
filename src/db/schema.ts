@@ -324,6 +324,49 @@ export const chatMessages = pgTable(
   (t) => [index("chat_messages_conversation_idx").on(t.conversationId)],
 );
 
+/**
+ * A saved question the assistant re-answers on a schedule and posts to the Telegram report channel.
+ *
+ * `lastRunDate` is the idempotency claim, matching how `daily_report_runs` works: the worker ticks
+ * every 30s, so the sent date has to be recorded before the send or a restart re-posts the answer.
+ *
+ * Idempotent prod migration (this repo applies DDL by hand — there is no drizzle migration folder):
+ *
+ *   CREATE TABLE IF NOT EXISTS ask_schedules (
+ *     id text PRIMARY KEY,
+ *     user_id text NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+ *     question text NOT NULL,
+ *     cadence text NOT NULL DEFAULT 'daily',
+ *     weekday integer,
+ *     hour integer NOT NULL DEFAULT 9,
+ *     minute integer NOT NULL DEFAULT 0,
+ *     active boolean NOT NULL DEFAULT true,
+ *     last_run_date text,
+ *     last_error text,
+ *     created_at timestamptz NOT NULL DEFAULT now()
+ *   );
+ *   CREATE INDEX IF NOT EXISTS ask_schedules_user_idx ON ask_schedules (user_id);
+ */
+export const askSchedules = pgTable(
+  "ask_schedules",
+  {
+    id: text("id").primaryKey(), // crypto.randomUUID()
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    question: text("question").notNull(),
+    cadence: text("cadence").notNull().default("daily"), // "daily" | "weekdays" | "weekly"
+    weekday: integer("weekday"), // 1=Mon … 7=Sun; only read when cadence = "weekly"
+    hour: integer("hour").notNull().default(9), // Berlin clock, matching every other scheduled job
+    minute: integer("minute").notNull().default(0),
+    active: boolean("active").notNull().default(true),
+    lastRunDate: text("last_run_date"), // YYYY-MM-DD claim; null = never run
+    lastError: text("last_error"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [index("ask_schedules_user_idx").on(t.userId)],
+);
+
 // Admin action trail (approvals, role changes, mapping edits, resets, credential saves).
 export const auditLog = pgTable("audit_log", {
   id: text("id").primaryKey(),

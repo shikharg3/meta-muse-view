@@ -8,7 +8,13 @@ beforeEach(async () => {
 });
 
 test("getSettings masks secrets and reports presence", async () => {
-  await saveCredentialsFormData({ appId: "111", appSecret: "SECRETval", token: "TOKENval", businessId: "999", accountIds: "act_1, act_2" });
+  await saveCredentialsFormData({
+    appId: "111",
+    appSecret: "SECRETval",
+    token: "TOKENval",
+    businessId: "999",
+    accountIds: "act_1, act_2",
+  });
   const s = await fetchSettings();
   expect(s.appId).toBe("111");
   expect(s.businessId).toBe("999");

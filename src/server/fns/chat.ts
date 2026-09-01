@@ -3,82 +3,18 @@ import {
   getConversation,
   createConversation,
   appendTurn,
-  type StoredMessage,
   type MessagePayload,
 } from "./conversations";
-import { chatTurn, type ChatMessage } from "@/server/agent/chat";
-import type { ChatResult } from "@/server/agent/chat";
+import { emptyExtras } from "@/server/agent/events";
 import type { ReportPayload } from "@/server/agent/report";
 
-export interface ChatSendResult {
-  conversationId: string;
-  reply: string;
-  cards: ChatResult["cards"];
-  report: ChatResult["report"];
-  toolCalls: ChatResult["toolCalls"];
-  costUsd: number;
-  error?: string;
-}
-
-/** One chat turn against a new-or-existing conversation: load the prior messages (server-owned so it
- *  survives reloads / other devices), run the agent, persist the user + assistant turn with its rich
- *  payload + cost, and return the reply. Everything is scoped to the signed-in user. */
-export async function sendChatTurn(input: {
-  conversationId: string | null;
-  message: string;
-}): Promise<ChatSendResult> {
-  const me = await currentUser();
-  const message = input.message.trim();
-  const fail = (error: string): ChatSendResult => ({
-    conversationId: input.conversationId ?? "",
-    reply: "",
-    cards: null,
-    report: null,
-    toolCalls: [],
-    costUsd: 0,
-    error,
-  });
-  if (!me) return fail("You're not signed in.");
-  if (!message) return fail("Empty message.");
-
-  let conversationId = input.conversationId;
-  let prior: StoredMessage[] = [];
-  if (conversationId) {
-    const msgs = await getConversation(me.id, conversationId);
-    if (msgs === null)
-      conversationId = null; // unknown / not owned → start a fresh conversation
-    else prior = msgs;
-  }
-  if (!conversationId) conversationId = await createConversation(me.id, message);
-
-  const history: ChatMessage[] = [
-    ...prior.map((m) => ({ role: m.role, content: m.content })),
-    { role: "user", content: message },
-  ];
-  const result = await chatTurn(history);
-
-  const payload: MessagePayload = {
-    cards: result.cards,
-    report: result.report,
-    toolCalls: result.toolCalls,
-    error: result.error,
-  };
-  await appendTurn(conversationId, message, {
-    content: result.reply,
-    payload,
-    costUsd: result.costUsd,
-  });
-
-  return {
-    conversationId,
-    reply: result.reply,
-    cards: result.cards,
-    report: result.report,
-    toolCalls: result.toolCalls,
-    costUsd: result.costUsd,
-    error: result.error,
-  };
-}
+/**
+ * The conversational turn lives in `src/server/agent/stream.ts`, not here.
+ *
+ * It was a server fn returning one whole `ChatSendResult`, which is exactly what made the UI sit on a
+ * spinner through every model round-trip. Only the report-builder path remains a plain fn: it makes
+ * no LLM call, so there is nothing to stream.
+ */
 
 /** Persist a builder-generated report as a turn in the thread (no LLM cost) so it restores later. */
 export async function saveReportTurn(input: {
@@ -95,11 +31,7 @@ export async function saveReportTurn(input: {
   if (!conversationId)
     conversationId = await createConversation(me.id, `Report — ${input.clientName}`);
 
-  const payload: MessagePayload = {
-    cards: null,
-    report: input.report,
-    toolCalls: [],
-  };
+  const payload: MessagePayload = { ...emptyExtras(), report: input.report };
   await appendTurn(conversationId, `📄 Report — ${input.summary}`, {
     content: `Here's your report for ${input.clientName}.`,
     payload,
