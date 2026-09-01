@@ -235,3 +235,83 @@ describe("buildRiskMap", () => {
     expect(map.bms.map((r) => r.id)).toEqual([criticalBm, safeBm]);
   });
 });
+
+describe("buildRiskMap graph", () => {
+  test("wires every link table into one connected access graph", async () => {
+    const profileId = await makeProfile("admin-1");
+    const bmId = await makeBm("bm-1");
+    await db.insert(schema.infraProfileBm).values({ profileId, bmId });
+    await db.insert(schema.infraAdAccounts).values({ id: "act_1", label: "Main" });
+    await db.insert(schema.infraBmAdAccount).values({ bmId, adAccountId: "act_1" });
+    await db.insert(schema.infraPixels).values({ id: "px-1", name: "Pixel", rootBmId: bmId });
+    const pageId = randomUUID();
+    await db.insert(schema.infraPages).values({
+      id: pageId,
+      name: "Page",
+      pageUrl: "https://facebook.com/p",
+      ownerProfileId: profileId,
+    });
+    await db.insert(schema.infraPageBm).values({ pageId, bmId });
+
+    const { graph } = await buildRiskMap();
+    const edge = (source: string, target: string) =>
+      graph.edges.find((e) => e.source === source && e.target === target);
+
+    expect(graph.nodes.map((n) => n.id).sort()).toEqual(
+      [
+        `profile:${profileId}`,
+        `bm:${bmId}`,
+        "adAccount:act_1",
+        "pixel:px-1",
+        `page:${pageId}`,
+      ].sort(),
+    );
+    expect(edge(`profile:${profileId}`, `bm:${bmId}`)?.relation).toBe("admin");
+    expect(edge(`bm:${bmId}`, "adAccount:act_1")?.relation).toBe("access");
+    expect(edge(`bm:${bmId}`, "pixel:px-1")?.relation).toBe("root");
+    expect(edge(`profile:${profileId}`, `page:${pageId}`)?.relation).toBe("owns");
+    expect(edge(`bm:${bmId}`, `page:${pageId}`)?.relation).toBe("access");
+  });
+
+  test("a suspended BM's outbound edges are dead, so an unreachable account is visible", async () => {
+    const bmId = await makeBm("dead-bm", "suspended");
+    await db.insert(schema.infraAdAccounts).values({ id: "act_2", label: "Stranded" });
+    await db.insert(schema.infraBmAdAccount).values({ bmId, adAccountId: "act_2" });
+
+    const { graph } = await buildRiskMap();
+    expect(graph.edges).toHaveLength(1);
+    expect(graph.edges[0].dead).toBe(true);
+  });
+
+  test("a retired ad account leaves neither a node nor a dangling edge", async () => {
+    const bmId = await makeBm("bm-2");
+    await db
+      .insert(schema.infraAdAccounts)
+      .values({ id: "act_3", label: "Old", usageState: "retired" });
+    await db.insert(schema.infraBmAdAccount).values({ bmId, adAccountId: "act_3" });
+
+    const { graph } = await buildRiskMap();
+    expect(graph.nodes.map((n) => n.id)).toEqual([`bm:${bmId}`]);
+    expect(graph.edges).toEqual([]);
+  });
+
+  test("an unusable profile is critical only when something depends on it", async () => {
+    const stranding = await makeProfile("blocked-admin", ["suspended"]);
+    const orphan = await makeProfile("blocked-orphan", ["active", "read_only"]);
+    const bmId = await makeBm("bm-3");
+    await db.insert(schema.infraProfileBm).values({ profileId: stranding, bmId });
+
+    const { graph } = await buildRiskMap();
+    const level = (id: string) => graph.nodes.find((n) => n.id === `profile:${id}`)?.risk.level;
+    expect(level(stranding)).toBe("critical");
+    expect(level(orphan)).toBe("warning");
+  });
+
+  test("the graph and the risk tables report the same verdict for the same BM", async () => {
+    const bmId = await makeBm("bm-4");
+    const { bms, graph } = await buildRiskMap();
+    const node = graph.nodes.find((n) => n.id === `bm:${bmId}`);
+    expect(node?.risk).toEqual(bms[0].risk);
+    expect(node?.detail).toBe(bms[0].detail);
+  });
+});

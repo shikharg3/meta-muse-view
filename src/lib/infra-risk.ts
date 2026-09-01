@@ -60,6 +60,25 @@ export function usableBm(status: BmStatus): boolean {
   return status === "active";
 }
 
+/**
+ * A profile's own verdict, for the access map. Profiles have no `redundancy()` rule of their own — a
+ * profile is a means of access, not an asset to be protected — so this never feeds `atRisk`: the BM
+ * or page left stranded is what gets counted.
+ *
+ * `critical` is reserved for an unusable profile something actually depends on. An unusable profile
+ * nobody relies on is a dead registry entry to clean up, not an incident, and colouring the two the
+ * same is what makes an access map unreadable.
+ *
+ * `dependents` counts BMs it admins plus pages it owns — the things that lose an access path when it
+ * goes. Additional page access is deliberately excluded: losing it does not strand the page, because
+ * the owner profile still owns it.
+ */
+export function profileRisk(input: { usable: boolean; dependents: number }): Risk {
+  if (input.usable) return { level: "safe", label: "Usable" };
+  if (input.dependents > 0) return { level: "critical", label: "Blocked" };
+  return { level: "warning", label: "Unusable" };
+}
+
 /** Ordered; first match wins. */
 export function pixelRisk(input: {
   status: PixelStatus;

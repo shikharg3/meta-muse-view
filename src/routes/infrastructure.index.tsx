@@ -1,12 +1,18 @@
-import { createFileRoute, redirect, Link } from "@tanstack/react-router";
+import { createFileRoute, redirect, Link, useNavigate } from "@tanstack/react-router";
+import { Network, Table2 } from "lucide-react";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { PagePendingSkeleton } from "@/components/dashboard/TableSkeleton";
 import { StatusPill } from "@/components/dashboard/StatusPill";
+import { InfraGraphCanvas } from "@/components/infra/InfraGraphCanvas";
 import { RiskBadge } from "@/components/infra/RiskBadge";
 import { getInfraRiskMap } from "@/lib/api/infrastructure";
 import { getCurrentUser } from "@/lib/api/auth";
 import { isAdmin } from "@/lib/auth/roles";
+import { cn } from "@/lib/utils";
 import type { InfraRiskRow } from "@/server/fns/infra/risk";
+
+/** The map is the default: the tables answer "what is broken", the map answers "what does it cost". */
+type InfraView = "map" | "table";
 
 export const Route = createFileRoute("/infrastructure/")({
   head: () => ({
@@ -18,6 +24,9 @@ export const Route = createFileRoute("/infrastructure/")({
           "Access-path risk across profiles, Business Managers, ad accounts, pixels and pages.",
       },
     ],
+  }),
+  validateSearch: (s: Record<string, unknown>): { view?: InfraView } => ({
+    view: s.view === "table" ? "table" : undefined,
   }),
   loader: async () => {
     const me = await getCurrentUser();
@@ -95,6 +104,8 @@ function RiskSection({
 function InfrastructurePage() {
   const map = Route.useLoaderData();
   const { counts } = map;
+  const view: InfraView = Route.useSearch().view ?? "map";
+  const navigate = useNavigate({ from: "/infrastructure/" });
 
   const tiles = [
     { label: "Profiles", value: counts.profiles, to: "/infrastructure/profiles" },
@@ -113,7 +124,33 @@ function InfrastructurePage() {
             ? "Every registered asset has at least two independent access paths."
             : `${map.atRisk} asset${map.atRisk === 1 ? "" : "s"} with fewer than two independent access paths.`
         }
-      />
+      >
+        <div className="inline-flex rounded-lg border border-border bg-card p-0.5">
+          {(
+            [
+              { id: "map", label: "Map", icon: Network },
+              { id: "table", label: "Table", icon: Table2 },
+            ] as const
+          ).map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() =>
+                navigate({ search: { view: tab.id === "map" ? undefined : tab.id }, replace: true })
+              }
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
+                view === tab.id
+                  ? "bg-accent text-accent-foreground"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              <tab.icon className="size-3.5" />
+              {tab.label}
+            </button>
+          ))}
+        </div>
+      </PageHeader>
 
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
         {tiles.map((tile) => (
@@ -130,18 +167,24 @@ function InfrastructurePage() {
         ))}
       </div>
 
-      <RiskSection
-        title="Business Managers"
-        rows={map.bms}
-        emptyLabel="No Business Managers registered yet."
-      />
-      <RiskSection
-        title="Ad Accounts"
-        rows={map.adAccounts}
-        emptyLabel="No ad accounts registered yet."
-      />
-      <RiskSection title="Pixels" rows={map.pixels} emptyLabel="No pixels registered yet." />
-      <RiskSection title="Pages" rows={map.pages} emptyLabel="No pages registered yet." />
+      {view === "map" ? (
+        <InfraGraphCanvas graph={map.graph} />
+      ) : (
+        <>
+          <RiskSection
+            title="Business Managers"
+            rows={map.bms}
+            emptyLabel="No Business Managers registered yet."
+          />
+          <RiskSection
+            title="Ad Accounts"
+            rows={map.adAccounts}
+            emptyLabel="No ad accounts registered yet."
+          />
+          <RiskSection title="Pixels" rows={map.pixels} emptyLabel="No pixels registered yet." />
+          <RiskSection title="Pages" rows={map.pages} emptyLabel="No pages registered yet." />
+        </>
+      )}
     </div>
   );
 }

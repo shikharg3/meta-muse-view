@@ -11,6 +11,7 @@ import {
   isVerificationOverdue,
   pageRisk,
   pixelRisk,
+  profileRisk,
   redundancy,
   usableBm,
   usableProfile,
@@ -70,6 +71,33 @@ describe("usableBm", () => {
       suspended: false,
     };
     for (const s of BM_STATUSES) expect(usableBm(s)).toBe(expected[s]);
+  });
+});
+
+describe("profileRisk", () => {
+  test("a usable profile is safe regardless of how much hangs off it", () => {
+    expect(profileRisk({ usable: true, dependents: 0 })).toEqual({
+      level: "safe",
+      label: "Usable",
+    });
+    expect(profileRisk({ usable: true, dependents: 9 })).toEqual({
+      level: "safe",
+      label: "Usable",
+    });
+  });
+
+  test("an unusable profile something depends on is critical", () => {
+    expect(profileRisk({ usable: false, dependents: 1 })).toEqual({
+      level: "critical",
+      label: "Blocked",
+    });
+  });
+
+  test("an unusable profile nobody depends on is a warning — dead entry, not an incident", () => {
+    expect(profileRisk({ usable: false, dependents: 0 })).toEqual({
+      level: "warning",
+      label: "Unusable",
+    });
   });
 });
 

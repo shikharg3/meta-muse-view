@@ -1,15 +1,18 @@
 import { db, schema } from "@/db/client";
+import { buildInfraGraph, type InfraGraph } from "@/lib/infra-graph";
 import {
   RISK_ORDER,
   isVerificationOverdue,
   pageRisk,
   pixelRisk,
+  profileRisk,
   redundancy,
   usableBm,
   usableProfile,
   type Risk,
 } from "@/lib/infra-risk";
 import {
+  PROFILE_BLOCKING_STATUSES,
   isBmStatus,
   isPageStatus,
   isPixelStatus,
@@ -38,6 +41,11 @@ export interface InfraRiskMap {
   adAccounts: InfraRiskRow[];
   pixels: InfraRiskRow[];
   pages: InfraRiskRow[];
+  /**
+   * The same registry as a drawn access graph. Built from these very rows, so the map and the tables
+   * can never disagree — they are one read.
+   */
+  graph: InfraGraph;
 }
 
 /**
@@ -113,6 +121,20 @@ export async function buildRiskMap(): Promise<InfraRiskMap> {
     profilesPerPage.set(link.pageId, (profilesPerPage.get(link.pageId) ?? 0) + 1);
   }
 
+  // Profiles are graph nodes, not a risk table, so these counts exist only to tell an unusable
+  // profile that strands something from one that is merely a dead registry entry.
+  const bmsPerProfile = new Map<string, number>();
+  for (const link of profileBm) {
+    bmsPerProfile.set(link.profileId, (bmsPerProfile.get(link.profileId) ?? 0) + 1);
+  }
+  const pagesOwnedPerProfile = new Map<string, number>();
+  for (const p of pages) {
+    pagesOwnedPerProfile.set(
+      p.ownerProfileId,
+      (pagesOwnedPerProfile.get(p.ownerProfileId) ?? 0) + 1,
+    );
+  }
+
   const now = new Date();
   const byRisk = (a: InfraRiskRow, b: InfraRiskRow) =>
     RISK_ORDER[a.risk.level] - RISK_ORDER[b.risk.level] || a.name.localeCompare(b.name);
@@ -183,6 +205,50 @@ export async function buildRiskMap(): Promise<InfraRiskMap> {
     })
     .sort(byRisk);
 
+  // The graph reuses the verdicts computed above rather than reclassifying anything; the two lookups
+  // exist only to carry the structural foreign keys the risk rows have no reason to hold.
+  const pixelRowById = new Map(pixelRows.map((r) => [r.id, r]));
+  const pageRowById = new Map(pageRows.map((r) => [r.id, r]));
+  const graph = buildInfraGraph({
+    profiles: profiles.map((p) => {
+      const statuses = profileStatuses.get(p.id) ?? ["suspended"];
+      const usable = usableProfile(statuses);
+      const bmCount = bmsPerProfile.get(p.id) ?? 0;
+      const owned = pagesOwnedPerProfile.get(p.id) ?? 0;
+      return {
+        id: p.id,
+        name: p.name,
+        // The first blocking status is the reason this profile is not an access path. The full set
+        // is one click away on the profiles page; a node has room for the reason, not the list.
+        status:
+          statuses.find((s) => (PROFILE_BLOCKING_STATUSES as readonly string[]).includes(s)) ??
+          "active",
+        risk: profileRisk({ usable, dependents: bmCount + owned }),
+        detail: `${bmCount} BM${bmCount === 1 ? "" : "s"} · ${owned} page${owned === 1 ? "" : "s"} owned`,
+        usable,
+      };
+    }),
+    bms: bmRows.map((r) => ({
+      ...r,
+      overdue: r.overdue ?? false, // optional on the row (BMs only); definite on a BM node
+      usable: usableBm(bmStatus.get(r.id) ?? "suspended"),
+    })),
+    adAccounts: accountRows,
+    pixels: pixels.flatMap((p) => {
+      const row = pixelRowById.get(p.id);
+      return row ? [{ ...row, rootBmId: p.rootBmId }] : [];
+    }),
+    pages: pages.flatMap((p) => {
+      const row = pageRowById.get(p.id);
+      return row ? [{ ...row, ownerProfileId: p.ownerProfileId }] : [];
+    }),
+    profileBm,
+    bmAdAccount: bmAccount,
+    pixelBm,
+    pageBm,
+    pageProfile,
+  });
+
   return {
     counts: {
       profiles: profiles.length,
@@ -198,6 +264,7 @@ export async function buildRiskMap(): Promise<InfraRiskMap> {
     adAccounts: accountRows,
     pixels: pixelRows,
     pages: pageRows,
+    graph,
   };
 }
 
