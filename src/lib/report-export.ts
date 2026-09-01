@@ -13,6 +13,7 @@ import type { jsPDF } from "jspdf";
 import { downloadCsvRows } from "@/lib/download";
 import { fmtCompact, fmtCurrency, fmtNumber, fmtPct } from "@/lib/format";
 import { metric, type ReportColumnKind } from "@/lib/report-catalog";
+import { DOT_LOGO } from "@/lib/report-logo";
 
 // ------------------------------------------------------------------ brand
 
@@ -26,6 +27,7 @@ export const DOT: {
   graphite: Rgb;
   ink: Rgb;
   mist: Rgb;
+  white: Rgb;
 } = {
   violet: [88, 40, 196], // #5828c4 — primary
   mint: [0, 219, 150], // #00db96 — secondary series
@@ -33,6 +35,7 @@ export const DOT: {
   graphite: [62, 62, 62], // #3e3e3e — body text
   ink: [33, 33, 33], // #212121 — headings, table head
   mist: [238, 238, 238], // #eeeeee — rules, zebra, chart tracks
+  white: [255, 255, 255], // #ffffff — type on the violet band
 };
 
 // ------------------------------------------------------------------ document
@@ -156,6 +159,8 @@ export function chartableColumns(d: ReportDoc): number[] {
 // ------------------------------------------------------------------ pdf primitives
 
 const MARGIN = 14;
+/** Height of the violet logo band on the first page. */
+const BAND_H = 19;
 /** Top boundary for pages after the first — clears the accent bar. */
 const CONTINUED_TOP = 18;
 const PLOT_H = 28;
@@ -203,33 +208,41 @@ function fit(doc: jsPDF, text: string, maxW: number): string {
 
 // ------------------------------------------------------------------ pdf blocks
 
-/** Eyebrow, title, range and note. Returns the y the next block starts at. */
+/** Logo band, title, range and note. Returns the y the next block starts at. */
 function drawHeader(doc: jsPDF, d: ReportDoc, pageW: number, w: number): number {
   const right = pageW - MARGIN;
+
+  // The mark is white, so it gets a violet ground. The band also absorbs the thin accent bar
+  // `drawChrome` paints on every page — same colour, so the overdraw is invisible.
+  fill(doc, DOT.violet);
+  doc.rect(0, 0, pageW, BAND_H, "F");
+  const logoH = 6.6;
+  doc.addImage(DOT_LOGO.png, "PNG", MARGIN, (BAND_H - logoH) / 2, logoH * DOT_LOGO.aspect, logoH);
 
   doc.setFont("helvetica", "bold");
   doc.setFontSize(6.6);
   doc.setCharSpace(0.7);
-  ink(doc, DOT.violet);
-  doc.text("DOT · PERFORMANCE REPORT", MARGIN, 12);
+  ink(doc, DOT.white);
+  doc.text("PERFORMANCE REPORT", right, 8.4, { align: "right" });
   doc.setCharSpace(0);
 
   doc.setFont("helvetica", "normal");
-  doc.setFontSize(7.2);
-  ink(doc, DOT.graphite);
+  doc.setFontSize(7);
+  ink(doc, DOT.mist);
   doc.text(
     `Generated ${new Date().toLocaleDateString("en-US", { day: "numeric", month: "short", year: "numeric" })}`,
     right,
-    12,
+    13.2,
     { align: "right" },
   );
 
   doc.setFont("helvetica", "bold");
   doc.setFontSize(15.5);
   ink(doc, DOT.ink);
+  const titleTop = BAND_H + 9;
   const lines = (doc.splitTextToSize(pdfText(d.title), w) as string[]).slice(0, 2);
-  lines.forEach((ln, i) => doc.text(ln, MARGIN, 21 + i * 6.8));
-  let y = 21 + (lines.length - 1) * 6.8;
+  lines.forEach((ln, i) => doc.text(ln, MARGIN, titleTop + i * 6.8));
+  let y = titleTop + (lines.length - 1) * 6.8;
 
   doc.setFont("helvetica", "normal");
   doc.setFontSize(8.4);
@@ -484,14 +497,14 @@ function drawChrome(
   doc.setFontSize(6.4);
   doc.setCharSpace(0.5);
   ink(doc, DOT.violet);
-  doc.text("DOT", MARGIN, baseline);
+  doc.text("dot.", MARGIN, baseline);
   doc.setCharSpace(0);
 
   doc.setFont("helvetica", "normal");
   ink(doc, DOT.graphite);
   const stamp = `Page ${page} of ${pages}`;
   const stampW = doc.getTextWidth(stamp);
-  doc.text(fit(doc, pdfText(title), pageW - MARGIN * 2 - stampW - 16), MARGIN + 8, baseline);
+  doc.text(fit(doc, pdfText(title), pageW - MARGIN * 2 - stampW - 18), MARGIN + 9, baseline);
   doc.text(stamp, pageW - MARGIN, baseline, { align: "right" });
 }
 
@@ -508,6 +521,9 @@ export async function buildReportPdf(d: ReportDoc): Promise<jsPDF> {
     orientation: d.columns.length > 6 ? "landscape" : "portrait",
     unit: "mm",
     format: "a4",
+    // jsPDF embeds the logo as raw pixels plus an alpha mask (~180kB); deflating the streams takes
+    // a two-page report back to ~17kB, and the table text compresses with it.
+    compress: true,
   });
   doc.setDocumentProperties({
     title: d.title,

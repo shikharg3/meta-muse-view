@@ -99,9 +99,11 @@ test("the PDF renders a period and a dimension column together, with withheld ce
   expect(pdf.getNumberOfPages()).toBe(1);
 });
 
-test("the PDF renders for a report with a dimension, charts and a totals row", async () => {
+test("every report carries the wordmark and a totals row", async () => {
   const pdf = await buildReportPdf(doc());
   expect(pdf.getNumberOfPages()).toBe(1);
+  // The logo is an image XObject; a dropped addImage would leave the header a bare violet band.
+  expect(pdf.output()).toContain("/Image");
   expect(pdf.output("arraybuffer").byteLength).toBeGreaterThan(2000);
 });
 
