@@ -8,9 +8,11 @@ import {
   flushPendingComments,
   sendDailyLists,
 } from "./jobs/checkin";
+import { sendDailyPerformanceReport } from "./jobs/daily-report";
 import { pruneReportDrafts } from "@/server/fns/reports";
 import { atOrAfter, berlinNow } from "@/lib/berlin-time";
 import { FIRST_PROMPT_AT, REMINDER_AT, FINAL_NOTICE_AT } from "@/lib/checkin";
+import { DAILY_REPORT_AT } from "@/lib/daily-report";
 
 const HOUR_MS = 3_600_000;
 // Backfill always gets at least this much time each loop, so a slow daily full refresh can never
@@ -41,13 +43,13 @@ const CHECKIN_INTERVAL_MS = 30_000;
  */
 
 /**
- * The check-in loop runs INDEPENDENTLY of the sync loop below, and must keep doing so.
- * `runCycle({ full: true })` can occupy hours, so a 13:30 prompt sequenced behind it would arrive
- * around midnight. Each iteration long-polls Telegram for ~30s and then re-evaluates all three time
- * gates, which puts scheduling precision at ~30s and costs nothing while idle.
+ * The Berlin wall-clock notification loop, running INDEPENDENTLY of the sync loop below, and it must
+ * keep doing so. `runCycle({ full: true })` can occupy hours, so a 13:30 prompt sequenced behind it
+ * would arrive around midnight. Each iteration long-polls Telegram for ~30s and then re-evaluates
+ * every time gate, which puts scheduling precision at ~30s and costs nothing while idle.
  *
  * Re-entering the gates every 30s is intended: idempotency lives in the database (the `run_date`
- * claim, and the `reminded_at` / `escalated_at` conditional updates), not in this process. There is
+ * claims, and the `reminded_at` / `escalated_at` conditional updates), not in this process. There is
  * deliberately no `lastRunDate` variable here — it would forget across a restart and would duplicate
  * the claim logic in a second place, where it could disagree with the first.
  *
@@ -58,9 +60,14 @@ const CHECKIN_INTERVAL_MS = 30_000;
  * With `TELEGRAM_BOT_TOKEN` unset, `telegram()` returns null and every send path short-circuits, so
  * the feature is inert rather than throwing; Settings surfaces the missing token. "Inert" has to mean
  * idle as well, which is what `CHECKIN_INTERVAL_MS` is for.
+ *
+ * It owns the daily performance report as well as the check-in. A third loop would buy nothing: both
+ * are Berlin-clock gates with database-side claims, and one 30s tick serves them equally.
  */
-async function checkinLoop(): Promise<void> {
-  console.log("[checkin] loop started (13:30 prompt, 17:30 reminder, 08:00 final, 30s poll)");
+async function notificationsLoop(): Promise<void> {
+  console.log(
+    "[checkin] loop started (13:30 prompt, 17:30 reminder, 08:00 final, 10:00 report, 30s poll)",
+  );
   for (;;) {
     const startedAt = Date.now();
     try {
@@ -102,6 +109,18 @@ async function checkinLoop(): Promise<void> {
         }
       }
 
+      // Yesterday's performance report, 10:00. Claims the reported day in the database before it
+      // sends, so this returns null on every iteration after the first — including all day once the
+      // day is done.
+      if (atOrAfter(local, DAILY_REPORT_AT)) {
+        const report = await sendDailyPerformanceReport(now);
+        if (report)
+          console.log(
+            `[daily-report] sent ${report.date}: ` +
+              `${report.engagements} engagement(s) in ${report.messages} message(s)`,
+          );
+      }
+
       // Flush BEFORE polling, not after. `flushPendingComments` is bounded by a LIMIT, so even a
       // large backlog cannot starve the poll — it drains one batch per iteration and returns.
       // Polling first would instead park every answer behind a full 30s long-poll before its
@@ -141,8 +160,8 @@ if (process.argv.includes("--once")) {
     });
 } else {
   console.log("[sync] scheduler started (hourly CORE refresh + daily full + continuous backfill)");
-  // Started ALONGSIDE the sync loop, never inside it — see checkinLoop's comment for why.
-  void checkinLoop();
+  // Started ALONGSIDE the sync loop, never inside it — see notificationsLoop's comment for why.
+  void notificationsLoop();
   void (async () => {
     // Seed with today so a restart/deploy does NOT re-trigger the ~4.5h full refresh; it runs once
     // at the next UTC day boundary, and nothing in the UI can force it: Settings → "Sync now" calls

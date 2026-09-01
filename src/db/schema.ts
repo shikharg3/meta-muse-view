@@ -709,6 +709,22 @@ export const checkinRuns = pgTable("checkin_runs", {
   escalatedAt: timestamp("escalated_at", { withTimezone: true }),
 });
 
+// Makes the 10:00 daily performance report at-most-once. `run_date` is the REPORTED date (yesterday),
+// not the send date, so the key is stable no matter when the gate actually fires.
+//
+// The row is claimed BEFORE the send, the opposite trade-off to `checkin_runs`: a duplicate
+// performance post is worse than a late one, so a crash mid-send must not re-post. `sent_at` stays
+// null when the send fails and `attempts` counts the retries, which is what lets the 30s loop retry a
+// transient Telegram failure without ever risking a second successful post.
+export const dailyReportRuns = pgTable("daily_report_runs", {
+  runDate: date("run_date").primaryKey(),
+  sentAt: timestamp("sent_at", { withTimezone: true }),
+  engagements: integer("engagements").notNull().default(0),
+  messages: integer("messages").notNull().default(0),
+  attempts: integer("attempts").notNull().default(0),
+  error: text("error"),
+});
+
 // The getUpdates cursor. `sync_state` is keyed per ad account and cannot hold this.
 export const telegramState = pgTable("telegram_state", {
   id: text("id").primaryKey().default("singleton"),
