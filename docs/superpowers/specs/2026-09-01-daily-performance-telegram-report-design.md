@@ -57,15 +57,24 @@ returns `{ value, label }`. Per engagement, sum counts **grouped by label**:
 
 Summing across labels into one number is prohibited: it would count a lead as a purchase.
 
-**Account status** — for the distinct accounts of an engagement's included campaigns, normalise with
-`accountStatus()` (`src/server/agg.ts:54`) and report the **worst**, severity
-`DISABLED > PENDING > PAUSED > ACTIVE`:
+**Account status** — an engagement is **ACTIVE when ANY one of its accounts can still deliver**.
+Any-active-wins, not worst-wins: an agency engagement accumulates recycled and banned accounts as it
+runs, so worst-wins flagged nearly every engagement as partly disabled — true, but it buried the only
+question the line answers, *can this client still spend?*
 
-- all healthy → `✅`
-- single account, unhealthy → `🚫 DISABLED (payment failed)`
-- mixed → `⚠️ 1/3 accounts DISABLED (payment failed)`
+"Can deliver" is `canDeliver()` (`src/sync/jobs/notion-budget.ts:179`), **not**
+`accountStatus() === "ACTIVE"`. Meta stops delivery when a prepaid `spend_cap` is exhausted and
+leaves the account reporting ACTIVE, so under any-active-wins a single exhausted account would
+otherwise mark a dead engagement healthy.
 
-Reason text via `disableReasonLabel()` (`src/lib/format.ts:41`), never a raw code.
+When nothing can deliver, the state needing the most different action wins:
+
+- any account deliverable → `✅`
+- status ACTIVE but cap exhausted → `💸 OUT OF BUDGET` (top it up, not appeal it)
+- else worst of `DISABLED > PENDING > PAUSED` → `🚫 DISABLED (payment failed)`
+
+No account counts are ever printed. Reason text via `disableReasonLabel()` (`src/lib/format.ts:41`),
+never a raw code.
 
 **Currency** — there is **no FX conversion anywhere in this codebase** (verified: no
 `exchangeRate`/`toUsd`/`convertCurrency` symbol exists) and `accounts.currency` varies. Spend is
@@ -84,7 +93,7 @@ headings like `🚨 Spend-drop alert`.
 
 1. wildcasino.ag (June/July 2026) — $1,240.50 · 83 Purchases ✅
 2. Farside (2) — $610.00 · 27 Leads, 4 Purchases · 🚫 DISABLED (payment failed)
-3. Slots.lv — $210.00 · 9 Registrations · ⚠️ 1/3 accounts DISABLED (spend cap reached)
+3. Slots.lv — $210.00 · 9 Registrations · 💸 OUT OF BUDGET
 4. CasinOK.com — $0.00 · 0 Purchases ✅
 
 Total: $2,061.00 across 4 engagements
@@ -114,7 +123,7 @@ it is asking humans questions.
 
 ```
 src/lib/daily-report.ts          PURE: DAILY_REPORT_AT, aggregateEngagements(),
-                                       collapseResults(), worstAccountStatus()
+                                       collapseResults(), engagementDelivery()
 src/lib/daily-report-render.ts   PURE: renderDailyReport() -> string[], 4096 chunking
 src/server/fns/daily-report.ts   IO:   fetchDailyEngagementRows(w)
 src/sync/jobs/daily-report.ts    JOB:  claim -> fetch -> render -> send -> record
@@ -172,8 +181,9 @@ in-transaction, so a second process would simply lose the race.
 Pure unit tests, no DB, fast:
 
 - `src/lib/daily-report.test.ts` — membership union (spent-not-active, active-not-spent);
-  shared-account attribution not double-counted; results uniform vs mixed vs all-zero; worst-status
-  severity ordering and the mixed `1/3` count; per-currency splitting.
+  shared-account attribution not double-counted; results uniform vs mixed vs all-zero; one deliverable
+  account beating many dead ones regardless of order; an exhausted-cap account reading as
+  OUT_OF_BUDGET rather than ACTIVE or DISABLED; per-currency splitting.
 - `src/lib/daily-render.test.ts` — line format; spend ordering; chunk boundaries at exactly 4096 with
   `(i/n)` headers; single-message case omits the counter.
 

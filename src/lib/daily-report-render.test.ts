@@ -10,7 +10,7 @@ const row = (over: Partial<EngagementRow> = {}): EngagementRow => ({
   spend: [{ currency: "USD", amount: 1240.5 }],
   sortSpend: 1240.5,
   results: [{ label: "Purchases", count: 83 }],
-  health: { worst: "ACTIVE", total: 1, affected: 1, reason: null },
+  health: { status: "ACTIVE", reason: null },
   campaignCount: 2,
   ...over,
 });
@@ -21,24 +21,28 @@ test("a healthy engagement renders name, spend, results and a bare tick", () => 
   expect(msg).toContain("1. wildcasino.ag (June/July 2026) — $1,240.50 · 83 Purchases ✅");
 });
 
-test("a fully disabled account names the reason without a fraction", () => {
+test("a dead engagement names the reason", () => {
   const [msg] = renderDailyReport(DAY, [
-    row({
-      name: "Farside (2)",
-      health: { worst: "DISABLED", total: 1, affected: 1, reason: "payment failed" },
-    }),
+    row({ name: "Farside (2)", health: { status: "DISABLED", reason: "payment failed" } }),
   ]);
-  expect(msg).toContain("🚫 DISABLED (payment failed)");
-  expect(msg).not.toContain("1/1");
+  expect(msg).toContain("Farside (2) — $1,240.50 · 83 Purchases · 🚫 DISABLED (payment failed)");
 });
 
-test("a partly disabled engagement is warned as a fraction, not as fully down", () => {
+test("account counts never appear, however many accounts are dead", () => {
+  // The old "1/3 accounts" fraction fired on nearly every line and said nothing actionable.
   const [msg] = renderDailyReport(DAY, [
-    row({
-      health: { worst: "DISABLED", total: 3, affected: 1, reason: "spend cap reached" },
-    }),
+    row({ health: { status: "ACTIVE", reason: null } }),
+    row({ clientId: "cl2", health: { status: "DISABLED", reason: "Ads integrity policy" } }),
   ]);
-  expect(msg).toContain("⚠️ 1/3 accounts DISABLED (spend cap reached)");
+  expect(msg).not.toMatch(/\d+\/\d+ accounts/);
+});
+
+test("an exhausted prepaid account reads as out of budget, not disabled", () => {
+  const [msg] = renderDailyReport(DAY, [
+    row({ health: { status: "OUT_OF_BUDGET", reason: null } }),
+  ]);
+  expect(msg).toContain("· 💸 OUT OF BUDGET");
+  expect(msg).not.toContain("DISABLED");
 });
 
 test("mixed objectives are listed, mixed currencies are joined not summed", () => {

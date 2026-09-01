@@ -2,8 +2,8 @@ import { test, expect } from "bun:test";
 import {
   aggregateEngagements,
   collapseResults,
+  engagementDelivery,
   includeCampaign,
-  worstAccountStatus,
   type ReportAccount,
   type ReportCampaign,
 } from "./daily-report";
@@ -12,9 +12,14 @@ const account = (id: string, over: Partial<ReportAccount> = {}): ReportAccount =
   id,
   currency: "USD",
   status: "ACTIVE",
+  deliverable: true,
   disableReason: null,
   ...over,
 });
+
+/** A banned account: not deliverable, and its status says why. */
+const disabled = (id: string, reason = "Ads integrity policy"): ReportAccount =>
+  account(id, { status: "DISABLED", deliverable: false, disableReason: reason });
 
 const campaign = (over: Partial<ReportCampaign> = {}): ReportCampaign => ({
   id: "c1",
@@ -27,7 +32,6 @@ const campaign = (over: Partial<ReportCampaign> = {}): ReportCampaign => ({
   active: true,
   ...over,
 });
-
 const accountsOf = (...rows: ReportAccount[]): Map<string, ReportAccount> =>
   new Map(rows.map((a) => [a.id, a]));
 
@@ -108,48 +112,78 @@ test("a scoreless day keeps the highest-spending campaign's label", () => {
   ).toEqual([{ label: "Purchases", count: 0 }]);
 });
 
-test("worst account status wins over a healthy majority", () => {
-  const h = worstAccountStatus(
-    ["act_1", "act_2", "act_3"],
+test("one deliverable account makes the whole engagement active", () => {
+  // 11 of 12 banned is still a client that can spend, which is all the line has to report.
+  const ids = ["act_live", ...Array.from({ length: 11 }, (_, i) => `act_dead${i}`)];
+  const h = engagementDelivery(
+    ids,
     accountsOf(
-      account("act_1"),
-      account("act_2"),
-      account("act_3", { status: "DISABLED", disableReason: "payment failed" }),
+      account("act_live"),
+      ...Array.from({ length: 11 }, (_, i) => disabled(`act_dead${i}`)),
     ),
   );
-  expect(h.worst).toBe("DISABLED");
-  expect(h.total).toBe(3);
-  expect(h.affected).toBe(1);
-  expect(h.reason).toBe("payment failed");
+  expect(h.status).toBe("ACTIVE");
+  expect(h.reason).toBeNull();
 });
 
-test("severity orders DISABLED over PENDING over PAUSED", () => {
+test("a live account found last still wins", () => {
+  // Order must not decide the answer: the dead account is seen first.
+  const h = engagementDelivery(
+    ["act_dead", "act_live"],
+    accountsOf(disabled("act_dead"), account("act_live")),
+  );
+  expect(h.status).toBe("ACTIVE");
+});
+
+test("every account dead reports the worst state and its reason", () => {
+  const h = engagementDelivery(
+    ["act_1", "act_2"],
+    accountsOf(
+      disabled("act_1", "Ads integrity policy"),
+      account("act_2", { status: "PAUSED", deliverable: false }),
+    ),
+  );
+  expect(h.status).toBe("DISABLED");
+  expect(h.reason).toBe("Ads integrity policy");
+});
+
+test("an ACTIVE account that cannot deliver is out of budget, not disabled", () => {
+  // Meta leaves an exhausted prepaid account reporting ACTIVE. Calling it DISABLED would send
+  // someone to appeal a ban that does not exist; the fix is a top-up.
+  const h = engagementDelivery(
+    ["act_capped"],
+    accountsOf(account("act_capped", { status: "ACTIVE", deliverable: false })),
+  );
+  expect(h.status).toBe("OUT_OF_BUDGET");
+});
+
+test("a spent-out account does NOT make an engagement look healthy", () => {
+  const h = engagementDelivery(
+    ["act_capped", "act_dead"],
+    accountsOf(
+      account("act_capped", { status: "ACTIVE", deliverable: false }),
+      disabled("act_dead"),
+    ),
+  );
+  expect(h.status).not.toBe("ACTIVE");
+});
+
+test("severity orders DISABLED over PENDING over PAUSED when nothing delivers", () => {
   const worstOf = (...statuses: ReportAccount["status"][]) =>
-    worstAccountStatus(
+    engagementDelivery(
       statuses.map((_, i) => `act_${i}`),
-      accountsOf(...statuses.map((status, i) => account(`act_${i}`, { status }))),
-    ).worst;
-  expect(worstOf("ACTIVE", "PAUSED")).toBe("PAUSED");
+      accountsOf(
+        ...statuses.map((status, i) => account(`act_${i}`, { status, deliverable: false })),
+      ),
+    ).status;
   expect(worstOf("PAUSED", "PENDING")).toBe("PENDING");
   expect(worstOf("PENDING", "DISABLED")).toBe("DISABLED");
 });
 
-test("an account with no row is unknown, not assumed healthy", () => {
-  // A campaign pointing at an account that was never enumerated is a real gap; reporting it as
-  // ACTIVE would hide it.
-  expect(worstAccountStatus(["act_missing"], accountsOf()).worst).toBe("PENDING");
-});
-
-test("uniform status reports affected === total so the renderer omits the fraction", () => {
-  const h = worstAccountStatus(
-    ["act_1", "act_2"],
-    accountsOf(
-      account("act_1", { status: "DISABLED", disableReason: "spend cap reached" }),
-      account("act_2", { status: "DISABLED", disableReason: "spend cap reached" }),
-    ),
-  );
-  expect(h.affected).toBe(2);
-  expect(h.total).toBe(2);
+test("an account with no row is unknown, never deliverable", () => {
+  // A campaign pointing at an account that was never enumerated is a real gap; letting an unknown
+  // mark the engagement live would hide it.
+  expect(engagementDelivery(["act_missing"], accountsOf()).status).toBe("PENDING");
 });
 
 test("unlike currencies are kept apart, never summed", () => {

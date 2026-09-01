@@ -38,21 +38,25 @@ function spendText(spend: CurrencySpend[]): string {
     : spend.map((s) => fmtCurrency(s.amount, s.currency, 2)).join(" + ");
 }
 
-const HEALTH_ICON = { DISABLED: "🚫", PENDING: "⏳", PAUSED: "⏸️", ACTIVE: "✅" } as const;
+const HEALTH_BADGE = {
+  ACTIVE: "✅",
+  // 💸 matches the existing "Ad account almost out of budget" alert heading.
+  OUT_OF_BUDGET: "💸 OUT OF BUDGET",
+  DISABLED: "🚫 DISABLED",
+  PAUSED: "⏸️ PAUSED",
+  PENDING: "⏳ PENDING",
+} as const;
 
 /**
- * The account badge. Healthy engagements get a bare tick — spelling out "ACTIVE" on the majority of
- * lines is noise that buries the two lines that need reading.
+ * The account badge. A healthy engagement gets a bare tick — one live ad account is all the line has
+ * to say, and spelling out "ACTIVE" on most rows buries the few that need reading.
  *
- * A partially affected engagement is reported as `1/3 accounts`, because "DISABLED" alone would imply
- * the whole engagement is down when most of it is still delivering.
+ * No account counts. An engagement collects recycled and banned accounts over its life, so a fraction
+ * fired on nearly every row and said nothing actionable.
  */
 function healthText(h: AccountHealth): string {
-  if (h.worst === "ACTIVE") return HEALTH_ICON.ACTIVE;
-  const scope = h.affected < h.total ? `${h.affected}/${h.total} accounts ` : "";
-  const reason = h.reason ? ` (${h.reason})` : "";
-  const icon = h.affected < h.total ? "⚠️" : HEALTH_ICON[h.worst];
-  return `${icon} ${scope}${h.worst}${reason}`;
+  const reason = h.status === "DISABLED" && h.reason ? ` (${h.reason})` : "";
+  return `${HEALTH_BADGE[h.status]}${reason}`;
 }
 
 /**
@@ -61,7 +65,7 @@ function healthText(h: AccountHealth): string {
  */
 function engagementLine(index: number, row: EngagementRow): string {
   const health = healthText(row.health);
-  const tail = row.health.worst === "ACTIVE" ? ` ${health}` : ` · ${health}`;
+  const tail = row.health.status === "ACTIVE" ? ` ${health}` : ` · ${health}`;
   const results = row.results
     .map((r) => `${r.count.toLocaleString("en-US")} ${r.label}`)
     .join(", ");

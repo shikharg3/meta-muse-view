@@ -4,6 +4,7 @@ import { accountStatus } from "@/server/agg";
 import { disableReasonLabel } from "@/lib/format";
 import { addDays, windowFromDates, type DateWindow } from "@/lib/range";
 import { objectiveResults } from "./dashboard";
+import { canDeliver } from "@/sync/jobs/notion-budget";
 import { loadCampaignOwnership } from "./campaign-attribution";
 import type { ReportAccount, ReportCampaign } from "@/lib/daily-report";
 
@@ -51,6 +52,8 @@ export async function fetchDailyEngagementRows(w: DateWindow): Promise<{
         currency: schema.accounts.currency,
         status: schema.accounts.status,
         disableReason: schema.accounts.disableReason,
+        spendCap: schema.accounts.spendCap,
+        amountSpent: schema.accounts.amountSpent,
       })
       .from(schema.accounts),
     // `insights_breakdown_daily` is the same spend split by dimension; summing it here would
@@ -80,6 +83,13 @@ export async function fetchDailyEngagementRows(w: DateWindow): Promise<{
         id: a.id,
         currency: a.currency,
         status: accountStatus(a.status),
+        // The canonical delivery test, not a status comparison: an exhausted prepaid cap stops
+        // delivery while the account keeps reporting ACTIVE.
+        deliverable: canDeliver({
+          status: a.status,
+          spendCap: a.spendCap,
+          amountSpent: a.amountSpent,
+        }),
         disableReason: disableReasonLabel(a.disableReason),
       },
     ]),

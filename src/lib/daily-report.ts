@@ -31,6 +31,14 @@ export interface ReportAccount {
   id: string;
   currency: string;
   status: AccountStatus;
+  /**
+   * `canDeliver()`: status ACTIVE *and* prepaid headroom left.
+   *
+   * Not the same as `status === "ACTIVE"`, and the difference decides the badge. Meta stops delivery
+   * at the account level when a prepaid `spend_cap` is exhausted and leaves the account reporting
+   * ACTIVE, so a status-only check would call an engagement live when nothing under it can spend.
+   */
+  deliverable: boolean;
   disableReason: string | null;
 }
 
@@ -62,13 +70,16 @@ export interface ResultTally {
   count: number;
 }
 
-/** The worst account state across an engagement, plus how much of it is affected. */
+/**
+ * What an engagement's ad accounts add up to. `OUT_OF_BUDGET` is its own state because it is the one
+ * unhealthy case that is neither disabled nor paused — the account is fine and simply needs a top-up,
+ * which is a different action from appealing a ban.
+ */
+export type EngagementDelivery = "ACTIVE" | "OUT_OF_BUDGET" | "DISABLED" | "PAUSED" | "PENDING";
+
+/** One engagement's account state, already collapsed to the single thing worth printing. */
 export interface AccountHealth {
-  worst: AccountStatus;
-  /** Distinct accounts behind this engagement's included campaigns. */
-  total: number;
-  /** How many of them are at `worst`. Equals `total` when the state is uniform. */
-  affected: number;
+  status: EngagementDelivery;
   /** Humanised disable reason when one is known, else null. */
   reason: string | null;
 }
@@ -135,43 +146,56 @@ export function collapseResults(campaigns: ReportCampaign[]): ResultTally[] {
 }
 
 /**
- * Severity order for collapsing several accounts to one badge. DISABLED outranks everything because
- * it is the state that stops delivery; PENDING outranks PAUSED because a pending account is not yet
- * usable, while a paused one is a deliberate choice.
+ * Severity order for the case where NOTHING can deliver. DISABLED outranks the rest because it needs
+ * an appeal; PENDING outranks PAUSED because a pending account is not yet usable, while a paused one
+ * is a deliberate choice.
  */
 const SEVERITY: Record<AccountStatus, number> = { DISABLED: 3, PENDING: 2, PAUSED: 1, ACTIVE: 0 };
 
 /**
- * The worst status across an engagement's accounts, with the count at that status.
+ * One engagement's account state: ACTIVE when ANY of its accounts can still deliver.
  *
- * Worst-wins rather than "the account that spent most": a disabled sibling account is invisible to a
- * spend-weighted view precisely because being disabled stopped it spending, which is the one case the
- * report exists to surface.
+ * Any-active-wins, NOT worst-wins. An agency engagement accumulates recycled and banned accounts as
+ * it runs, so worst-wins reported almost every engagement as partly disabled — true, but it buried
+ * the only question the line needs to answer: can this client still spend? One live account means
+ * yes, and the count of dead siblings beside it is noise.
  *
- * An account id with no row (never enumerated) is treated as PENDING rather than assumed healthy — a
- * missing account is an unknown, and silently reporting it as ACTIVE would hide a real gap.
+ * "Can deliver" is `canDeliver()`, not `status === "ACTIVE"`. An account whose prepaid cap is spent
+ * keeps reporting ACTIVE while delivering nothing, and under any-active-wins that single account
+ * would otherwise mark the whole engagement healthy.
+ *
+ * When nothing can deliver, the state that needs the most different action wins: OUT_OF_BUDGET (top
+ * it up) is distinguished from DISABLED (appeal it), because an account that is ACTIVE-but-exhausted
+ * is not banned and saying "DISABLED" would send someone to the wrong screen.
+ *
+ * An account id with no row (never enumerated) counts as PENDING, never as deliverable — a missing
+ * account is an unknown, and letting an unknown mark an engagement live would hide a real gap.
  */
-export function worstAccountStatus(
+export function engagementDelivery(
   accountIds: Iterable<string>,
   accounts: Map<string, ReportAccount>,
 ): AccountHealth {
   let worst: AccountStatus = "ACTIVE";
-  let total = 0;
-  for (const id of accountIds) {
-    total++;
-    const status = accounts.get(id)?.status ?? "PENDING";
-    if (SEVERITY[status] > SEVERITY[worst]) worst = status;
-  }
-  let affected = 0;
+  let outOfBudget = false;
   let reason: string | null = null;
+  let seen = false;
   for (const id of accountIds) {
     const a = accounts.get(id);
+    if (a?.deliverable) return { status: "ACTIVE", reason: null };
+    seen = true;
     const status = a?.status ?? "PENDING";
-    if (status !== worst) continue;
-    affected++;
-    if (reason === null && a?.disableReason) reason = a.disableReason;
+    // Status says ACTIVE yet it cannot deliver: the cap is exhausted, not the account banned.
+    if (status === "ACTIVE") outOfBudget = true;
+    else if (SEVERITY[status] > SEVERITY[worst]) {
+      worst = status;
+      reason = a?.disableReason ?? null;
+    } else if (status === worst && reason === null) reason = a?.disableReason ?? null;
   }
-  return { worst, total, affected, reason };
+  // No accounts at all behind the engagement's campaigns. Nothing is known to be broken, and
+  // inventing a fault would be worse than saying nothing.
+  if (!seen) return { status: "ACTIVE", reason: null };
+  if (worst === "ACTIVE") return { status: outOfBudget ? "OUT_OF_BUDGET" : "ACTIVE", reason: null };
+  return { status: worst, reason };
 }
 
 /**
@@ -214,7 +238,7 @@ export function aggregateEngagements(
       spend,
       sortSpend: spend.reduce((n, s) => n + s.amount, 0),
       results: collapseResults(g.campaigns),
-      health: worstAccountStatus(accountIds, accounts),
+      health: engagementDelivery(accountIds, accounts),
       campaignCount: g.campaigns.length,
     });
   }
