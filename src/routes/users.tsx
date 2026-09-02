@@ -103,6 +103,12 @@ function UsersAdmin() {
           <tbody className="divide-y divide-border">
             {users.users.map((u) => {
               const self = u.id === meId;
+              // Every write against a superadmin is superadmin-only, server-side:
+              // updateUserStatus, updateUserRole and removeUser each refuse when the target is a
+              // superadmin and the actor is not. Offering buttons that can only come back as an
+              // error is worse than offering none, so the whole action cell is gated on this rather
+              // than each button — a button added later cannot forget the check.
+              const locked = isSuperadmin(u.role) && !isSuperadmin(meRole);
               return (
                 <tr key={u.id} className="hover:bg-accent/40">
                   <td className="px-5 py-3">
@@ -140,67 +146,80 @@ function UsersAdmin() {
                     {fmtTime(u.lastLoginAt)}
                   </td>
                   <td className="px-5 py-3 text-right space-x-1.5 whitespace-nowrap">
-                    {u.status !== "approved" && (
-                      <button
-                        onClick={() => void setStatus(u.id, "approved")}
-                        className="h-7 px-2.5 rounded-md bg-primary text-primary-foreground text-xs font-medium"
+                    {locked ? (
+                      <span
+                        title="Only a superadmin can approve, revoke, reject or delete a superadmin."
+                        className="text-muted-foreground"
                       >
-                        Approve
-                      </button>
-                    )}
-                    {u.status === "approved" && !self && (
-                      <button
-                        onClick={() => void setStatus(u.id, "pending")}
-                        className="h-7 px-2.5 rounded-md border border-border text-xs font-medium hover:bg-accent"
-                      >
-                        Revoke
-                      </button>
-                    )}
-                    {!self && !isSuperadmin(u.role) && (
-                      <button
-                        onClick={() => void setRole(u.id, u.role === "admin" ? "member" : "admin")}
-                        className="h-7 px-2.5 rounded-md border border-border text-xs font-medium hover:bg-accent"
-                      >
-                        {u.role === "admin" ? "Make member" : "Make admin"}
-                      </button>
-                    )}
-                    {/*
-                      Superadmin grant/revoke, superadmin-only — the server refuses it for anyone
-                      else, this just stops offering an action that would be rejected. An env-pinned
-                      account gets no button at all: the role is re-applied on their next login, so
-                      revoking it here would appear to work and then undo itself.
-                    */}
-                    {isSuperadmin(meRole) && !self && !u.envPinned && (
-                      <button
-                        onClick={() => void setSuperadmin(u.id, u.email, !isSuperadmin(u.role))}
-                        className="h-7 px-2.5 rounded-md border border-border text-xs font-medium hover:bg-accent"
-                      >
-                        {isSuperadmin(u.role) ? "Revoke superadmin" : "Make superadmin"}
-                      </button>
-                    )}
-                    {!self && u.status !== "rejected" && (
-                      <button
-                        onClick={() => void setStatus(u.id, "rejected")}
-                        className="h-7 px-2.5 rounded-md text-xs font-medium text-destructive hover:bg-destructive/10"
-                      >
-                        Reject
-                      </button>
-                    )}
-                    {!self && (
-                      <button
-                        onClick={() => void remove(u.id, u.email)}
-                        className="h-7 px-2.5 rounded-md text-xs font-medium text-destructive hover:bg-destructive/10"
-                      >
-                        Delete
-                      </button>
-                    )}
-                    {isSuperadmin(meRole) && !self && (
-                      <button
-                        onClick={() => void doResetPassword(u.id, u.email)}
-                        className="h-7 px-2.5 rounded-md border border-border text-xs font-medium hover:bg-accent"
-                      >
-                        Reset password
-                      </button>
+                        —
+                      </span>
+                    ) : (
+                      <>
+                        {u.status !== "approved" && (
+                          <button
+                            onClick={() => void setStatus(u.id, "approved")}
+                            className="h-7 px-2.5 rounded-md bg-primary text-primary-foreground text-xs font-medium"
+                          >
+                            Approve
+                          </button>
+                        )}
+                        {u.status === "approved" && !self && (
+                          <button
+                            onClick={() => void setStatus(u.id, "pending")}
+                            className="h-7 px-2.5 rounded-md border border-border text-xs font-medium hover:bg-accent"
+                          >
+                            Revoke
+                          </button>
+                        )}
+                        {!self && !isSuperadmin(u.role) && (
+                          <button
+                            onClick={() =>
+                              void setRole(u.id, u.role === "admin" ? "member" : "admin")
+                            }
+                            className="h-7 px-2.5 rounded-md border border-border text-xs font-medium hover:bg-accent"
+                          >
+                            {u.role === "admin" ? "Make member" : "Make admin"}
+                          </button>
+                        )}
+                        {/*
+                          Superadmin grant/revoke, superadmin-only — the server refuses it for anyone
+                          else, this just stops offering an action that would be rejected. An
+                          env-pinned account gets no button at all: the role is re-applied on their
+                          next login, so revoking it here would appear to work and then undo itself.
+                        */}
+                        {isSuperadmin(meRole) && !self && !u.envPinned && (
+                          <button
+                            onClick={() => void setSuperadmin(u.id, u.email, !isSuperadmin(u.role))}
+                            className="h-7 px-2.5 rounded-md border border-border text-xs font-medium hover:bg-accent"
+                          >
+                            {isSuperadmin(u.role) ? "Revoke superadmin" : "Make superadmin"}
+                          </button>
+                        )}
+                        {!self && u.status !== "rejected" && (
+                          <button
+                            onClick={() => void setStatus(u.id, "rejected")}
+                            className="h-7 px-2.5 rounded-md text-xs font-medium text-destructive hover:bg-destructive/10"
+                          >
+                            Reject
+                          </button>
+                        )}
+                        {!self && (
+                          <button
+                            onClick={() => void remove(u.id, u.email)}
+                            className="h-7 px-2.5 rounded-md text-xs font-medium text-destructive hover:bg-destructive/10"
+                          >
+                            Delete
+                          </button>
+                        )}
+                        {isSuperadmin(meRole) && !self && (
+                          <button
+                            onClick={() => void doResetPassword(u.id, u.email)}
+                            className="h-7 px-2.5 rounded-md border border-border text-xs font-medium hover:bg-accent"
+                          >
+                            Reset password
+                          </button>
+                        )}
+                      </>
                     )}
                   </td>
                 </tr>
