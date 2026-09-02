@@ -811,19 +811,6 @@ function slug(s: string): string {
   );
 }
 
-/** Compact view of a report for the LLM tool_result (full payload goes to the UI). */
-export function summarizeReportForLlm(p: ReportPayload): unknown {
-  return {
-    title: p.title,
-    subtitle: p.subtitle,
-    note: p.note,
-    columns: p.columns.map((c) => c.label),
-    rowCount: p.rowCount,
-    totals: p.totals,
-    sampleRows: p.rows.slice(0, 8),
-  };
-}
-
 export interface ReportArgs {
   name: string;
   accountIds: string[];
@@ -848,7 +835,7 @@ async function objectiveMap(accountIds: string[]): Promise<Record<string, string
   return out;
 }
 
-/** Produce the report from synced DB data (or an error for the LLM / UI builder). */
+/** Produce the report from synced DB data (or an error for the UI builder). */
 export async function runReport(args: ReportArgs): Promise<ReportPayload | { error: string }> {
   if (args.accountIds.length === 0)
     return { error: `No ad accounts are mapped to "${args.name}".` };

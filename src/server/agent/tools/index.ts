@@ -16,7 +16,6 @@ import {
   listAccounts,
   getAdSets,
 } from "./performance";
-import { generateReport } from "./reports";
 import { alertTools } from "./alerts";
 import { healthTools } from "./health";
 import { trendTools } from "./trends";
@@ -42,7 +41,6 @@ export const REGISTRY: AgentTool[] = [
   ...healthTools,
   ...activityTools,
   ...infraTools,
-  generateReport,
   ...attributionTools,
   ...scheduleTools,
 ];

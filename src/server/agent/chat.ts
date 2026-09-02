@@ -9,7 +9,6 @@ import {
 import { runTool, toolLabel, toolsFor } from "./tools";
 import type { ToolContext } from "./tools/kit";
 import { costUsd, type TokenUsage } from "./pricing";
-import { summarizeReportForLlm, type ReportPayload } from "./report";
 import { emptyExtras, type ChatEvent, type MessageExtras } from "./events";
 export type { ToolTrace, MessageExtras, ChatEvent, SeriesPoint } from "./events";
 import type { Kpis } from "@/lib/types";
@@ -77,7 +76,10 @@ export function buildSystemPrompt(): string {
     "- If a name can't be resolved, say so and offer the closest matches.",
     "- `kpis.results`/`resultLabel` is ONLY the campaign-objective metric. When asked about conversions or performance, report the full non-zero `events` list too — a sales-objective client can still drive leads and registrations.",
     "- Be concise and lead with the answer. Replies render as Markdown: use a table when listing metrics across multiple campaigns/accounts/clients/days, bold for key figures, bullets only for non-tabular points. Format money as $ and rates as %.",
-    "- After a successful report, give a one-line confirmation — the table and download buttons render automatically. Do not paste the full table.",
+    // Reports have a dedicated section with templates, run history and export stamping. Answering
+    // "build me a CSV" in chat produced a worse copy of it, so the capability is gone rather than
+    // duplicated — and the model is told to hand the request over instead of improvising.
+    "- You CANNOT generate, build, export or attach CSV/PDF/XLSX files, and you have no tool for it. When someone asks for a downloadable report, export, spreadsheet or PDF: say so in one line and send them to the Reports page (left sidebar → Reports → New report), which has saved templates, run history and the full ~120-metric column catalogue. Then offer to answer the same question as numbers in chat right now, and do it if they say yes. Never claim a file is being prepared, never promise a download, and never imply a link will appear.",
   ].join("\n");
 }
 
@@ -220,12 +222,8 @@ export async function runAgentLoop(
       extras.toolCalls.push({ name: block.name, label, ok, ms, detail });
       emit({ type: "tool_end", name: block.name, label, ok, ms, detail });
 
-      let content = JSON.stringify(result);
-      if (ok && block.name === "generate_report") {
-        extras.report = result as ReportPayload;
-        emit({ type: "report", report: extras.report });
-        content = JSON.stringify(summarizeReportForLlm(extras.report));
-      } else if (ok && isClientStats(result)) {
+      const content = JSON.stringify(result);
+      if (ok && isClientStats(result)) {
         extras.cards = { title: result.client, kpis: result.kpis };
         emit({ type: "cards", ...extras.cards });
       } else if (ok && block.name === "get_overview" && hasKpis(result)) {

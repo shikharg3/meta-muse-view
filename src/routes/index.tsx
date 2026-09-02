@@ -6,14 +6,9 @@ import {
   Square,
   AlertCircle,
   FileText,
-  History,
-  Trash2,
-  Pencil,
-  Search,
   Copy,
   Check,
   RefreshCw,
-  MessageSquarePlus,
 } from "lucide-react";
 import {
   listConversations,
@@ -33,13 +28,13 @@ import type { Kpis } from "@/lib/types";
 import { ReportBlock } from "@/components/chat/ReportBlock";
 import { Markdown } from "@/components/chat/Markdown";
 import { SeriesChart } from "@/components/chat/SeriesChart";
-import { ToolTraceLive, ToolTraceSummary } from "@/components/chat/ToolTrace";
+import { MessageMeta, ToolTraceLive } from "@/components/chat/MessageMeta";
+import { ChatRail } from "@/components/chat/ChatRail";
 import { closeTrace, type TraceItem } from "@/components/chat/trace";
 import { streamChat } from "@/components/chat/stream";
 import { ThreadMeter, ThreadNudge } from "@/components/chat/ThreadMeter";
 import { NUDGE_TURNS, NUDGE_COST, fmtCost } from "@/components/chat/thread-cost";
 import { deriveFollowUps, starterPrompts } from "@/components/chat/suggestions";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { fmtCurrency, fmtCompact, fmtPct, fmtRelTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
@@ -50,11 +45,10 @@ export const Route = createFileRoute("/")({
       listClients().then((cs) => cs.filter((c) => c.removedAt == null)),
       listConversations(),
     ]);
-    const first = conversations[0];
-    const initial = first
-      ? { id: first.id, messages: (await getConversation({ data: first.id })) ?? [] }
-      : null;
-    return { clients, conversations, initial };
+    // Deliberately does NOT open the most recent conversation. Auto-resuming is what produced a
+    // 212-question, $59 thread: every visit dropped the user back into it, so a new chat was never
+    // the path of least resistance. Landing on a blank chat makes one topic per chat the default.
+    return { clients, conversations };
   },
   component: Ask,
 });
@@ -101,12 +95,11 @@ function toUiMessages(stored: StoredMessage[]): UiMessage[] {
 }
 
 function Ask() {
-  const { clients, initial, conversations: initialConversations } = Route.useLoaderData();
+  const { clients, conversations: initialConversations } = Route.useLoaderData();
   const [conversations, setConversations] = useState<ConversationSummary[]>(initialConversations);
-  const [activeId, setActiveId] = useState<string | null>(initial?.id ?? null);
-  const [messages, setMessages] = useState<UiMessage[]>(
-    initial ? toUiMessages(initial.messages) : [],
-  );
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<UiMessage[]>([]);
+  const [railCollapsed, setRailCollapsed] = useState(false);
   const [input, setInput] = useState("");
   const [streaming, setStreaming] = useState(false);
   const [followUps, setFollowUps] = useState<string[]>([]);
@@ -352,313 +345,148 @@ function Ask() {
   const showNudge = !streaming && overThreshold && !recentlyDismissed;
 
   return (
-    <div className="flex flex-col h-[calc(100vh-3.5rem)]">
-      <div className="shrink-0 h-11 border-b border-border flex items-center gap-2 px-4 md:px-6">
-        <ConversationMenu
-          conversations={conversations}
-          activeId={activeId}
-          onSelect={(id) => void loadConversation(id)}
-          onDelete={(id) => void removeConversation(id)}
-          onRename={(id, t) => void rename(id, t)}
-        />
-        <span className="text-sm font-medium truncate flex-1 min-w-0">{activeTitle}</span>
-        <ThreadMeter turns={threadTurns} costUsd={threadCost} />
-        <button
-          onClick={newChat}
-          disabled={streaming}
-          title="Start a fresh chat  (Ctrl/⌘ + Shift + O)"
-          className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-primary px-3 h-8 text-xs font-semibold text-primary-foreground hover:opacity-90 disabled:opacity-50"
-        >
-          <MessageSquarePlus className="size-3.5" /> New chat
-        </button>
-      </div>
+    <div className="flex h-[calc(100vh-3.5rem)]">
+      <ChatRail
+        conversations={conversations}
+        activeId={activeId}
+        busy={streaming}
+        collapsed={railCollapsed}
+        onToggleCollapsed={() => setRailCollapsed((v) => !v)}
+        onNewChat={newChat}
+        onSelect={(id) => void loadConversation(id)}
+        onRename={(id, t) => void rename(id, t)}
+        onDelete={(id) => void removeConversation(id)}
+      />
 
-      <div ref={scrollRef} className="flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-3xl px-4 md:px-6 py-8">
-          {empty ? (
-            <div className="flex flex-col items-center text-center pt-16 pb-8">
-              <div className="size-12 rounded-xl bg-primary grid place-items-center mb-4">
-                <Sparkles className="size-6 text-primary-foreground" />
-              </div>
-              <h1 className="text-xl font-semibold tracking-tight">Ask about your ads</h1>
-              <p className="text-sm text-muted-foreground mt-1.5 max-w-md">
-                Plain-English questions about clients, accounts, and campaigns. Every number is
-                pulled live from your synced data.
-              </p>
-              <div className="grid sm:grid-cols-2 gap-2.5 mt-8 w-full">
-                {starters.map((s) => (
-                  <button
-                    key={s}
-                    onClick={() => void send(s)}
-                    className="text-left text-sm rounded-lg border border-border bg-card hover:bg-accent hover:border-primary/40 px-4 py-3 transition-colors"
-                  >
-                    {s}
-                  </button>
-                ))}
-              </div>
-              <p className="mt-6 text-[11px] text-muted-foreground">
-                One chat = one topic. Starting a fresh chat for a new question keeps answers sharp
-                and costs less — every question re-sends the chat it lives in.
-              </p>
-              <Link
-                to="/reports/new"
-                className="mt-2 inline-flex items-center gap-1.5 text-[11px] font-medium text-primary hover:underline"
-              >
-                <FileText className="size-3" /> Need a CSV or PDF? Build it on the Reports page
-              </Link>
-            </div>
-          ) : (
-            <div className="space-y-6">
-              {messages.map((m, i) => (
-                <Message
-                  key={i}
-                  message={m}
-                  onRetry={m.role === "assistant" && !streaming ? () => retry(i) : undefined}
-                />
-              ))}
-              {followUps.length > 0 && !streaming && (
-                <div className="flex flex-wrap gap-2 pl-10">
-                  {followUps.map((f) => (
+      <div className="flex min-w-0 flex-1 flex-col">
+        <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-4 md:px-6">
+          <span className="min-w-0 flex-1 truncate text-sm font-medium">{activeTitle}</span>
+          <ThreadMeter turns={threadTurns} costUsd={threadCost} />
+        </div>
+
+        <div ref={scrollRef} className="flex-1 overflow-y-auto">
+          <div className="mx-auto max-w-3xl px-4 md:px-6 py-8">
+            {empty ? (
+              <div className="flex flex-col items-center text-center pt-16 pb-8">
+                <div className="size-12 rounded-xl bg-primary grid place-items-center mb-4">
+                  <Sparkles className="size-6 text-primary-foreground" />
+                </div>
+                <h1 className="text-xl font-semibold tracking-tight">Ask about your ads</h1>
+                <p className="text-sm text-muted-foreground mt-1.5 max-w-md">
+                  Plain-English questions about clients, accounts, and campaigns. Every number is
+                  pulled live from your synced data.
+                </p>
+                <div className="grid sm:grid-cols-2 gap-2.5 mt-8 w-full">
+                  {starters.map((s) => (
                     <button
-                      key={f}
-                      onClick={() => void send(f)}
-                      className="rounded-full border border-border bg-card hover:bg-accent hover:border-primary/40 px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                      key={s}
+                      onClick={() => void send(s)}
+                      className="text-left text-sm rounded-lg border border-border bg-card hover:bg-accent hover:border-primary/40 px-4 py-3 transition-colors"
                     >
-                      {f}
+                      {s}
                     </button>
                   ))}
                 </div>
-              )}
-            </div>
-          )}
-        </div>
-      </div>
-
-      <div className="border-t border-border bg-background/80 backdrop-blur">
-        <div className="mx-auto max-w-3xl px-4 md:px-6 py-3">
-          {showNudge && (
-            <ThreadNudge
-              turns={threadTurns}
-              costUsd={threadCost}
-              onNewChat={newChat}
-              onDismiss={() => setNudgeDismissedAt(threadTurns)}
-            />
-          )}
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              void send(input);
-            }}
-            className="flex items-end gap-2"
-          >
-            {/* The "+ powers" menu held exactly one item — a report builder that duplicates the
-                Reports section. Removed rather than kept as a second, worse way in. */}
-            <textarea
-              value={input}
-              onChange={(e) => {
-                const v = e.target.value;
-                setInput(v);
-              }}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  void send(input);
-                }
-              }}
-              rows={1}
-              placeholder="Ask about a client, account, or campaign…"
-              className="flex-1 resize-none rounded-lg border border-border bg-card px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 max-h-40"
-            />
-            {streaming ? (
-              <button
-                type="button"
-                onClick={stop}
-                title="Stop generating"
-                className="h-[42px] px-4 rounded-lg border border-border bg-card hover:bg-accent text-sm font-medium inline-flex items-center gap-1.5 shrink-0"
-              >
-                <Square className="size-3.5 fill-current" /> Stop
-              </button>
+                <p className="mt-6 text-[11px] text-muted-foreground">
+                  One chat = one topic. Starting a fresh chat for a new question keeps answers sharp
+                  and costs less — every question re-sends the chat it lives in.
+                </p>
+                <Link
+                  to="/reports/new"
+                  className="mt-2 inline-flex items-center gap-1.5 text-[11px] font-medium text-primary hover:underline"
+                >
+                  <FileText className="size-3" /> Need a CSV or PDF? Build it on the Reports page
+                </Link>
+              </div>
             ) : (
-              <button
-                type="submit"
-                disabled={input.trim() === ""}
-                className="h-[42px] px-4 rounded-lg bg-primary text-primary-foreground text-sm font-medium inline-flex items-center gap-1.5 disabled:opacity-50 shrink-0"
-              >
-                <Send className="size-4" /> Send
-              </button>
+              <div className="space-y-6">
+                {messages.map((m, i) => (
+                  <Message
+                    key={i}
+                    message={m}
+                    onRetry={m.role === "assistant" && !streaming ? () => retry(i) : undefined}
+                  />
+                ))}
+                {followUps.length > 0 && !streaming && (
+                  <div className="flex flex-wrap gap-2 pl-10">
+                    {followUps.map((f) => (
+                      <button
+                        key={f}
+                        onClick={() => void send(f)}
+                        className="rounded-full border border-border bg-card hover:bg-accent hover:border-primary/40 px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                      >
+                        {f}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             )}
-          </form>
-          <p className="text-[10px] text-muted-foreground mt-1.5 text-center">
-            Answers are generated from your synced Meta data. Verify critical figures on the
-            dashboards.
-          </p>
+          </div>
+        </div>
+
+        <div className="border-t border-border bg-background/80 backdrop-blur">
+          <div className="mx-auto max-w-3xl px-4 md:px-6 py-3">
+            {showNudge && (
+              <ThreadNudge
+                turns={threadTurns}
+                costUsd={threadCost}
+                onNewChat={newChat}
+                onDismiss={() => setNudgeDismissedAt(threadTurns)}
+              />
+            )}
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                void send(input);
+              }}
+              className="flex items-end gap-2"
+            >
+              {/* The "+ powers" menu held exactly one item — a report builder that duplicates the
+                Reports section. Removed rather than kept as a second, worse way in. */}
+              <textarea
+                value={input}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setInput(v);
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    void send(input);
+                  }
+                }}
+                rows={1}
+                placeholder="Ask about a client, account, or campaign…"
+                className="flex-1 resize-none rounded-lg border border-border bg-card px-3.5 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40 max-h-40"
+              />
+              {streaming ? (
+                <button
+                  type="button"
+                  onClick={stop}
+                  title="Stop generating"
+                  className="h-[42px] px-4 rounded-lg border border-border bg-card hover:bg-accent text-sm font-medium inline-flex items-center gap-1.5 shrink-0"
+                >
+                  <Square className="size-3.5 fill-current" /> Stop
+                </button>
+              ) : (
+                <button
+                  type="submit"
+                  disabled={input.trim() === ""}
+                  className="h-[42px] px-4 rounded-lg bg-primary text-primary-foreground text-sm font-medium inline-flex items-center gap-1.5 disabled:opacity-50 shrink-0"
+                >
+                  <Send className="size-4" /> Send
+                </button>
+              )}
+            </form>
+            <p className="text-[10px] text-muted-foreground mt-1.5 text-center">
+              Answers are generated from your synced Meta data. Verify critical figures on the
+              dashboards.
+            </p>
+          </div>
         </div>
       </div>
     </div>
-  );
-}
-
-function ConversationMenu({
-  conversations,
-  activeId,
-  onSelect,
-  onDelete,
-  onRename,
-}: {
-  conversations: ConversationSummary[];
-  activeId: string | null;
-  onSelect: (id: string) => void;
-  onDelete: (id: string) => void;
-  onRename: (id: string, title: string) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState("");
-  const [renamingId, setRenamingId] = useState<string | null>(null);
-  const [draft, setDraft] = useState("");
-
-  const needle = query.trim().toLowerCase();
-  const shown =
-    needle === ""
-      ? conversations
-      : conversations.filter((c) => c.title.toLowerCase().includes(needle));
-
-  const commitRename = (id: string) => {
-    const title = draft.trim();
-    setRenamingId(null);
-    if (title !== "") onRename(id, title);
-  };
-
-  return (
-    <Popover
-      open={open}
-      onOpenChange={(next) => {
-        setOpen(next);
-        if (!next) {
-          setQuery("");
-          setRenamingId(null);
-        }
-      }}
-    >
-      <PopoverTrigger asChild>
-        <button
-          title="Conversation history"
-          className="inline-flex items-center gap-1.5 rounded-md border border-border bg-card hover:bg-accent px-2.5 h-8 text-xs font-medium text-muted-foreground"
-        >
-          <History className="size-3.5" /> History
-        </button>
-      </PopoverTrigger>
-      <PopoverContent
-        align="start"
-        className="p-1.5 w-80"
-        onEscapeKeyDown={(e) => {
-          // Radix's dismissable layer owns Escape. While a rename is open, Escape belongs to the
-          // rename — cancelling an edit should put the row back, not close the whole list.
-          if (renamingId === null) return;
-          e.preventDefault();
-          setRenamingId(null);
-        }}
-      >
-        <div className="text-[10px] uppercase tracking-wider text-muted-foreground font-semibold px-2 py-1">
-          Conversations
-        </div>
-        <div className="flex items-center gap-1.5 rounded-md border border-border bg-background px-2 mx-1 mb-1.5 h-7">
-          <Search className="size-3 text-muted-foreground shrink-0" />
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search titles…"
-            className="flex-1 min-w-0 bg-transparent text-xs focus:outline-none"
-          />
-        </div>
-        <div className="max-h-[60vh] overflow-y-auto">
-          {conversations.length === 0 && (
-            <div className="px-2 py-6 text-center text-xs text-muted-foreground">
-              No conversations yet.
-            </div>
-          )}
-          {conversations.length > 0 && shown.length === 0 && (
-            <div className="px-2 py-6 text-center text-xs text-muted-foreground">
-              No titles match “{query.trim()}”.
-            </div>
-          )}
-          {shown.map((c) => (
-            <div
-              key={c.id}
-              className={cn(
-                "group flex items-center gap-1 rounded-md px-2 py-1.5",
-                c.id === activeId ? "bg-accent" : "hover:bg-accent/50",
-              )}
-            >
-              {renamingId === c.id ? (
-                <input
-                  autoFocus
-                  value={draft}
-                  onChange={(e) => setDraft(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      commitRename(c.id);
-                    }
-                  }}
-                  onBlur={() => setRenamingId(null)}
-                  className="min-w-0 flex-1 rounded border border-primary/50 bg-background px-1.5 py-0.5 text-xs focus:outline-none focus:ring-1 focus:ring-primary/40"
-                />
-              ) : (
-                <>
-                  <button
-                    onClick={() => {
-                      onSelect(c.id);
-                      setOpen(false);
-                    }}
-                    className="min-w-0 flex-1 text-left"
-                  >
-                    <div className="text-xs font-medium truncate">{c.title}</div>
-                    <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
-                      <span>{fmtRelTime(c.updatedAt)}</span>
-                      {c.turns > 0 && (
-                        <>
-                          <span className="text-border">·</span>
-                          <span className="font-mono tabular-nums">{c.turns}Q</span>
-                          <span
-                            className={cn(
-                              "font-mono tabular-nums",
-                              c.costUsd >= 3 && "font-semibold text-destructive",
-                              c.costUsd >= 1 && c.costUsd < 3 && "text-warning",
-                            )}
-                          >
-                            {fmtCost(c.costUsd)}
-                          </span>
-                        </>
-                      )}
-                    </div>
-                  </button>
-                  <button
-                    onClick={() => {
-                      setDraft(c.title);
-                      setRenamingId(c.id);
-                    }}
-                    title="Rename"
-                    className="size-6 grid place-items-center rounded text-muted-foreground opacity-0 group-hover:opacity-100 hover:bg-background"
-                  >
-                    <Pencil className="size-3" />
-                  </button>
-                  <button
-                    onClick={() => {
-                      if (window.confirm(`Delete "${c.title}"? This can't be undone.`))
-                        onDelete(c.id);
-                    }}
-                    title="Delete"
-                    className="size-6 grid place-items-center rounded text-muted-foreground opacity-0 group-hover:opacity-100 hover:bg-destructive/10 hover:text-destructive"
-                  >
-                    <Trash2 className="size-3" />
-                  </button>
-                </>
-              )}
-            </div>
-          ))}
-        </div>
-      </PopoverContent>
-    </Popover>
   );
 }
 
@@ -722,17 +550,7 @@ function Message({ message, onRetry }: { message: UiMessage; onRetry?: () => voi
         )}
         {!message.streaming && (
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 pt-0.5">
-            <ToolTraceSummary items={trace} />
-            {message.costUsd != null && message.costUsd > 0 && (
-              // Sits next to the tool summary rather than floated far right in 10px grey, which is
-              // where it was when nobody noticed the cost of anything.
-              <span
-                className="font-mono text-[11px] text-muted-foreground"
-                title="Model cost for this question (incl. prompt caching). The running total for the whole chat is in the header."
-              >
-                {fmtCost(message.costUsd)}
-              </span>
-            )}
+            <MessageMeta items={trace} costUsd={message.costUsd} />
             <div className="ml-auto flex items-center gap-0.5 opacity-0 transition-opacity group-hover/msg:opacity-100 focus-within:opacity-100">
               {message.content !== "" && (
                 <button
