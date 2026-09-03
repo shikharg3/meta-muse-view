@@ -8,7 +8,11 @@ import { db, schema } from "@/db/client";
 import { getReportChatCredentials } from "@/lib/credentials";
 import { aggregateEngagements, MAX_ATTEMPTS } from "@/lib/daily-report";
 import { renderDailyReport } from "@/lib/daily-report-render";
-import { fetchDailyEngagementRows, yesterdayWindow } from "@/server/fns/daily-report";
+import {
+  fetchDailyEngagementRows,
+  trailingWindow,
+  yesterdayWindow,
+} from "@/server/fns/daily-report";
 import { sendReportChannelMessage } from "@/sync/alerts";
 import { recordServiceHealth } from "@/sync/state";
 
@@ -62,8 +66,8 @@ export async function sendDailyPerformanceReport(now: Date): Promise<DailyReport
     alreadySent = row.messages;
   }
 
-  const { campaigns, accounts } = await fetchDailyEngagementRows(w);
-  const rows = aggregateEngagements(campaigns, accounts);
+  const { campaigns, accounts, context } = await fetchDailyEngagementRows(w, trailingWindow(now));
+  const rows = aggregateEngagements(campaigns, accounts, context);
   const chunks = renderDailyReport(date, rows);
 
   for (let i = alreadySent; i < chunks.length; i++) {

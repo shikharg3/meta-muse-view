@@ -99,6 +99,38 @@ export interface EngagementRow {
   results: ResultTally[];
   health: AccountHealth;
   campaignCount: number;
+  /** Spend over the trailing window ending yesterday — decides whether the row is reported at all. */
+  trailingSpend: number;
+  /** The client's winning Notion `Account Status`. */
+  notionStatus: string | null;
+}
+
+/** Complete days of spend, ending yesterday, that decide whether an engagement is still running. */
+export const TRAILING_DAYS = 3;
+
+/** Trailing spend an engagement must EXCEED to be reported; filters out rounding dust. */
+export const MIN_TRAILING_SPEND = 1;
+
+/**
+ * The Notion `Account Status` meaning the engagement is over. Excluded even when it spent, because a
+ * finished engagement's remaining spend is the tail of work nobody is managing any more.
+ *
+ * Safe to test against the client's single winning status: `clubClients` resolves a client's board
+ * rows by `STATUS_PRIORITY`, where every live-ish value outranks this one, so a client reading
+ * "Full Budget Finished" has no current row at all.
+ */
+export const FINISHED_STATUS = "Full Budget Finished";
+
+/**
+ * Whether an engagement belongs in the daily message.
+ *
+ * Both clauses do real work, and neither implies the other: a finished engagement can still be
+ * spending (bspin.io billed $513 over three days while marked finished), and a live engagement can go
+ * quiet. Trailing spend rather than yesterday's, so a client that simply had a dark day is not
+ * dropped from a report the team reads as "who is running".
+ */
+export function isReportable(row: EngagementRow): boolean {
+  return row.trailingSpend > MIN_TRAILING_SPEND && row.notionStatus !== FINISHED_STATUS;
 }
 
 /**
@@ -198,17 +230,31 @@ export function engagementDelivery(
   return { status: worst, reason };
 }
 
+/** What the report knows about an engagement beyond yesterday's numbers. */
+export interface EngagementContext {
+  /** clientId → spend over the trailing window ending yesterday. */
+  trailingSpend: Map<string, number>;
+  /** clientId → the client's winning Notion `Account Status`. */
+  notionStatus: Map<string, string | null>;
+}
+
 /**
- * Roll included campaigns up to one row per owning Notion engagement, sorted by spend descending.
+ * Roll included campaigns up to one row per owning Notion engagement, keep the ones still running,
+ * and sort by spend descending.
  *
  * Campaigns with no owner are DROPPED, so the report's total is explicitly a total of named
  * engagements rather than of the day — the renderer says so. Attribution itself is not decided here:
  * `clientId` arrives already resolved through the one ownership ladder, because attributing by ad
  * account instead would give every claimant of a shared account its full spend.
+ *
+ * `isReportable` is applied to the ENGAGEMENT, not to each campaign, so a kept engagement still
+ * reports its true total for yesterday. Filtering campaigns individually would print a figure that
+ * excluded part of the engagement's real spend and stop reconciling against Meta.
  */
 export function aggregateEngagements(
   campaigns: ReportCampaign[],
   accounts: Map<string, ReportAccount>,
+  context: EngagementContext,
 ): EngagementRow[] {
   const groups = new Map<string, { name: string; campaigns: ReportCampaign[] }>();
   for (const c of campaigns) {
@@ -240,9 +286,13 @@ export function aggregateEngagements(
       results: collapseResults(g.campaigns),
       health: engagementDelivery(accountIds, accounts),
       campaignCount: g.campaigns.length,
+      trailingSpend: context.trailingSpend.get(clientId) ?? 0,
+      notionStatus: context.notionStatus.get(clientId) ?? null,
     });
   }
   // Name is the tie-break so a day where several engagements spent nothing still has a stable order
   // rather than one that follows Map insertion (i.e. whatever order Postgres returned).
-  return rows.sort((a, b) => b.sortSpend - a.sortSpend || a.name.localeCompare(b.name, "en"));
+  return rows
+    .filter(isReportable)
+    .sort((a, b) => b.sortSpend - a.sortSpend || a.name.localeCompare(b.name, "en"));
 }

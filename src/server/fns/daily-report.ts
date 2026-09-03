@@ -6,7 +6,8 @@ import { addDays, windowFromDates, type DateWindow } from "@/lib/range";
 import { objectiveResults } from "./dashboard";
 import { canDeliver } from "@/sync/jobs/notion-budget";
 import { loadCampaignOwnership } from "./campaign-attribution";
-import type { ReportAccount, ReportCampaign } from "@/lib/daily-report";
+import { TRAILING_DAYS } from "@/lib/daily-report";
+import type { EngagementContext, ReportAccount, ReportCampaign } from "@/lib/daily-report";
 
 /**
  * The window the report covers: yesterday, one day wide.
@@ -22,6 +23,18 @@ export function yesterdayWindow(now: Date): DateWindow {
 }
 
 /**
+ * The window the membership rule reads: `TRAILING_DAYS` complete days ending yesterday.
+ *
+ * Ends yesterday, not today: today is partial, so including it would let a client that started
+ * spending an hour ago look like an established engagement, and would make the same report answer
+ * differently depending on the hour it ran.
+ */
+export function trailingWindow(now: Date): DateWindow {
+  const until = addDays(now.toISOString().slice(0, 10), -1);
+  return windowFromDates(addDays(until, -(TRAILING_DAYS - 1)), until);
+}
+
+/**
  * Every campaign in scope for the report, already attributed to its owning Notion engagement.
  *
  * Reads CAMPAIGN-level insights and attributes them through the one ownership ladder. It must not be
@@ -33,48 +46,70 @@ export function yesterdayWindow(now: Date): DateWindow {
  * page view, and the `status` it returns is a display status derived from `campaigns.status`, not the
  * `effective_status` the membership rule needs.
  */
-export async function fetchDailyEngagementRows(w: DateWindow): Promise<{
+export async function fetchDailyEngagementRows(
+  w: DateWindow,
+  trailing: DateWindow,
+): Promise<{
   campaigns: ReportCampaign[];
   accounts: Map<string, ReportAccount>;
+  context: EngagementContext;
 }> {
-  const [campaignRows, accountRows, spendRows, results, ownership] = await Promise.all([
-    db
-      .select({
-        id: schema.campaigns.id,
-        name: schema.campaigns.name,
-        accountId: schema.campaigns.accountId,
-        effectiveStatus: schema.campaigns.effectiveStatus,
-      })
-      .from(schema.campaigns),
-    db
-      .select({
-        id: schema.accounts.id,
-        currency: schema.accounts.currency,
-        status: schema.accounts.status,
-        disableReason: schema.accounts.disableReason,
-        spendCap: schema.accounts.spendCap,
-        amountSpent: schema.accounts.amountSpent,
-      })
-      .from(schema.accounts),
-    // `insights_breakdown_daily` is the same spend split by dimension; summing it here would
-    // double-count every campaign that carries any breakdown.
-    db
-      .select({
-        entityId: schema.insightsDaily.entityId,
-        spend: sql<number>`coalesce(sum(${schema.insightsDaily.spend}),0)`,
-      })
-      .from(schema.insightsDaily)
-      .where(
-        and(
-          eq(schema.insightsDaily.level, "campaign"),
-          gte(schema.insightsDaily.date, w.since),
-          lte(schema.insightsDaily.date, w.until),
-        ),
-      )
-      .groupBy(schema.insightsDaily.entityId),
-    objectiveResults(w),
-    loadCampaignOwnership(),
-  ]);
+  const [campaignRows, accountRows, spendRows, trailingRows, clientRows, results, ownership] =
+    await Promise.all([
+      db
+        .select({
+          id: schema.campaigns.id,
+          name: schema.campaigns.name,
+          accountId: schema.campaigns.accountId,
+          effectiveStatus: schema.campaigns.effectiveStatus,
+        })
+        .from(schema.campaigns),
+      db
+        .select({
+          id: schema.accounts.id,
+          currency: schema.accounts.currency,
+          status: schema.accounts.status,
+          disableReason: schema.accounts.disableReason,
+          spendCap: schema.accounts.spendCap,
+          amountSpent: schema.accounts.amountSpent,
+        })
+        .from(schema.accounts),
+      // `insights_breakdown_daily` is the same spend split by dimension; summing it here would
+      // double-count every campaign that carries any breakdown.
+      db
+        .select({
+          entityId: schema.insightsDaily.entityId,
+          spend: sql<number>`coalesce(sum(${schema.insightsDaily.spend}),0)`,
+        })
+        .from(schema.insightsDaily)
+        .where(
+          and(
+            eq(schema.insightsDaily.level, "campaign"),
+            gte(schema.insightsDaily.date, w.since),
+            lte(schema.insightsDaily.date, w.until),
+          ),
+        )
+        .groupBy(schema.insightsDaily.entityId),
+      // Trailing spend for the membership rule. A SECOND grouped query rather than a wider window on
+      // the first: the report must still display yesterday alone.
+      db
+        .select({
+          entityId: schema.insightsDaily.entityId,
+          spend: sql<number>`coalesce(sum(${schema.insightsDaily.spend}),0)`,
+        })
+        .from(schema.insightsDaily)
+        .where(
+          and(
+            eq(schema.insightsDaily.level, "campaign"),
+            gte(schema.insightsDaily.date, trailing.since),
+            lte(schema.insightsDaily.date, trailing.until),
+          ),
+        )
+        .groupBy(schema.insightsDaily.entityId),
+      db.select({ id: schema.clients.id, status: schema.clients.status }).from(schema.clients),
+      objectiveResults(w),
+      loadCampaignOwnership(),
+    ]);
 
   const accounts = new Map<string, ReportAccount>(
     accountRows.map((a) => [
@@ -111,5 +146,20 @@ export async function fetchDailyEngagementRows(w: DateWindow): Promise<{
     };
   });
 
-  return { campaigns, accounts };
+  // Trailing spend attributed through the SAME ownership ladder as yesterday's, so the membership
+  // test and the displayed figure agree about who owns what.
+  const trailingSpendByCampaign = new Map(
+    trailingRows.map((r) => [r.entityId, Number(r.spend ?? 0)]),
+  );
+  const trailingSpend = new Map<string, number>();
+  for (const c of campaignRows) {
+    const ownerId = ownership.ownerOf({ id: c.id, name: c.name, accountId: c.accountId });
+    if (!ownerId) continue;
+    const spend = trailingSpendByCampaign.get(c.id) ?? 0;
+    if (spend === 0) continue;
+    trailingSpend.set(ownerId, (trailingSpend.get(ownerId) ?? 0) + spend);
+  }
+  const notionStatus = new Map<string, string | null>(clientRows.map((c) => [c.id, c.status]));
+
+  return { campaigns, accounts, context: { trailingSpend, notionStatus } };
 }

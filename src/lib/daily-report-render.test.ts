@@ -12,6 +12,8 @@ const row = (over: Partial<EngagementRow> = {}): EngagementRow => ({
   results: [{ label: "Purchases", count: 83 }],
   health: { status: "ACTIVE", reason: null },
   campaignCount: 2,
+  trailingSpend: 500,
+  notionStatus: "Live",
   ...over,
 });
 

@@ -38,12 +38,37 @@ records the same class of bug being wrong by 71× on multi-account clients.
 
 ## Membership rules
 
-- **Included:** a campaign counts when it **spent > 0 yesterday OR its `effective_status` is
-  currently `ACTIVE`**. The union keeps yesterday's spend total correct (a campaign paused this
-  morning still spent yesterday) while still surfacing live-but-silent campaigns as `$0.00`.
-- **Excluded:** campaigns whose owner resolves to `null`. Their spend is omitted entirely.
-  Consequence, accepted deliberately: the printed total does not reconcile with Meta's true daily
-  spend, so it is labelled `across N engagements` and never "yesterday's total spend".
+Two grains, and the distinction matters:
+
+**Which engagements are REPORTED** (`isReportable`, applied to the aggregated row):
+
+- trailing spend over the **3 complete days ending yesterday** is **> $1**, AND
+- the client's Notion `Account Status` is **not** `Full Budget Finished`.
+
+Both clauses do independent work and neither implies the other. A finished engagement can still be
+spending — bspin.io billed $513.84 over three days while marked finished — and a live engagement can
+go quiet for a day. Trailing spend rather than yesterday's, so a client that simply had a dark day is
+not dropped from a report the team reads as "who is running". `> $1`, not `>= $1`: the threshold
+exists to discard rounding dust.
+
+Testing the client's single winning status is safe: `clubClients` resolves a client's board rows by
+`STATUS_PRIORITY` (`src/notion/parse.ts:237`), where every live-ish value outranks
+`Full Budget Finished`, so a client reading it has no current row at all. The Clients page already
+filters this way (`src/routes/clients.index.tsx:37`).
+
+The rule is applied to the **engagement**, not to each campaign. A kept engagement therefore reports
+its true total for yesterday; filtering campaigns individually would print a figure that excluded
+part of the engagement's real spend and stop reconciling against Meta. On live data both readings
+selected the same seven engagements, so this costs nothing today and keeps the totals honest.
+
+**Which campaigns CONTRIBUTE to a reported engagement's numbers** (`includeCampaign`): spent > 0
+yesterday OR `effective_status` is currently `ACTIVE`. The union keeps yesterday's total correct (a
+campaign paused this morning still spent yesterday) without letting long-dead campaigns drag the
+account-health badge.
+
+**Excluded entirely:** campaigns whose owner resolves to `null`. Consequence, accepted deliberately:
+the printed total does not reconcile with Meta's true daily spend, so it is labelled
+`across N engagements` and never "yesterday's total spend".
 
 ## Collapse rules
 
