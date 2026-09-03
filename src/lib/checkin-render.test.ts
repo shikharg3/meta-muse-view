@@ -175,30 +175,37 @@ test("the force-reply prompt names the campaign and asks for a reply", () => {
   ).toBe("✍️ Update for Slots.lv (Live)\nAny changes today?\n↩️ Reply to this message.");
 });
 
-test("the comment body carries date, buyer, status, question and answer", () => {
+test("the comment body carries only the buyer, their status and their message", () => {
   expect(
     commentBody({
-      date: "2026-08-13",
       buyerName: "Shikhar Gupta",
       status: "Ad Account Blocked",
-      question: "Funding/top-up status?",
       answer: "Topped up $2k, delivery resumes tonight.",
     }),
-  ).toEqual([
-    "🤖 Daily check-in · 2026-08-13 · Shikhar Gupta\n" +
-      "Status: Ad Account Blocked\n" +
-      "Q: Funding/top-up status?\n" +
-      "A: Topped up $2k, delivery resumes tonight.",
-  ]);
+  ).toEqual(["Shikhar Gupta · Ad Account Blocked\nTopped up $2k, delivery resumes tonight."]);
+});
+
+test("the comment carries no check-in banner, date or echoed question", () => {
+  // These were removed because they added nothing on the board — Notion timestamps the comment, and
+  // the question is fixed per status. Asserted so they cannot creep back in.
+  const [body] = commentBody({
+    buyerName: "Vladyslav Istrati",
+    status: "Live",
+    answer: "All good, scaled the winner.",
+  });
+  expect(body).not.toContain("Daily check-in");
+  expect(body).not.toContain("2026-");
+  expect(body).not.toContain("Q:");
+  expect(body).not.toContain("A:");
+  expect(body).not.toContain("Status:");
+  expect(body.split("\n")).toHaveLength(2);
 });
 
 test("a long answer splits into chunks instead of being truncated", () => {
   const answer = "x".repeat(2500);
   const chunks = commentBody({
-    date: "2026-08-13",
     buyerName: "Vladyslav Istrati",
     status: "Live",
-    question: "Any changes today?",
     answer,
   });
   expect(chunks.length).toBe(2);
@@ -215,10 +222,8 @@ test("a long answer splits into chunks instead of being truncated", () => {
 /** The comment for a fixed prompt, varying only the answer, so a test can size it to a boundary. */
 const bodyFor = (answer: string) =>
   commentBody({
-    date: "2026-08-13",
     buyerName: "Vladyslav Istrati",
     status: "Live",
-    question: "Any changes today?",
     answer,
   });
 

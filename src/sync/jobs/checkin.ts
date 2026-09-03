@@ -716,10 +716,8 @@ export async function flushPendingComments(): Promise<number> {
     // Notion comment is worse than none, and `createComment` would reject it anyway.
     if (!p.answerText) continue;
     const chunks = commentBody({
-      date: p.promptDate,
       buyerName: names.get(p.buyerPersonId) ?? p.buyerPersonId,
       status: p.status,
-      question: p.question,
       answer: p.answerText,
     });
 

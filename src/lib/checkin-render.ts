@@ -138,8 +138,11 @@ export function dayLabel(date: string): string {
 /**
  * The Notion comment, split into `rich_text`-sized chunks.
  *
- * The buyer's name is in the body because the comment's AUTHOR is the integration, not the human —
- * without this the board would show a wall of identical robot authorship.
+ * Just the buyer, their status, and what they wrote. The name is in the body because the comment's
+ * AUTHOR is the integration, not the human — without it the board shows a wall of identical robot
+ * authorship. Everything else that used to be here (a `🤖 Daily check-in` banner, the prompt date,
+ * and the question echoed back as `Q:`) was noise on the board: Notion already timestamps the
+ * comment, and the question is fixed per status so repeating it said nothing the status did not.
  *
  * Splits, never truncates: losing text a buyer typed is the worst failure this module has. The cut
  * is nudged off a surrogate pair, because `slice` counts UTF-16 code units and buyers answering from
@@ -147,17 +150,11 @@ export function dayLabel(date: string): string {
  * with its orphan, which Notion stores as an ill-formed `rich_text` item that renders as U+FFFD.
  */
 export function commentBody(input: {
-  date: string;
   buyerName: string;
   status: string;
-  question: string;
   answer: string;
 }): string[] {
-  const full =
-    `🤖 Daily check-in · ${input.date} · ${input.buyerName}\n` +
-    `Status: ${input.status}\n` +
-    `Q: ${input.question}\n` +
-    `A: ${input.answer}`;
+  const full = `${input.buyerName} · ${input.status}\n${input.answer}`;
   const chunks: string[] = [];
   for (let i = 0; i < full.length; ) {
     let end = Math.min(i + NOTION_TEXT_LIMIT, full.length);
