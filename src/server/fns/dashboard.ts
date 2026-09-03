@@ -31,6 +31,10 @@ import {
   creativeImageUrl,
   hueFromId,
   resultSpec,
+  resultCount,
+  isReachSpec,
+  unanimousEvent,
+  type ResultSpec,
   type CreativeFacts,
 } from "@/server/creative";
 import type {
@@ -125,16 +129,45 @@ function dominantLabel(m: Map<string, number>): string {
 }
 
 /**
- * Objective-aware "results" per campaign and per account (plus overall). Each
- * campaign contributes its objective's result action (reach for awareness),
- * summed from campaign-level insights — no ecommerce ROAS assumption.
+ * Each campaign's optimised conversion, from its ad sets' `promoted_object.custom_event_type`.
+ *
+ * Campaigns carry an objective but leave `promoted_object` empty — the actual event lives on the ad
+ * set — so this is the only place the real result metric can come from.
+ *
+ * A campaign whose ad sets disagree maps to null and falls back to its objective default: there is no
+ * single honest label for a campaign optimising two different conversions, and inventing one would be
+ * worse than the generic answer. Ad sets with no event at all are ignored rather than counted as
+ * disagreement, so one lingering engagement ad set cannot mask a unanimous conversion event.
+ */
+export async function customEventByCampaign(): Promise<Map<string, string | null>> {
+  const rows = await db
+    .select({
+      campaignId: schema.adSets.campaignId,
+      event: sql<string | null>`${schema.adSets.promotedObject}->>'custom_event_type'`,
+    })
+    .from(schema.adSets);
+  const seen = new Map<string, (string | null)[]>();
+  for (const r of rows) {
+    const arr = seen.get(r.campaignId) ?? [];
+    arr.push(r.event);
+    seen.set(r.campaignId, arr);
+  }
+  const out = new Map<string, string | null>();
+  for (const [id, events] of seen) out.set(id, unanimousEvent(events));
+  return out;
+}
+
+/**
+ * Objective-aware "results" per campaign and per account (plus overall). Each campaign contributes
+ * the conversion its ad sets optimise for — falling back to its objective's default, and to reach for
+ * awareness — summed from campaign-level insights, with no ecommerce ROAS assumption.
  */
 export async function objectiveResults(w: DateWindow): Promise<{
   campaign: Map<string, ScopeResult>;
   account: Map<string, ScopeResult>;
   total: ScopeResult;
 }> {
-  const [camps, actions, totals] = await Promise.all([
+  const [camps, actions, totals, customEvent] = await Promise.all([
     db
       .select({
         id: schema.campaigns.id,
@@ -144,6 +177,7 @@ export async function objectiveResults(w: DateWindow): Promise<{
       .from(schema.campaigns),
     actionTotals("campaign", w),
     totalsByEntity("campaign", w),
+    customEventByCampaign(),
   ]);
   const spendReach = new Map(totals.map((t) => [t.entityId, t]));
   const campaign = new Map<string, ScopeResult>();
@@ -152,9 +186,11 @@ export async function objectiveResults(w: DateWindow): Promise<{
   let totalValue = 0;
   const totalLabelSpend = new Map<string, number>();
   for (const c of camps) {
-    const rs = resultSpec(c.objective);
+    const rs = resultSpec(c.objective, customEvent.get(c.id));
     const t = spendReach.get(c.id);
-    const value = rs.type === "reach" ? num(t?.reach) : (actions.get(`${c.id}:${rs.type}`) ?? 0);
+    const value = isReachSpec(rs)
+      ? num(t?.reach)
+      : resultCount(rs, (type) => actions.get(`${c.id}:${type}`));
     const spend = num(t?.spend);
     campaign.set(c.id, { value, label: rs.label });
     acctValue.set(c.accountId, (acctValue.get(c.accountId) ?? 0) + value);
@@ -540,7 +576,17 @@ export async function fetchCampaigns(
   const adCountBySet = new Map(adCounts.map((r) => [r.adSetId, Number(r.n)]));
 
   return campaignRows.map((c) => {
-    const rs = resultSpec(c.objective);
+    // Derived from the ad-set rows already loaded above rather than a second query: the real result
+    // event lives on the ad set, and a campaign's own `promoted_object` is empty.
+    const sets = adsetsByCampaign.get(c.id) ?? [];
+    const rs = resultSpec(
+      c.objective,
+      unanimousEvent(
+        sets.map(
+          (s) => (s.promotedObject as { custom_event_type?: string } | null)?.custom_event_type,
+        ),
+      ),
+    );
     const t = campT.get(c.id);
     const k = deriveKpis({
       spend: num(t?.spend),
@@ -572,7 +618,9 @@ export async function fetchCampaigns(
           cpc: ak.cpc,
           roas: ak.roas,
           conversions: ak.conversions,
-          results: rs.type === "reach" ? ak.reach : (adActions.get(`${ad.id}:${rs.type}`) ?? 0),
+          results: isReachSpec(rs)
+            ? ak.reach
+            : resultCount(rs, (type) => adActions.get(`${ad.id}:${type}`)),
           resultLabel: rs.label,
           format: creativeFormat(creative),
           thumbHue: hueFromId(ad.id),
@@ -597,7 +645,9 @@ export async function fetchCampaigns(
         roas: sk.roas,
         frequency: sk.impressions / Math.max(1, sk.reach),
         // From the ad-set's OWN action totals, so it is correct whether or not ads were loaded.
-        results: rs.type === "reach" ? sk.reach : (setActions.get(`${s.id}:${rs.type}`) ?? 0),
+        results: isReachSpec(rs)
+          ? sk.reach
+          : resultCount(rs, (type) => setActions.get(`${s.id}:${type}`)),
         resultLabel: rs.label,
         audience: summarizeTargeting(s.targeting) ?? s.name,
         adCount: adCountBySet.get(s.id) ?? 0,
@@ -620,7 +670,9 @@ export async function fetchCampaigns(
       roas: k.roas,
       frequency: k.impressions / Math.max(1, k.reach),
       // Campaign-level action totals — independent of whether ads/ad sets were loaded.
-      results: rs.type === "reach" ? k.reach : (campActions.get(`${c.id}:${rs.type}`) ?? 0),
+      results: isReachSpec(rs)
+        ? k.reach
+        : resultCount(rs, (type) => campActions.get(`${c.id}:${type}`)),
       resultLabel: rs.label,
       adSets,
     };
@@ -633,7 +685,11 @@ export async function fetchCampaigns(
  */
 export async function fetchAdSetAds(adSetId: string, w: DateWindow): Promise<Ad[]> {
   const [set] = await db
-    .select({ id: schema.adSets.id, campaignId: schema.adSets.campaignId })
+    .select({
+      id: schema.adSets.id,
+      campaignId: schema.adSets.campaignId,
+      event: sql<string | null>`${schema.adSets.promotedObject}->>'custom_event_type'`,
+    })
     .from(schema.adSets)
     .where(eq(schema.adSets.id, adSetId));
   if (!set) return [];
@@ -641,7 +697,9 @@ export async function fetchAdSetAds(adSetId: string, w: DateWindow): Promise<Ad[
     .select({ objective: schema.campaigns.objective })
     .from(schema.campaigns)
     .where(eq(schema.campaigns.id, set.campaignId));
-  const rs = resultSpec(campaign?.objective);
+  // THIS ad set's own event, not the campaign's unanimous one: every ad here belongs to this ad set,
+  // so its optimised conversion is exactly the right result metric even when its siblings differ.
+  const rs = resultSpec(campaign?.objective, set.event);
 
   const adRows = await db
     .select({
@@ -742,7 +800,9 @@ export async function fetchAdSetAds(adSetId: string, w: DateWindow): Promise<Ad[
       cpc: ak.cpc,
       roas: ak.roas,
       conversions: ak.conversions,
-      results: rs.type === "reach" ? ak.reach : (actionByKey.get(`${ad.id}:${rs.type}`) ?? 0),
+      results: isReachSpec(rs)
+        ? ak.reach
+        : resultCount(rs, (type) => actionByKey.get(`${ad.id}:${type}`)),
       resultLabel: rs.label,
       format: creativeFormat(creative),
       thumbHue: hueFromId(ad.id),
@@ -815,6 +875,7 @@ export async function fetchAdEntities(
         campaignId: schema.adSets.campaignId,
         accountId: schema.adSets.accountId,
         status: schema.adSets.status,
+        event: sql<string | null>`${schema.adSets.promotedObject}->>'custom_event_type'`,
       })
       .from(schema.adSets)
       .where(inArray(schema.adSets.accountId, acctIds)),
@@ -875,6 +936,8 @@ export async function fetchAdEntities(
     accountId: string;
     status: string | null;
     objective: string | null;
+    /** The owning ad set's optimised conversion; outranks the objective. */
+    event: string | null;
   }
   const meta = new Map<string, Meta>();
   if (level === "adset") {
@@ -887,6 +950,7 @@ export async function fetchAdEntities(
         accountId: s.accountId,
         status: s.status,
         objective: c?.objective ?? null,
+        event: s.event,
       });
     }
   } else {
@@ -900,6 +964,8 @@ export async function fetchAdEntities(
         accountId: a.accountId,
         status: a.status,
         objective: c?.objective ?? null,
+        // An ad inherits the result metric of the ad set that carries it.
+        event: s?.event ?? null,
       });
     }
   }
@@ -919,8 +985,10 @@ export async function fetchAdEntities(
     revenue: number;
     rows: { actions: unknown; actionValues: unknown }[];
     actionSums: Map<string, number>;
-    resTypeSpend: Map<string, number>;
-    resTypeLabel: Map<string, string>;
+    /** Spend per result LABEL — the dominant one names a grouped bucket's result. */
+    resLabelSpend: Map<string, number>;
+    /** The spec behind each label, so the count resolves through its whole alias list. */
+    resSpecByLabel: Map<string, ResultSpec>;
     merged: number;
   }
   const buckets = new Map<string, Bucket>();
@@ -944,8 +1012,8 @@ export async function fetchAdEntities(
         revenue: 0,
         rows: [],
         actionSums: new Map(),
-        resTypeSpend: new Map(),
-        resTypeLabel: new Map(),
+        resLabelSpend: new Map(),
+        resSpecByLabel: new Map(),
         merged: 0,
       };
       buckets.set(key, b);
@@ -969,9 +1037,9 @@ export async function fetchAdEntities(
       seen.add(r.entityId);
       b.merged += 1;
     }
-    const rs = resultSpec(m.objective);
-    b.resTypeSpend.set(rs.type, (b.resTypeSpend.get(rs.type) ?? 0) + num(r.spend));
-    b.resTypeLabel.set(rs.type, rs.label);
+    const rs = resultSpec(m.objective, m.event);
+    b.resLabelSpend.set(rs.label, (b.resLabelSpend.get(rs.label) ?? 0) + num(r.spend));
+    b.resSpecByLabel.set(rs.label, rs);
   }
 
   const round2 = (n: number) => Math.round(n * 100) / 100;
@@ -984,16 +1052,21 @@ export async function fetchAdEntities(
       revenue: b.revenue,
       reach: b.reach,
     });
-    // Objective result: the metric for the dominant-by-spend objective (reach for awareness).
-    let domType = "omni_purchase";
+    // Objective result: the metric for the dominant-by-spend result label (reach for awareness).
+    let domLabel = "";
     let bestSpend = -1;
-    for (const [t, sp] of b.resTypeSpend)
+    for (const [l, sp] of b.resLabelSpend)
       if (sp > bestSpend) {
         bestSpend = sp;
-        domType = t;
+        domLabel = l;
       }
-    const results = domType === "reach" ? b.reach : (b.actionSums.get(domType) ?? 0);
-    const label = b.resTypeLabel.get(domType) ?? "Results";
+    const domSpec = b.resSpecByLabel.get(domLabel);
+    const results = !domSpec
+      ? 0
+      : isReachSpec(domSpec)
+        ? b.reach
+        : resultCount(domSpec, (type) => b.actionSums.get(type));
+    const label = domSpec?.label ?? "Results";
     return {
       name: b.name,
       parent: b.parents.size === 1 ? [...b.parents][0] : `${b.parents.size} campaigns`,

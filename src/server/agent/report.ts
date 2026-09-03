@@ -1,7 +1,7 @@
-import { and, eq, gte, lte, inArray } from "drizzle-orm";
+import { and, eq, gte, lte, inArray, sql } from "drizzle-orm";
 import { db, schema } from "@/db/client";
 import { pickAction } from "@/meta/insights";
-import { resultSpec } from "@/server/creative";
+import { resultSpec, resultCount, isReachSpec, unanimousEvent } from "@/server/creative";
 import { familyCount, familyValue } from "@/server/agg";
 import { trailingRange } from "@/sync/jobs/insights";
 import type { InsightRow } from "@/meta/types";
@@ -286,6 +286,8 @@ export interface BuildSpec {
   timeIncrement: TimeIncrement;
   /** campaign_id → objective, for objective-aware "results". */
   objectiveByCampaign: Record<string, string>;
+  /** campaign_id → the ad sets' optimised conversion; outranks the objective. Optional: absent = objective only. */
+  eventByCampaign?: Record<string, string>;
   /** Cost markup fraction (e.g. 0.1 = +10%) applied to spend for client-facing reports. */
   markup?: number;
   /** Restrict rows to these campaign ids (empty/undefined = all campaigns). */
@@ -502,11 +504,14 @@ export function dbRowSource(spec: BuildSpec): ReportRowSource {
   };
 }
 
-/** The action type (or "reach") whose value is this row's "result", per objective. */
-function resultValue(r: InsightRow, objective: string | undefined): number {
-  const spec = resultSpec(objective);
-  if (spec.type === "reach") return num(r.reach);
-  return pickAction(r.actions, spec.type);
+/** The action type (or "reach") whose value is this row's "result", per optimised event/objective. */
+function resultValue(r: InsightRow, objective: string | undefined, event?: string): number {
+  const spec = resultSpec(objective, event);
+  if (isReachSpec(spec)) return num(r.reach);
+  const sums = new Map<string, number>();
+  for (const a of (r.actions as { action_type: string; value: string }[] | undefined) ?? [])
+    sums.set(a.action_type, (sums.get(a.action_type) ?? 0) + (Number(a.value) || 0));
+  return resultCount(spec, (type) => sums.get(type));
 }
 
 const num = (v: unknown): number => (v == null ? 0 : Number(v) || 0);
@@ -564,11 +569,13 @@ function accumulate(
   a: Agg,
   r: InsightRow,
   objectiveByCampaign: Record<string, string>,
+  eventByCampaign: Record<string, string> | undefined,
   fields: readonly string[],
 ): void {
   if (delivered(r)) a.deliveringRows++;
   for (const f of fields) addTo(a.scalars, f, fieldValue((r as Record<string, unknown>)[f]));
-  a.results += resultValue(r, objectiveByCampaign[String(r.campaign_id ?? "")]);
+  const campaignId = String(r.campaign_id ?? "");
+  a.results += resultValue(r, objectiveByCampaign[campaignId], eventByCampaign?.[campaignId]);
   for (const act of (r.actions as { action_type: string; value: string }[] | undefined) ?? [])
     addTo(a.events, act.action_type, Number(act.value) || 0);
   for (const act of (r.action_values as { action_type: string; value: string }[] | undefined) ?? [])
@@ -693,7 +700,7 @@ export async function buildReport(
         aggByKey.set(key, a);
         order.push(key);
       }
-      accumulate(a, r, spec.objectiveByCampaign, fields);
+      accumulate(a, r, spec.objectiveByCampaign, spec.eventByCampaign, fields);
     }
   }
 
@@ -845,6 +852,36 @@ async function objectiveMap(accountIds: string[]): Promise<Record<string, string
   return out;
 }
 
+/**
+ * Load campaign_id → the conversion its ad sets optimise for, which outranks the objective.
+ *
+ * An objective is a family: `OUTCOME_LEADS` covers both an on-Meta instant form (reported as `lead`)
+ * and a website registration (reported as `complete_registration`, never as `lead`). Without this the
+ * report counts an action type that does not exist for the campaign and shows a confident zero.
+ */
+async function customEventMap(accountIds: string[]): Promise<Record<string, string>> {
+  if (accountIds.length === 0) return {};
+  const rows = await db
+    .select({
+      campaignId: schema.adSets.campaignId,
+      event: sql<string | null>`${schema.adSets.promotedObject}->>'custom_event_type'`,
+    })
+    .from(schema.adSets)
+    .where(inArray(schema.adSets.accountId, accountIds));
+  const byCampaign = new Map<string, (string | null)[]>();
+  for (const r of rows) {
+    const arr = byCampaign.get(r.campaignId) ?? [];
+    arr.push(r.event);
+    byCampaign.set(r.campaignId, arr);
+  }
+  const out: Record<string, string> = {};
+  for (const [id, events] of byCampaign) {
+    const e = unanimousEvent(events);
+    if (e) out[id] = e;
+  }
+  return out;
+}
+
 /** Produce the report from synced DB data (or an error for the UI builder). */
 export async function runReport(args: ReportArgs): Promise<ReportPayload | { error: string }> {
   if (args.accountIds.length === 0)
@@ -857,6 +894,7 @@ export async function runReport(args: ReportArgs): Promise<ReportPayload | { err
     breakdown: args.breakdown,
     timeIncrement: args.timeIncrement,
     objectiveByCampaign: await objectiveMap(args.accountIds),
+    eventByCampaign: await customEventMap(args.accountIds),
     markup: args.markup,
     campaignIds: args.campaignIds,
   };
