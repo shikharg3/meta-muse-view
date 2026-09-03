@@ -45,6 +45,7 @@ function ReportHistory() {
               <th className="text-left px-3 py-2.5">Client</th>
               <th className="text-left px-3 py-2.5">Range</th>
               <th className="text-right px-3 py-2.5">Rows</th>
+              <th className="text-right px-3 py-2.5">Markup</th>
               <th className="text-left px-3 py-2.5">Exported</th>
               <th className="text-left px-3 py-2.5">Formats</th>
               <th className="text-left px-3 py-2.5">By</th>
@@ -68,6 +69,18 @@ function ReportHistory() {
                 </td>
                 <td className="px-3 py-3 text-right font-mono text-muted-foreground">
                   {r.rowCount.toLocaleString()}
+                </td>
+                <td className="px-3 py-3 text-right whitespace-nowrap">
+                  {r.markup ? (
+                    <span
+                      title="Spend and every derived cost in this report were inflated by this. The client's copy never named it."
+                      className="font-mono text-[11px] font-semibold text-primary"
+                    >
+                      +{Math.round(r.markup * 1000) / 10}%
+                    </span>
+                  ) : (
+                    <span className="text-[11px] text-muted-foreground">—</span>
+                  )}
                 </td>
                 <td className="px-3 py-3 text-[11px] text-muted-foreground whitespace-nowrap">
                   {r.exportedAt ? fmtTime(r.exportedAt) : "—"}

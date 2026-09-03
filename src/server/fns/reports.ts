@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, isNotNull, isNull, lt } from "drizzle-orm";
+import { and, desc, eq, isNotNull, isNull, lt, sql } from "drizzle-orm";
 import { db, schema } from "@/db/client";
 import { resolvePreset } from "@/lib/date-presets";
 import { metric } from "@/lib/report-catalog";
@@ -104,6 +104,13 @@ export interface RunSummary {
   exportedFormats: string[];
   ranByEmail: string | null;
   templateName: string | null;
+  /**
+   * Commission fraction the run was produced with, or null for none.
+   *
+   * INTERNAL ONLY, same rule as `ReportPayload.markup`: the ledger is behind `requireAdmin` and no
+   * client-facing artifact is rendered from a `RunSummary`.
+   */
+  markup: number | null;
 }
 
 export interface RunDetail extends RunSummary {
@@ -255,6 +262,21 @@ const RUN_SUMMARY_FIELDS = {
   exportedFormats: schema.reportRuns.exportedFormats,
   ranByEmail: schema.users.email,
   templateName: schema.reportTemplates.name,
+  // `->>` yields text and is cast in JS rather than in SQL: a `::double precision` cast would fail
+  // the whole query on one malformed row, and the ledger must still list the other 99.
+  markupText: sql<string | null>`${schema.reportRuns.params}->>'markup'`,
+};
+
+/**
+ * The commission fraction a run was produced with, read off its stored params.
+ *
+ * Zero and absent are the same thing here — both mean "no markup" — so both become null and the
+ * ledger shows a dash rather than "+0%". Exported for the test: the ledger is a DB read, but which
+ * values count as "no markup" is a rule worth pinning without one.
+ */
+export const asMarkup = (v: unknown): number | null => {
+  const n = typeof v === "string" ? Number(v) : typeof v === "number" ? v : NaN;
+  return Number.isFinite(n) && n > 0 ? n : null;
 };
 
 function toRunSummary(r: {
@@ -268,14 +290,17 @@ function toRunSummary(r: {
   exportedFormats: unknown;
   ranByEmail: string | null;
   templateName: string | null;
+  markupText: string | null;
 }): RunSummary {
+  const { markupText, ...rest } = r;
   return {
-    ...r,
+    ...rest,
     // `client_id` is NOT NULL with ON DELETE RESTRICT, so the join cannot miss; falling back to the
     // slug keeps the row identifiable instead of blank if it ever does.
     clientName: r.clientName ?? r.clientId,
     exportedAt: r.exportedAt?.toISOString() ?? null,
     exportedFormats: asStringArray(r.exportedFormats),
+    markup: asMarkup(markupText),
   };
 }
 
