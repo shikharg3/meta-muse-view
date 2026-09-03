@@ -16,6 +16,10 @@ export function ReportBlock({ report, runId }: { report: ReportPayload; runId?: 
   const stickyDim = report.columns[0]?.key === "_period" || report.columns[0]?.key === "_dim";
   // Deliberately NO row virtualization: MAX_ROWS = 500 in src/server/agent/report.ts:520 already
   // caps output, and 500x30 cells is unremarkable for the DOM. Do not add a windowing dependency.
+  // This card is internal: it renders on the chat, the client page and /reports/*, all behind
+  // `requireAdmin`. The markup chip below is the only place the commission rate is shown, and it
+  // cannot reach an export — `downloadReportCsv`/`downloadReportPdf` take a `ReportDoc`, which has
+  // no markup field.
   return (
     <div className="rounded-lg border border-border bg-card overflow-hidden">
       <div className="flex items-center gap-3 px-4 py-3 border-b border-border">
@@ -26,6 +30,14 @@ export function ReportBlock({ report, runId }: { report: ReportPayload; runId?: 
             {report.subtitle} · {report.rowCount} row{report.rowCount === 1 ? "" : "s"}
           </div>
         </div>
+        {report.markup ? (
+          <span
+            title="Spend and every derived cost are inflated by this. Never printed on the client's copy."
+            className="shrink-0 rounded-md border border-primary/40 bg-primary/10 px-2 py-1 text-[10px] font-semibold tracking-wide text-primary uppercase"
+          >
+            +{Math.round(report.markup * 1000) / 10}% markup · internal
+          </span>
+        ) : null}
         <button
           onClick={() => {
             downloadReportCsv(report);

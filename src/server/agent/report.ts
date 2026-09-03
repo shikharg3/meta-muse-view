@@ -65,6 +65,16 @@ export interface ReportPayload {
   totals: (string | number | null)[] | null;
   rowCount: number;
   filename: string;
+  /**
+   * Commission fraction applied to spend (0.15 = +15%), or null when the report carries none.
+   *
+   * INTERNAL ONLY. It exists so an operator can see on screen what a client is being charged over
+   * cost, and it is deliberately a number rather than prose in the subtitle: `ReportDoc` — the type
+   * the CSV and the PDF render from — has no such field, so no export can print it even by mistake.
+   * When the `client` role lands, the payload must be stripped of this at the scope boundary; today
+   * every report server fn is behind `requireAdmin`.
+   */
+  markup: number | null;
 }
 
 /**
@@ -787,9 +797,8 @@ export async function buildReport(
   ].filter((n): n is string => n !== null);
 
   // The subtitle is printed verbatim on the client's PDF, so it states the window and the axes and
-  // NOTHING about the commission: the markup is inside the spend figures by design, and naming the
-  // percentage would hand the client our margin. The rate stays recoverable internally from
-  // `report_runs.params` and the template that produced the run.
+  // NOTHING about the commission: naming the percentage would hand the client our margin. The rate
+  // travels as `markup` instead, which only the internal report card reads.
   return {
     title: `${subjectName} — performance report`,
     subtitle: `${spec.since} → ${spec.until}${dimNote}`,
@@ -799,6 +808,7 @@ export async function buildReport(
     totals,
     rowCount: rows.length,
     filename: `${slug(subjectName)}_${spec.since}_${spec.until}${dim === "none" ? "" : `_by_${dim}`}${FILENAME_SUFFIX[spec.timeIncrement]}`,
+    markup: spec.markup ?? null,
   };
 }
 
