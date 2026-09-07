@@ -41,6 +41,31 @@ Rejected: a flat ranked triage feed with no summary grid (fast to read, but give
 risk concentrates), and an attention band over a risk-filtered spine (keeps the drawing's strength,
 but needs graph filtering plus collapsed aggregate nodes and still leaves two devices to read).
 
+## Addendum, 2026-09-07 — main BMs and profiles
+
+The operator asked to mark the BMs and profiles that matter, so the map leads with them while the
+rest stay visible. This **reverses decision 6 of the 2026-08-13 design** ("flat access list; no
+'primary BM' concept"), but not its reasoning: that decision existed so ban impact would be phrased
+as paths lost rather than as a primary to re-point to, and `is_main` changes nothing about impact.
+
+| #   | Decision                                                                             | Rationale                                                                                                                                                             |
+| --- | ------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 10  | `is_main` is **display priority only**, on `infra_profiles` and `infra_business_managers` | It is never passed to `redundancy`, `pixelRisk`, `pageRisk` or `profileRisk`. A star that could improve a verdict would turn the risk map into a wish list            |
+| 11  | Severity outranks the star                                                            | Starred rows lead **within** a severity band, never across one. Burying a critical unstarred asset under a warning on a starred one would be a lie told by sort order  |
+| 12  | One URL flag, `?main=1`, drives both views                                            | The lens is linkable and survives a reload, and the findings list and the canvas cannot disagree about what "main" means                                              |
+| 13  | Recession is **relative**: with nothing starred, nothing dims                          | A canvas that dims itself before the operator has expressed a preference is just a darker canvas                                                                       |
+| 14  | `focusMain` is **one hop**, not a closure                                             | Two hops from a starred BM reaches its admin, then every other BM that admin holds, and the "main view" is the whole estate again                                     |
+| 15  | `setBmMain`/`setProfileMain` are their own actions, `audit()`-logged only              | The row `type` select re-sends every field through `saveBm`, so a marker riding along there would be flipped by unrelated edits. The event trail is for status changes |
+
+The column was applied to `meta` and `meta_test` as explicit additive DDL
+(`add column if not exists`), not `bun run db:push`, which is documented as unsafe unattended on
+this repo. The live schema now matches `src/db/schema.ts`, so the next push sees no diff.
+
+Verified: 75 pure tests (7 new, covering `focusMain`'s one-hop rule and that starring leaves
+`atRisk`, the tally and every verdict identical), 20 DB-backed tests against real Postgres (1 new,
+asserting the same invariant through `buildRiskMap`), and both views driven in a harness over a dump
+of the live registry — 101 nodes, and the lens narrowing the canvas from 21 drawn nodes to 8.
+
 ## Shape
 
 | File                                          | Role                                                                                                                             |
