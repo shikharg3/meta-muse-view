@@ -1,21 +1,31 @@
-import { createFileRoute, redirect, Link, useNavigate } from "@tanstack/react-router";
+import { createFileRoute, redirect, useNavigate } from "@tanstack/react-router";
 import { useMemo } from "react";
-import { Network, Table2 } from "lucide-react";
+import { CheckCircle2, Network, Table2 } from "lucide-react";
 import { PageHeader } from "@/components/dashboard/PageHeader";
 import { PagePendingSkeleton } from "@/components/dashboard/TableSkeleton";
-import { StatusPill } from "@/components/dashboard/StatusPill";
+import { FindingRow, type Finding } from "@/components/infra/FindingRow";
+import { KIND_META } from "@/components/infra/kinds";
 import { InfraPageGroups } from "@/components/infra/InfraPageGroups";
 import { InfraSpineCanvas } from "@/components/infra/InfraSpineCanvas";
-import { RiskBadge } from "@/components/infra/RiskBadge";
+import { RiskMatrix, type MatrixCell, type MatrixLevel } from "@/components/infra/RiskMatrix";
+import { RiskVerdict } from "@/components/infra/RiskVerdict";
 import { getInfraRiskMap } from "@/lib/api/infrastructure";
 import { getCurrentUser } from "@/lib/api/auth";
 import { isAdmin } from "@/lib/auth/roles";
+import { INFRA_NODE_KINDS, type InfraNodeKind } from "@/lib/infra-graph";
+import { RISK_ORDER } from "@/lib/infra-risk";
 import { buildSpine } from "@/lib/infra-spine";
 import { cn } from "@/lib/utils";
-import type { InfraRiskRow } from "@/server/fns/infra/risk";
 
-/** The map is the default: the tables answer "what is broken", the map answers "what does it cost". */
-type InfraView = "map" | "table";
+/**
+ * The matrix is the default. "Where is the risk" is answered by counts in one glance; the drawn map
+ * answers the different and slower question of what a specific ban would cost.
+ */
+type InfraView = "matrix" | "map";
+
+function isKind(value: unknown): value is InfraNodeKind {
+  return typeof value === "string" && (INFRA_NODE_KINDS as readonly string[]).includes(value);
+}
 
 export const Route = createFileRoute("/infrastructure/")({
   head: () => ({
@@ -28,120 +38,89 @@ export const Route = createFileRoute("/infrastructure/")({
       },
     ],
   }),
-  validateSearch: (s: Record<string, unknown>): { view?: InfraView } => ({
-    view: s.view === "table" ? "table" : undefined,
-  }),
+  /**
+   * The selected matrix cell lives in the URL so a finding can be linked to and survives a reload.
+   * `type` without `level` is meaningless — a cell is both — so a half-specified pair falls back to
+   * the unfiltered list rather than inventing one of the two.
+   */
+  validateSearch: (
+    s: Record<string, unknown>,
+  ): { view?: InfraView; type?: InfraNodeKind; level?: MatrixLevel } => {
+    const level = s.level === "critical" || s.level === "warning" ? s.level : undefined;
+    const type = isKind(s.type) ? s.type : undefined;
+    return {
+      view: s.view === "map" ? "map" : undefined,
+      ...(type && level ? { type, level } : {}),
+    };
+  },
   loader: async () => {
     const me = await getCurrentUser();
     if (!isAdmin(me?.role)) throw redirect({ to: "/" });
     return await getInfraRiskMap();
   },
   component: InfrastructurePage,
-  pendingComponent: () => <PagePendingSkeleton rows={8} kpis={5} />,
+  pendingComponent: () => <PagePendingSkeleton rows={10} kpis={0} />,
 });
-
-/**
- * Rows arrive already sorted critical-first from the server, so this table has no client-side sort —
- * risk order IS the useful order on a triage screen.
- */
-function RiskSection({
-  title,
-  rows,
-  emptyLabel,
-}: {
-  title: string;
-  rows: InfraRiskRow[];
-  emptyLabel: string;
-}) {
-  const atRisk = rows.filter((r) => r.risk.level !== "safe").length;
-  return (
-    <div className="rounded-xl border border-border bg-card overflow-hidden">
-      <div className="px-5 py-3 border-b border-border flex items-center justify-between">
-        <h2 className="text-sm font-semibold">{title}</h2>
-        <span className="text-[11px] text-muted-foreground font-mono">
-          {atRisk} at risk of {rows.length}
-        </span>
-      </div>
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider bg-muted/30">
-              <th className="text-left px-5 py-2.5">Name</th>
-              <th className="text-left px-3 py-2.5">Status</th>
-              <th className="text-left px-3 py-2.5">Risk</th>
-              <th className="text-left px-5 py-2.5">Access paths</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-border">
-            {rows.map((r) => (
-              <tr key={r.id} className="hover:bg-accent/40 transition-colors">
-                <td className="px-5 py-3">
-                  {r.name}
-                  {r.overdue && (
-                    <span className="ml-2 text-[10px] text-warning">verification overdue</span>
-                  )}
-                </td>
-                <td className="px-3 py-3">
-                  <StatusPill status={r.status} />
-                </td>
-                <td className="px-3 py-3">
-                  <RiskBadge risk={r.risk} />
-                </td>
-                <td className="px-5 py-3 text-[11px] text-muted-foreground">{r.detail}</td>
-              </tr>
-            ))}
-            {rows.length === 0 && (
-              <tr>
-                <td colSpan={4} className="px-5 py-8 text-center text-sm text-muted-foreground">
-                  {emptyLabel}
-                </td>
-              </tr>
-            )}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
 
 function InfrastructurePage() {
   const map = Route.useLoaderData();
-  const { counts } = map;
-  const view: InfraView = Route.useSearch().view ?? "map";
+  const search = Route.useSearch();
+  const view: InfraView = search.view ?? "matrix";
   const navigate = useNavigate({ from: "/infrastructure/" });
   // Presentation grouping, not a second source of truth: the verdicts already came from the server.
   const spine = useMemo(() => buildSpine(map.graph), [map.graph]);
 
-  const tiles = [
-    { label: "Profiles", value: counts.profiles, to: "/infrastructure/profiles" },
-    { label: "Business Managers", value: counts.bms, to: "/infrastructure/business-managers" },
-    { label: "Ad Accounts", value: counts.adAccounts, to: "/infrastructure/ad-accounts" },
-    { label: "Pixels", value: counts.pixels, to: "/infrastructure/pixels" },
-    { label: "Pages", value: counts.pages, to: "/infrastructure/pages" },
-  ];
+  // Memoised on the two primitives, not rebuilt per render: it is a dependency of `findings` below.
+  const selected = useMemo<MatrixCell | null>(
+    () => (search.type && search.level ? { kind: search.type, level: search.level } : null),
+    [search.type, search.level],
+  );
+
+  /**
+   * Rows arrive per type, each already sorted critical-first by the server. Tagging them with their
+   * kind and re-sorting on `RISK_ORDER` is ordering, never classification — the verdict on every row
+   * is the server's, exactly as `infra-risk.ts` requires.
+   */
+  const findings = useMemo(() => {
+    const tagged: Finding[] = [
+      ...map.bms.map((r) => ({ ...r, kind: "bm" as InfraNodeKind })),
+      ...map.adAccounts.map((r) => ({ ...r, kind: "adAccount" as InfraNodeKind })),
+      ...map.pixels.map((r) => ({ ...r, kind: "pixel" as InfraNodeKind })),
+      ...map.pages.map((r) => ({ ...r, kind: "page" as InfraNodeKind })),
+      ...map.profiles.map((r) => ({ ...r, kind: "profile" as InfraNodeKind })),
+    ];
+    const rows = selected
+      ? tagged.filter((r) => r.kind === selected.kind && r.risk.level === selected.level)
+      : // Unfiltered means every asset at risk. Profiles are access paths and appear only when their
+        // own matrix cell is picked, so a blocked profile is not listed twice with the BM it strands.
+        tagged.filter((r) => r.kind !== "profile" && r.risk.level !== "safe");
+    return rows.sort(
+      (a, b) => RISK_ORDER[a.risk.level] - RISK_ORDER[b.risk.level] || a.name.localeCompare(b.name),
+    );
+  }, [map, selected]);
 
   return (
-    <div className="p-6 md:p-8 space-y-6 max-w-[1600px]">
+    <div className="max-w-[1600px] space-y-5 p-6 md:p-8">
       <PageHeader
         title="Infrastructure"
-        description={
-          map.atRisk === 0
-            ? "Every registered asset has at least two independent access paths."
-            : `${map.atRisk} asset${map.atRisk === 1 ? "" : "s"} with fewer than two independent access paths.`
-        }
+        description="An asset with fewer than two independent access paths is one ban away from unreachable."
+        className="mb-0"
       >
         <div className="inline-flex rounded-lg border border-border bg-card p-0.5">
           {(
             [
+              { id: "matrix", label: "Risk", icon: Table2 },
               { id: "map", label: "Map", icon: Network },
-              { id: "table", label: "Table", icon: Table2 },
             ] as const
           ).map((tab) => (
             <button
               key={tab.id}
               type="button"
               onClick={() =>
-                navigate({ search: { view: tab.id === "map" ? undefined : tab.id }, replace: true })
+                navigate({
+                  search: (prev) => ({ ...prev, view: tab.id === "matrix" ? undefined : tab.id }),
+                  replace: true,
+                })
               }
               className={cn(
                 "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
@@ -156,21 +135,6 @@ function InfrastructurePage() {
           ))}
         </div>
       </PageHeader>
-
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-        {tiles.map((tile) => (
-          <Link
-            key={tile.label}
-            to={tile.to}
-            className="rounded-xl border border-border bg-card px-4 py-3 hover:bg-accent/40 transition-colors"
-          >
-            <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
-              {tile.label}
-            </div>
-            <div className="text-2xl font-semibold tabular-nums">{tile.value}</div>
-          </Link>
-        ))}
-      </div>
 
       {view === "map" ? (
         <div className="space-y-8">
@@ -188,20 +152,65 @@ function InfrastructurePage() {
         </div>
       ) : (
         <>
-          <RiskSection
-            title="Business Managers"
-            rows={map.bms}
-            emptyLabel="No Business Managers registered yet."
+          <RiskVerdict tally={map.tally} concentration={map.concentration} />
+          <RiskMatrix
+            tally={map.tally}
+            selected={selected}
+            onSelect={(cell) =>
+              navigate({
+                search: (prev) => ({
+                  ...prev,
+                  type: cell?.kind,
+                  level: cell?.level,
+                }),
+                replace: true,
+              })
+            }
           />
-          <RiskSection
-            title="Ad Accounts"
-            rows={map.adAccounts}
-            emptyLabel="No ad accounts registered yet."
-          />
-          <RiskSection title="Pixels" rows={map.pixels} emptyLabel="No pixels registered yet." />
-          <RiskSection title="Pages" rows={map.pages} emptyLabel="No pages registered yet." />
+          <Findings findings={findings} selected={selected} atRisk={map.atRisk} />
         </>
       )}
+    </div>
+  );
+}
+
+function Findings({
+  findings,
+  selected,
+  atRisk,
+}: {
+  findings: Finding[];
+  selected: MatrixCell | null;
+  atRisk: number;
+}) {
+  if (findings.length === 0) {
+    return (
+      <div className="rounded-xl border border-border bg-card px-5 py-10 text-center">
+        <CheckCircle2 className="mx-auto size-6 text-success" />
+        <p className="mt-3 text-sm font-medium">
+          {selected
+            ? "Nothing in that cell."
+            : atRisk === 0
+              ? "Every registered asset has at least two independent access paths."
+              : "Nothing at risk."}
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-border bg-card">
+      <header className="flex items-center justify-between border-b border-border px-5 py-2.5">
+        <h2 className="text-sm font-semibold">
+          {selected
+            ? `${KIND_META[selected.kind].label} · ${selected.level === "critical" ? "no backup" : "single access"}`
+            : "Everything at risk, worst first"}
+        </h2>
+        <span className="font-mono text-[11px] text-muted-foreground">{findings.length}</span>
+      </header>
+      {findings.map((finding) => (
+        <FindingRow key={`${finding.kind}:${finding.id}`} finding={finding} />
+      ))}
     </div>
   );
 }

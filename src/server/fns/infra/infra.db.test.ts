@@ -234,6 +234,40 @@ describe("buildRiskMap", () => {
     const map = await buildRiskMap();
     expect(map.bms.map((r) => r.id)).toEqual([criticalBm, safeBm]);
   });
+
+  test("the matrix, the headline and the rows are one read", async () => {
+    const svc = await makeProfile("svc.admin.01");
+    const bmOne = await makeBm("bm-one");
+    const bmTwo = await makeBm("bm-two");
+    await db.insert(schema.infraProfileBm).values([
+      { profileId: svc, bmId: bmOne },
+      { profileId: svc, bmId: bmTwo },
+    ]);
+    await db
+      .insert(schema.infraAdAccounts)
+      .values({ id: "act_solo", label: "Solo", usageState: "in_use" });
+    await db.insert(schema.infraBmAdAccount).values({ bmId: bmOne, adAccountId: "act_solo" });
+
+    const map = await buildRiskMap();
+
+    // One usable admin holds both BMs, so banning it strands the account behind them.
+    expect(map.concentration).toMatchObject({
+      name: "svc.admin.01",
+      bms: 2,
+      strandedAssets: 1,
+    });
+    // The matrix is not a second count: its asset columns are exactly the headline number.
+    const assets = map.tally.filter((r) => r.kind !== "profile");
+    expect(assets.reduce((n, r) => n + r.critical + r.warning, 0)).toBe(map.atRisk);
+    expect(map.tally.find((r) => r.kind === "bm")).toMatchObject({ warning: 2, registered: 2 });
+    expect(map.bms.find((r) => r.id === bmOne)?.strands).toEqual({
+      adAccounts: 1,
+      pixels: 0,
+      pages: 0,
+    });
+    // Profiles are their own matrix line, so the screen can list them without a second read.
+    expect(map.profiles.map((p) => p.name)).toEqual(["svc.admin.01"]);
+  });
 });
 
 describe("buildRiskMap graph", () => {

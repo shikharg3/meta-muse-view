@@ -15,7 +15,7 @@
  * it into error data the model can report.
  */
 import { disableReasonLabel } from "@/lib/format";
-import { nodeId, type InfraGraph } from "@/lib/infra-graph";
+import { nodeId, reachedFrom } from "@/lib/infra-graph";
 import { AD_ACCOUNT_USAGE, isAdAccountUsage, type AdAccountUsage } from "@/lib/infra-status";
 import { fetchAdAccounts } from "@/server/fns/infra/ad-accounts";
 import { fetchBmDetail, fetchBms, previewBmBan, type BmView } from "@/server/fns/infra/bms";
@@ -125,53 +125,8 @@ async function resolveBm(query: string): Promise<BmView | ResolveError> {
   return { error: `No Business Manager matches "${query}".`, candidates: names.slice(0, 25) };
 }
 
-interface LostAsset {
-  id: string;
-  name: string;
-  risk: string;
-  detail: string;
-  /** Distinct LIVE sources that would still reach it after the ban. 0 = this BM is the only path. */
-  otherLivePaths: number;
-}
-
-type LossKind = "adAccount" | "pixel" | "page";
-const LOSS_KINDS: readonly LossKind[] = ["adAccount", "pixel", "page"];
-
-/**
- * Everything this BM currently reaches, annotated with what would still reach it afterwards.
- *
- * Read off the very graph the risk map draws, so a preview can never disagree with the map. Pages are
- * included even though profiles own them: an owning or shared profile IS an independent path, so a
- * page the BM merely co-reaches is not stranded by the ban, and the survivor count says so.
- */
-function blastRadius(graph: InfraGraph, bmRowId: string): Record<LossKind, LostAsset[]> {
-  const source = nodeId("bm", bmRowId);
-  const nodeById = new Map(graph.nodes.map((n) => [n.id, n]));
-  const out: Record<LossKind, LostAsset[]> = { adAccount: [], pixel: [], page: [] };
-  // De-duped: a pixel rooted in AND shared with the same BM arrives as two edges to one node.
-  const targets = new Set(graph.edges.filter((e) => e.source === source).map((e) => e.target));
-
-  for (const target of targets) {
-    const node = nodeById.get(target);
-    if (!node || node.kind === "profile" || node.kind === "bm") continue;
-    const survivors = new Set(
-      graph.edges
-        .filter((e) => e.target === target && e.source !== source && !e.dead)
-        .map((e) => e.source),
-    );
-    out[node.kind].push({
-      id: node.entityId,
-      name: node.name,
-      risk: node.risk.level,
-      detail: node.detail,
-      otherLivePaths: survivors.size,
-    });
-  }
-  for (const kind of LOSS_KINDS) {
-    out[kind].sort((a, b) => a.otherLivePaths - b.otherLivePaths || a.name.localeCompare(b.name));
-  }
-  return out;
-}
+/* `reachedFrom` in `@/lib/infra-graph` is the blast-radius traversal — the screen's risk matrix and
+ * this preview call the same function, so a ban preview can never disagree with the drawn map. */
 
 const previewBmBanTool: AgentTool = {
   label: "BM ban preview",
@@ -199,7 +154,7 @@ const previewBmBanTool: AgentTool = {
       buildRiskMap(),
       fetchBmDetail(bm.id),
     ]);
-    const radius = blastRadius(map.graph, bm.id);
+    const radius = reachedFrom(map.graph, nodeId("bm", bm.id));
 
     const truncated: string[] = [];
     const take = <T>(label: string, rows: T[], cap = LOSS_CAP): T[] => {

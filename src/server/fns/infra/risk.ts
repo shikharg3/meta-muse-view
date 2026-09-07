@@ -1,5 +1,6 @@
 import { db, schema } from "@/db/client";
-import { buildInfraGraph, type InfraGraph } from "@/lib/infra-graph";
+import { buildInfraGraph, nodeId, reachedFrom, type InfraGraph } from "@/lib/infra-graph";
+import { buildRiskSummary, type AccessConcentration, type RiskTallyRow } from "@/lib/infra-summary";
 import {
   RISK_ORDER,
   isVerificationOverdue,
@@ -32,15 +33,27 @@ export interface InfraRiskRow {
   detail: string;
   /** BMs only: verification is overdue. */
   overdue?: boolean;
+  /**
+   * BMs only: what this BM is the last live path to, so the row can say what the ban costs rather
+   * than only that it would hurt. Zeroes are informative — "strands nothing" is an answer.
+   */
+  strands?: { adAccounts: number; pixels: number; pages: number };
 }
 
 export interface InfraRiskMap {
   counts: { profiles: number; bms: number; adAccounts: number; pixels: number; pages: number };
+  /** Non-safe assets. Profiles are excluded by design — see `buildRiskSummary`. */
   atRisk: number;
+  /** The risk matrix, one row per entity type. */
+  tally: RiskTallyRow[];
+  /** The profile whose ban would cascade furthest, or null when no profile solely holds two BMs. */
+  concentration: AccessConcentration | null;
   bms: InfraRiskRow[];
   adAccounts: InfraRiskRow[];
   pixels: InfraRiskRow[];
   pages: InfraRiskRow[];
+  /** Access paths, not assets: shown as their own matrix line and never counted in `atRisk`. */
+  profiles: InfraRiskRow[];
   /**
    * The same registry as a drawn access graph. Built from these very rows, so the map and the tables
    * can never disagree — they are one read.
@@ -209,25 +222,29 @@ export async function buildRiskMap(): Promise<InfraRiskMap> {
   // exist only to carry the structural foreign keys the risk rows have no reason to hold.
   const pixelRowById = new Map(pixelRows.map((r) => [r.id, r]));
   const pageRowById = new Map(pageRows.map((r) => [r.id, r]));
+  // Hoisted out of the graph call because the profile rows on the screen and the profile nodes on
+  // the map are the same classification, and computing it twice is how two screens start disagreeing.
+  const profileEntities = profiles.map((p) => {
+    const statuses = profileStatuses.get(p.id) ?? ["suspended"];
+    const usable = usableProfile(statuses);
+    const bmCount = bmsPerProfile.get(p.id) ?? 0;
+    const owned = pagesOwnedPerProfile.get(p.id) ?? 0;
+    return {
+      id: p.id,
+      name: p.name,
+      // The first blocking status is the reason this profile is not an access path. The full set
+      // is one click away on the profiles page; a row has room for the reason, not the list.
+      status:
+        statuses.find((s) => (PROFILE_BLOCKING_STATUSES as readonly string[]).includes(s)) ??
+        "active",
+      risk: profileRisk({ usable, dependents: bmCount + owned }),
+      detail: `${bmCount} BM${bmCount === 1 ? "" : "s"} · ${owned} page${owned === 1 ? "" : "s"} owned`,
+      usable,
+    };
+  });
+
   const graph = buildInfraGraph({
-    profiles: profiles.map((p) => {
-      const statuses = profileStatuses.get(p.id) ?? ["suspended"];
-      const usable = usableProfile(statuses);
-      const bmCount = bmsPerProfile.get(p.id) ?? 0;
-      const owned = pagesOwnedPerProfile.get(p.id) ?? 0;
-      return {
-        id: p.id,
-        name: p.name,
-        // The first blocking status is the reason this profile is not an access path. The full set
-        // is one click away on the profiles page; a node has room for the reason, not the list.
-        status:
-          statuses.find((s) => (PROFILE_BLOCKING_STATUSES as readonly string[]).includes(s)) ??
-          "active",
-        risk: profileRisk({ usable, dependents: bmCount + owned }),
-        detail: `${bmCount} BM${bmCount === 1 ? "" : "s"} · ${owned} page${owned === 1 ? "" : "s"} owned`,
-        usable,
-      };
-    }),
+    profiles: profileEntities,
     bms: bmRows.map((r) => ({
       ...r,
       overdue: r.overdue ?? false, // optional on the row (BMs only); definite on a BM node
@@ -249,6 +266,14 @@ export async function buildRiskMap(): Promise<InfraRiskMap> {
     pageProfile,
   });
 
+  const summary = buildRiskSummary(graph, {
+    profile: profiles.length,
+    bm: bms.length,
+    adAccount: adAccounts.length,
+    pixel: pixels.length,
+    page: pages.length,
+  });
+
   return {
     counts: {
       profiles: profiles.length,
@@ -257,13 +282,27 @@ export async function buildRiskMap(): Promise<InfraRiskMap> {
       pixels: pixels.length,
       pages: pages.length,
     },
-    atRisk: [...bmRows, ...accountRows, ...pixelRows, ...pageRows].filter(
-      (r) => r.risk.level !== "safe",
-    ).length,
-    bms: bmRows,
+    atRisk: summary.atRisk,
+    tally: summary.tally,
+    concentration: summary.concentration,
+    // `strands` needs the finished graph, so it is attached here rather than where the row is built.
+    bms: bmRows.map((r) => {
+      const reached = reachedFrom(graph, nodeId("bm", r.id));
+      return {
+        ...r,
+        strands: {
+          adAccounts: reached.adAccount.filter((a) => !a.otherLivePaths).length,
+          pixels: reached.pixel.filter((a) => !a.otherLivePaths).length,
+          pages: reached.page.filter((a) => !a.otherLivePaths).length,
+        },
+      };
+    }),
     adAccounts: accountRows,
     pixels: pixelRows,
     pages: pageRows,
+    profiles: profileEntities
+      .map((p) => ({ id: p.id, name: p.name, status: p.status, risk: p.risk, detail: p.detail }))
+      .sort(byRisk),
     graph,
   };
 }

@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { buildInfraGraph, nodeId, type InfraGraph, type InfraGraphInput } from "./infra-graph";
+import {
+  buildInfraGraph,
+  nodeId,
+  reachedFrom,
+  type InfraGraph,
+  type InfraGraphInput,
+} from "./infra-graph";
 import type { Risk } from "./infra-risk";
 
 const SAFE: Risk = { level: "safe", label: "Redundant" };
@@ -162,5 +168,70 @@ describe("buildInfraGraph", () => {
 describe("nodeId", () => {
   test("is the composition the rest of the module relies on", () => {
     expect(nodeId("adAccount", "act_123")).toBe("adAccount:act_123");
+  });
+});
+
+describe("reachedFrom", () => {
+  test("a dead alternative path is not a survivor: it is drawn, but it cannot let anyone in", () => {
+    const g = buildInfraGraph(
+      input({
+        profiles: [
+          { ...entity("live"), usable: true },
+          { ...entity("banned"), usable: false },
+        ],
+        bms: [
+          { ...entity("b1"), usable: true, overdue: false },
+          { ...entity("b2"), usable: true, overdue: false },
+        ],
+        adAccounts: [entity("act_1")],
+        pages: [{ ...entity("pg_1"), ownerProfileId: "banned" }],
+        profileBm: [
+          { profileId: "live", bmId: "b1" },
+          { profileId: "banned", bmId: "b2" },
+        ],
+        bmAdAccount: [
+          { bmId: "b1", adAccountId: "act_1" },
+          { bmId: "b2", adAccountId: "act_1" },
+        ],
+        pageBm: [{ pageId: "pg_1", bmId: "b1" }],
+      }),
+    );
+
+    const reached = reachedFrom(g, nodeId("bm", "b1"));
+
+    // b2 also reaches the account, but b2's only admin is banned, so losing b1 strands it anyway.
+    expect(reached.adAccount).toEqual([
+      { id: "act_1", name: "act_1", risk: "safe", detail: "", otherLivePaths: 1 },
+    ]);
+    // The page's owner profile is banned too, so the BM is its last live way in.
+    expect(reached.page[0].otherLivePaths).toBe(0);
+  });
+
+  test("a pixel both rooted in and shared with the same BM is reached once, not twice", () => {
+    const g = buildInfraGraph(
+      input({
+        bms: [{ ...entity("b1"), usable: true, overdue: false }],
+        pixels: [{ ...entity("px_1"), rootBmId: "b1" }],
+        pixelBm: [{ pixelId: "px_1", bmId: "b1" }],
+      }),
+    );
+
+    expect(reachedFrom(g, nodeId("bm", "b1")).pixel).toHaveLength(1);
+  });
+
+  test("profiles and BMs are never reported as losses — they are the paths, not the assets", () => {
+    const g = buildInfraGraph(
+      input({
+        profiles: [{ ...entity("p1"), usable: true }],
+        bms: [{ ...entity("b1"), usable: true, overdue: false }],
+        profileBm: [{ profileId: "p1", bmId: "b1" }],
+      }),
+    );
+
+    expect(reachedFrom(g, nodeId("profile", "p1"))).toEqual({
+      adAccount: [],
+      pixel: [],
+      page: [],
+    });
   });
 });

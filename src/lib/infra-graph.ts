@@ -10,7 +10,7 @@
  * profile owns a page. That single convention is what makes the drawn graph readable left-to-right —
  * anything with no live inbound arrow is unreachable, which is the whole product thesis made visible.
  */
-import type { Risk } from "./infra-risk";
+import type { Risk, RiskLevel } from "./infra-risk";
 
 export const INFRA_NODE_KINDS = ["profile", "bm", "adAccount", "pixel", "page"] as const;
 export type InfraNodeKind = (typeof INFRA_NODE_KINDS)[number];
@@ -146,4 +146,58 @@ function toNode(kind: InfraNodeKind, e: Entity): InfraGraphNode {
     risk: e.risk,
     detail: e.detail,
   };
+}
+
+/** The kinds that are assets to be protected. Profiles and BMs are the paths, never the loss. */
+export const REACHED_KINDS = ["adAccount", "pixel", "page"] as const;
+export type ReachedKind = (typeof REACHED_KINDS)[number];
+
+/** An asset one node reaches, with the number of live paths that would survive without that node. */
+export interface ReachedAsset {
+  id: string;
+  name: string;
+  risk: RiskLevel;
+  detail: string;
+  /** Distinct live sources still reaching it if `source` went. 0 = `source` is its only way in. */
+  otherLivePaths: number;
+}
+
+/**
+ * Everything a single node reaches, annotated with what would still reach it afterwards.
+ *
+ * The one traversal behind every "what does a ban cost" answer on the screen and in the agent tools,
+ * so a preview can never disagree with the map — they read the same graph.
+ *
+ * Pages are included even where a profile owns them: an owning or shared profile IS an independent
+ * path, so a page a BM merely co-reaches is not stranded by that BM, and `otherLivePaths` says so.
+ */
+export function reachedFrom(
+  graph: InfraGraph,
+  source: string,
+): Record<ReachedKind, ReachedAsset[]> {
+  const nodeById = new Map(graph.nodes.map((n) => [n.id, n]));
+  const out: Record<ReachedKind, ReachedAsset[]> = { adAccount: [], pixel: [], page: [] };
+  // De-duped: a pixel rooted in AND shared with the same BM arrives as two edges to one node.
+  const targets = new Set(graph.edges.filter((e) => e.source === source).map((e) => e.target));
+
+  for (const target of targets) {
+    const node = nodeById.get(target);
+    if (!node || node.kind === "profile" || node.kind === "bm") continue;
+    const survivors = new Set(
+      graph.edges
+        .filter((e) => e.target === target && e.source !== source && !e.dead)
+        .map((e) => e.source),
+    );
+    out[node.kind].push({
+      id: node.entityId,
+      name: node.name,
+      risk: node.risk.level,
+      detail: node.detail,
+      otherLivePaths: survivors.size,
+    });
+  }
+  for (const kind of REACHED_KINDS) {
+    out[kind].sort((a, b) => a.otherLivePaths - b.otherLivePaths || a.name.localeCompare(b.name));
+  }
+  return out;
 }
