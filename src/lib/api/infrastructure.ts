@@ -5,6 +5,7 @@ import {
   fetchProfiles,
   linkProfileBm,
   saveProfile,
+  setProfileMain,
   setProfileStatuses,
 } from "@/server/fns/infra/profiles";
 import {
@@ -14,6 +15,7 @@ import {
   linkBmAdAccount,
   previewBmBan,
   saveBm,
+  setBmMain,
   setBmStatus,
   verifyBm,
 } from "@/server/fns/infra/bms";
@@ -79,6 +81,10 @@ export const setInfraProfileStatuses = createServerFn({ method: "POST" })
   .inputValidator((d: { id: string; statuses: string[]; reason?: string | null }) => d)
   .handler(({ data }) => setProfileStatuses(data));
 
+export const setInfraProfileMain = createServerFn({ method: "POST" })
+  .inputValidator((d: { id: string; main: boolean }) => d)
+  .handler(({ data }) => setProfileMain(data));
+
 export const deleteInfraProfile = createServerFn({ method: "POST" })
   .inputValidator((d: { id: string }) => d)
   .handler(({ data }) => deleteProfile(data));
@@ -113,6 +119,10 @@ export const getInfraBmBanPreview = createServerFn({ method: "GET" })
 export const verifyInfraBm = createServerFn({ method: "POST" })
   .inputValidator((d: { id: string }) => d)
   .handler(({ data }) => verifyBm(data));
+
+export const setInfraBmMain = createServerFn({ method: "POST" })
+  .inputValidator((d: { id: string; main: boolean }) => d)
+  .handler(({ data }) => setBmMain(data));
 
 export const deleteInfraBm = createServerFn({ method: "POST" })
   .inputValidator((d: { id: string }) => d)

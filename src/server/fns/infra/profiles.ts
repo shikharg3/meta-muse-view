@@ -14,6 +14,8 @@ export interface ProfileView {
   browser: string | null;
   notes: string | null;
   bmIds: string[];
+  /** Operator priority marker. Display only — see infra_profiles.is_main. */
+  isMain: boolean;
   statusChangedAt: string;
 }
 
@@ -45,9 +47,37 @@ export async function fetchProfiles(): Promise<ProfileView[]> {
       browser: r.browser,
       notes: r.notes,
       bmIds: bmsByProfile.get(r.id) ?? [],
+      isMain: r.isMain,
       statusChangedAt: r.statusChangedAt.toISOString(),
     }))
     .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/**
+ * Marks a profile as one of the ones that matter, or unmarks it.
+ *
+ * Its own action, not a field on `saveProfile`, for the same reason as `setBmMain`: a priority marker
+ * must not be flipped as a side effect of an unrelated edit. `audit()` only — the per-asset event
+ * trail is for status, and this changes nothing about what the profile can do.
+ */
+export async function setProfileMain(input: {
+  id: string;
+  main: boolean;
+}): Promise<{ ok: boolean; error?: string }> {
+  await requireAdmin();
+  const [existing] = await db
+    .select()
+    .from(schema.infraProfiles)
+    .where(eq(schema.infraProfiles.id, input.id));
+  if (!existing) return { ok: false, error: "Profile not found" };
+  if (existing.isMain === input.main) return { ok: true };
+
+  await db
+    .update(schema.infraProfiles)
+    .set({ isMain: input.main, updatedAt: new Date() })
+    .where(eq(schema.infraProfiles.id, input.id));
+  await audit(input.main ? "infra.profile.main.set" : "infra.profile.main.clear", existing.name);
+  return { ok: true };
 }
 
 export interface SaveProfileInput {

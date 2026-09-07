@@ -14,7 +14,7 @@ import {
   type Node,
   type NodeProps,
 } from "@xyflow/react";
-import { Building, CreditCard, Crosshair, IdCard, ShieldOff } from "lucide-react";
+import { Building, CreditCard, Crosshair, IdCard, ShieldOff, Star } from "lucide-react";
 import { RiskBadge } from "@/components/infra/RiskBadge";
 import type { InfraGraphNode } from "@/lib/infra-graph";
 import type { InfraSpine, SpineAdmin, SpineEndpoint } from "@/lib/infra-spine";
@@ -74,27 +74,42 @@ const RISK_DOT: Record<RiskLevel, string> = {
 const cardHeight = (rows: number) =>
   CARD_HEADER + (rows > 0 ? rows * (CHIP_H + CHIP_GAP) + CARD_PAD : CARD_PAD);
 
-type BmData = { bm: InfraGraphNode; usableAdmins: number; totalAdmins: number };
-type AdminData = { admin: SpineAdmin };
-type SideData = { node: InfraGraphNode; caption: string };
+type BmData = {
+  bm: InfraGraphNode;
+  usableAdmins: number;
+  totalAdmins: number;
+  /** Anything on this canvas is starred, so unstarred cards recede. */
+  anyMain: boolean;
+};
+type AdminData = { admin: SpineAdmin; anyMain: boolean };
+type SideData = { node: InfraGraphNode; caption: string; anyMain: boolean };
 
 type BmNode = Node<BmData, "bmCard">;
 type AdminNode = Node<AdminData, "adminChip">;
 type SideNode = Node<SideData, "side">;
 
+/**
+ * `anyMain` is the whole-canvas flag: once the operator has starred anything, the unstarred cards
+ * step back so the starred ones read first. With nothing starred there is nothing to step back from,
+ * so every card keeps full contrast rather than the canvas dimming itself for no reason.
+ */
 function BmCard({ data }: NodeProps<BmNode>) {
-  const { bm, usableAdmins, totalAdmins } = data;
+  const { bm, usableAdmins, totalAdmins, anyMain } = data;
+  const recessed = anyMain && !bm.main;
   return (
     <div
       className={cn(
-        "h-full w-full rounded-xl border-2 shadow-sm",
+        "h-full w-full rounded-xl border-2 shadow-sm transition-opacity",
         RISK_RING[bm.risk.level],
         RISK_TINT[bm.risk.level],
+        bm.main && "ring-2 ring-primary/50",
+        recessed && "opacity-55",
       )}
     >
       <Handle type="target" position={Position.Left} className="!size-2 !border-0 !bg-border" />
       <div className="flex items-center gap-2 border-b border-border/70 px-3 py-2.5">
         <Building className="size-3.5 shrink-0 text-muted-foreground" />
+        {bm.main && <Star className="size-3 shrink-0 fill-primary text-primary" />}
         <span className="truncate text-[13px] font-semibold">{bm.name}</span>
         {bm.overdue && (
           <span className="shrink-0 text-[9px] uppercase tracking-wider text-warning">overdue</span>
@@ -113,13 +128,17 @@ function BmCard({ data }: NodeProps<BmNode>) {
 /** An admin profile, drawn inside its BM. No handles: containment is the relationship. */
 function AdminChip({ data }: NodeProps<AdminNode>) {
   const { profile, dead } = data.admin;
+  const recessed = data.anyMain && !profile.main;
   return (
     <div
       className={cn(
-        "flex h-full w-full items-center gap-2 rounded-md border px-2.5",
+        "flex h-full w-full items-center gap-2 rounded-md border px-2.5 transition-opacity",
         dead ? "border-destructive/50 bg-destructive/[0.06]" : "border-border/70 bg-background/60",
+        profile.main && !dead && "border-primary/50 bg-primary/[0.07]",
+        recessed && "opacity-60",
       )}
     >
+      {profile.main && <Star className="size-2.5 shrink-0 fill-primary text-primary" />}
       {dead ? (
         <ShieldOff className="size-3 shrink-0 text-destructive" />
       ) : (
@@ -157,12 +176,16 @@ function SideNodeView({ data }: NodeProps<SideNode>) {
   const { node, caption } = data;
   const Icon = node.kind === "pixel" ? Crosshair : node.kind === "adAccount" ? CreditCard : IdCard;
   const isSource = node.kind === "profile";
+  // Assets are never starred, so they only recede when the profile lane has stars to defer to.
+  const recessed = data.anyMain && !node.main;
   return (
     <div
       className={cn(
-        "h-full w-full rounded-lg border-2 px-3 py-2",
+        "h-full w-full rounded-lg border-2 px-3 py-2 transition-opacity",
         RISK_RING[node.risk.level],
         RISK_TINT[node.risk.level],
+        node.main && "ring-2 ring-primary/50",
+        recessed && isSource && "opacity-55",
       )}
     >
       {!isSource && (
@@ -171,6 +194,7 @@ function SideNodeView({ data }: NodeProps<SideNode>) {
       <div className="flex items-center gap-1.5">
         <span className={cn("size-1.5 shrink-0 rounded-full", RISK_DOT[node.risk.level])} />
         <Icon className="size-3 shrink-0 text-muted-foreground" />
+        {node.main && <Star className="size-2.5 shrink-0 fill-primary text-primary" />}
         <span className="truncate text-[12px] font-semibold">{node.name}</span>
       </div>
       <div className="mt-0.5 truncate text-[10px] text-muted-foreground">
@@ -215,6 +239,14 @@ function Canvas({ spine }: { spine: InfraSpine }) {
     const nodes: Node[] = [];
     const edges: Edge[] = [];
 
+    // One flag for the whole canvas: recession only makes sense relative to something starred.
+    const anyMain = spine.bms.some(
+      (entry) =>
+        entry.bm.main ||
+        entry.inside.some((a) => a.profile.main) ||
+        entry.shared.some((a) => a.profile.main),
+    );
+
     // Which shared profile reaches which card. Needed before layout, because a card that a shared
     // profile points at is placed in the leftmost column so its edge stays short and crosses nothing.
     const sharedTargets = new Map<string, { bmId: string; dead: boolean }[]>();
@@ -228,8 +260,12 @@ function Canvas({ spine }: { spine: InfraSpine }) {
 
     // Cards flow down a column, then across. A single column of ten cards is 1,400px against a 700px
     // viewport, which is the whole reason the first attempt at this screen had to be read at 0.31 zoom.
+    // Starred cards lead, then the ones a shared profile points at. Reading order is top-left first,
+    // so this is the difference between "my main BMs" being the first thing seen and being hunted for.
     const ordered = [...spine.bms].sort(
-      (a, b) => Number(b.shared.length > 0) - Number(a.shared.length > 0),
+      (a, b) =>
+        Number(Boolean(b.bm.main)) - Number(Boolean(a.bm.main)) ||
+        Number(b.shared.length > 0) - Number(a.shared.length > 0),
     );
     const columns = Math.min(3, Math.max(1, Math.ceil(ordered.length / COLUMN_CAP)));
     const perColumn = Math.ceil(ordered.length / columns);
@@ -257,6 +293,7 @@ function Canvas({ spine }: { spine: InfraSpine }) {
           bm: entry.bm,
           usableAdmins: entry.usableAdmins,
           totalAdmins: entry.inside.length + entry.shared.length,
+          anyMain,
         } satisfies BmData,
       });
       // Children are positioned relative to the parent and MUST follow it in the array.
@@ -285,7 +322,7 @@ function Canvas({ spine }: { spine: InfraSpine }) {
           height: CHIP_H,
           draggable: false,
           selectable: false,
-          data: { admin } satisfies AdminData,
+          data: { admin, anyMain } satisfies AdminData,
         });
       });
 
@@ -314,6 +351,7 @@ function Canvas({ spine }: { spine: InfraSpine }) {
         data: {
           node: profile,
           caption: `admins ${targets.length} Business Managers`,
+          anyMain,
         } satisfies SideData,
       });
       for (const target of targets) {
@@ -344,7 +382,7 @@ function Canvas({ spine }: { spine: InfraSpine }) {
         height: SIDE_H,
         draggable: false,
         selectable: false,
-        data: { node: endpoint.node, caption: endpoint.node.detail } satisfies SideData,
+        data: { node: endpoint.node, caption: endpoint.node.detail, anyMain } satisfies SideData,
       });
       for (const from of endpoint.from) {
         edges.push(edge(from.bmId, endpoint.node.id, from.dead, from.relation));

@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import { ArrowRight, Clock } from "lucide-react";
+import { ArrowRight, Clock, Star } from "lucide-react";
 import { KIND_META } from "@/components/infra/kinds";
 import type { InfraNodeKind } from "@/lib/infra-graph";
 import type { RiskLevel } from "@/lib/infra-risk";
@@ -38,7 +38,16 @@ export function FindingRow({ finding }: { finding: Finding }) {
 
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-2">
-          <span className="truncate text-sm font-medium">{finding.name}</span>
+          {finding.main && (
+            <Star
+              className="size-3.5 shrink-0 fill-primary text-primary"
+              aria-label="Main"
+              role="img"
+            />
+          )}
+          <span className={cn("truncate text-sm", finding.main ? "font-semibold" : "font-medium")}>
+            {finding.name}
+          </span>
           <span className="inline-flex items-center gap-1 rounded-md bg-muted px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
             <Icon className="size-3" />
             {meta.short}
@@ -75,8 +84,12 @@ export function FindingRow({ finding }: { finding: Finding }) {
     </>
   );
 
-  const className =
-    "group relative flex items-center gap-4 overflow-hidden border-b border-border px-5 py-3.5 transition-colors last:border-b-0 hover:bg-accent/40";
+  // Main rows get a faint tint, never a colour: the rail already owns severity, and a starred row
+  // competing with it on hue would make "important" look like "urgent".
+  const className = cn(
+    "group relative flex items-center gap-4 overflow-hidden border-b border-border px-5 py-3.5 transition-colors last:border-b-0 hover:bg-accent/40",
+    finding.main && "bg-primary/[0.045]",
+  );
 
   // Only BMs have a detail route; every other kind lands on its registry page.
   return finding.kind === "bm" ? (

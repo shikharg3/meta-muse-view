@@ -53,6 +53,12 @@ export interface InfraRiskSummary {
   /** Matrix row order: assets worst-reaching-first, profiles last as the access-path line. */
   tally: RiskTallyRow[];
   concentration: AccessConcentration | null;
+  /**
+   * The operator's starred infrastructure. `attention` counts non-safe rows, which for a profile
+   * means it cannot carry access — profiles are still absent from `atRisk`, so this is a lens over
+   * the same verdicts and never a second risk number.
+   */
+  main: { bms: number; bmsAttention: number; profiles: number; profilesAttention: number };
 }
 
 const TALLY_ORDER: readonly InfraNodeKind[] = ["bm", "adAccount", "pixel", "page", "profile"];
@@ -82,7 +88,21 @@ export function buildRiskSummary(
     .filter((row) => ASSET_KINDS.includes(row.kind))
     .reduce((n, row) => n + row.critical + row.warning, 0);
 
-  return { atRisk, tally, concentration: worstConcentration(graph) };
+  const mainNodes = graph.nodes.filter((n) => n.main);
+  const mainBms = mainNodes.filter((n) => n.kind === "bm");
+  const mainProfiles = mainNodes.filter((n) => n.kind === "profile");
+
+  return {
+    atRisk,
+    tally,
+    concentration: worstConcentration(graph),
+    main: {
+      bms: mainBms.length,
+      bmsAttention: mainBms.filter((n) => n.risk.level !== "safe").length,
+      profiles: mainProfiles.length,
+      profilesAttention: mainProfiles.filter((n) => n.risk.level !== "safe").length,
+    },
+  };
 }
 
 /**

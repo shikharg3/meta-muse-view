@@ -126,10 +126,7 @@ describe("buildRiskSummary concentration", () => {
 
   test("a realised loss outranks a hypothetical one", () => {
     const graph = graphOf({
-      profiles: [
-        { ...entity("dead-hand", CRITICAL), usable: false },
-        profile("sole-live"),
-      ],
+      profiles: [{ ...entity("dead-hand", CRITICAL), usable: false }, profile("sole-live")],
       bms: [bm("b1"), bm("b2"), bm("b3"), bm("b4"), bm("b5")],
       profileBm: [
         { profileId: "dead-hand", bmId: "b1" },
@@ -241,5 +238,52 @@ describe("buildRiskSummary concentration", () => {
     expect(buildRiskSummary(tied, { ...NONE, profile: 2, bm: 4 }).concentration?.profileId).toBe(
       "alpha",
     );
+  });
+});
+
+describe("buildRiskSummary main", () => {
+  /** Same registry twice, differing only in the stars. `main` is spelled on every row so neither
+   *  variant is a union type, and the two graphs are otherwise identical by construction. */
+  const registry = (main: boolean) => ({
+    profiles: [
+      { ...entity("p-main", CRITICAL), usable: false, main },
+      { ...entity("p-plain"), usable: true, main: false },
+    ],
+    bms: [
+      { ...entity("bm-main", WARNING), usable: true, overdue: false, main },
+      { ...entity("bm-main-ok"), usable: true, overdue: false, main },
+      { ...entity("bm-plain", CRITICAL), usable: true, overdue: false, main: false },
+    ],
+  });
+  const starred = registry(true);
+  test("counts the starred rows and how many of them need attention", () => {
+    const summary = buildRiskSummary(graphOf(starred), { ...NONE, profile: 2, bm: 3 });
+
+    expect(summary.main).toEqual({
+      bms: 2,
+      bmsAttention: 1,
+      profiles: 1,
+      profilesAttention: 1,
+    });
+  });
+
+  test("starring moves no risk number: it is a lens, not an input", () => {
+    const withStars = buildRiskSummary(graphOf(starred), { ...NONE, profile: 2, bm: 3 });
+    const withoutStars = buildRiskSummary(graphOf(registry(false)), {
+      ...NONE,
+      profile: 2,
+      bm: 3,
+    });
+
+    // The whole reason `main` lives outside the risk rules: an operator cannot star a BM into safety.
+    expect(withStars.atRisk).toBe(withoutStars.atRisk);
+    expect(withStars.tally).toEqual(withoutStars.tally);
+    expect(withStars.concentration).toEqual(withoutStars.concentration);
+  });
+
+  test("no stars means an empty main scope, so the caller can hide the lens", () => {
+    const summary = buildRiskSummary(graphOf({ bms: [bm("only", CRITICAL)] }), { ...NONE, bm: 1 });
+
+    expect(summary.main).toEqual({ bms: 0, bmsAttention: 0, profiles: 0, profilesAttention: 0 });
   });
 });

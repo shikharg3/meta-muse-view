@@ -20,6 +20,8 @@ export interface BmView {
   status: string;
   type: string;
   verifiedAt: string | null;
+  /** Operator priority marker. Display only — see infra_business_managers.is_main. */
+  isMain: boolean;
   notes: string | null;
   profileIds: string[];
   adAccountIds: string[];
@@ -54,6 +56,7 @@ export async function fetchBms(): Promise<BmView[]> {
       verifiedAt: r.verifiedAt?.toISOString() ?? null,
       notes: r.notes,
       profileIds: profilesByBm.get(r.id) ?? [],
+      isMain: r.isMain,
       adAccountIds: accountsByBm.get(r.id) ?? [],
     }))
     .sort((a, b) => a.name.localeCompare(b.name));
@@ -121,6 +124,7 @@ export async function fetchBmDetail(id: string): Promise<BmDetail | null> {
       type: row.type,
       verifiedAt: row.verifiedAt?.toISOString() ?? null,
       notes: row.notes,
+      isMain: row.isMain,
       profileIds: profileRows.map((p) => p.id),
       adAccountIds: accountRows.map((a) => a.id),
     },
@@ -310,6 +314,39 @@ export async function verifyBm(input: { id: string }): Promise<{ ok: boolean; er
     .where(eq(schema.infraBusinessManagers.id, input.id));
   await logInfraEvent({ kind: "bm", entityId: input.id, event: "verify", actorEmail: user.email });
   await audit("infra.bm.verify", `${existing.name} (${existing.bmId})`);
+  return { ok: true };
+}
+
+/**
+ * Marks a BM as one of the ones that matter, or unmarks it.
+ *
+ * Deliberately its own action rather than a field on `saveBm`: the row `<select>` for `type` re-sends
+ * every field through that path, and a priority flag riding along would be flipped by an unrelated
+ * edit. `verifyBm` above is the same shape for the same reason.
+ *
+ * `audit()` only, no `logInfraEvent`: per-asset history is the STATUS trail, and a display marker is
+ * not a change in what Meta will let us do. This follows the existing `type`-change precedent.
+ */
+export async function setBmMain(input: {
+  id: string;
+  main: boolean;
+}): Promise<{ ok: boolean; error?: string }> {
+  await requireAdmin();
+  const [existing] = await db
+    .select()
+    .from(schema.infraBusinessManagers)
+    .where(eq(schema.infraBusinessManagers.id, input.id));
+  if (!existing) return { ok: false, error: "Business Manager not found" };
+  if (existing.isMain === input.main) return { ok: true };
+
+  await db
+    .update(schema.infraBusinessManagers)
+    .set({ isMain: input.main, updatedAt: new Date() })
+    .where(eq(schema.infraBusinessManagers.id, input.id));
+  await audit(
+    input.main ? "infra.bm.main.set" : "infra.bm.main.clear",
+    `${existing.name} (${existing.bmId})`,
+  );
   return { ok: true };
 }
 

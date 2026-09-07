@@ -516,6 +516,9 @@ export const infraProfiles = pgTable("infra_profiles", {
   geo: text("geo"),
   browser: text("browser"), // antidetect tool in use. Non-secret.
   notes: text("notes"),
+  // Operator's own priority marker, NOT a risk input: `redundancy()` never reads it, so starring a
+  // profile can never improve a verdict. It only decides what the risk map leads with.
+  isMain: boolean("is_main").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   statusChangedAt: timestamp("status_changed_at", { withTimezone: true }).notNull().defaultNow(),
@@ -530,6 +533,8 @@ export const infraBusinessManagers = pgTable("infra_business_managers", {
   type: text("type").notNull().default("non_verified"), // BmType — what the BM is for, not its health
   verifiedAt: timestamp("verified_at", { withTimezone: true }),
   notes: text("notes"),
+  // See infra_profiles.is_main — display priority only, never an input to the redundancy rule.
+  isMain: boolean("is_main").notNull().default(false),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   statusChangedAt: timestamp("status_changed_at", { withTimezone: true }).notNull().defaultNow(),

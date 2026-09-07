@@ -269,6 +269,44 @@ describe("buildRiskMap", () => {
     // Profiles are their own matrix line, so the screen can list them without a second read.
     expect(map.profiles.map((p) => p.name)).toEqual(["svc.admin.01"]);
   });
+
+  test("a starred BM and profile reach the read model without moving a single verdict", async () => {
+    const bmId = await makeBm("starred");
+    const other = await makeBm("plain");
+    const profileId = await makeProfile("starred-profile");
+    await db.insert(schema.infraProfileBm).values([
+      { profileId, bmId },
+      { profileId, bmId: other },
+    ]);
+
+    const before = await buildRiskMap();
+    expect(before.main).toEqual({ bms: 0, bmsAttention: 0, profiles: 0, profilesAttention: 0 });
+
+    // Written straight to the column: `setBmMain` guards on `requireAdmin`, and this process has no
+    // session — the same reason these tests call `buildRiskMap` and not `fetchRiskMap`.
+    await db
+      .update(schema.infraBusinessManagers)
+      .set({ isMain: true })
+      .where(eq(schema.infraBusinessManagers.id, bmId));
+    await db
+      .update(schema.infraProfiles)
+      .set({ isMain: true })
+      .where(eq(schema.infraProfiles.id, profileId));
+
+    const after = await buildRiskMap();
+    expect(after.bms.find((r) => r.id === bmId)?.main).toBe(true);
+    expect(after.bms.find((r) => r.id === other)?.main).toBe(false);
+    expect(after.profiles.find((r) => r.id === profileId)?.main).toBe(true);
+    expect(after.graph.nodes.find((n) => n.entityId === bmId)?.main).toBe(true);
+    expect(after.main).toEqual({ bms: 1, bmsAttention: 1, profiles: 1, profilesAttention: 0 });
+
+    // The point of the whole feature: a star is a lens. Every verdict and count is unchanged, so
+    // nobody can star a Business Manager into looking safe.
+    expect(after.atRisk).toBe(before.atRisk);
+    expect(after.tally).toEqual(before.tally);
+    expect(after.concentration).toEqual(before.concentration);
+    expect(after.bms.map((r) => r.risk)).toEqual(before.bms.map((r) => r.risk));
+  });
 });
 
 describe("buildRiskMap graph", () => {

@@ -1,6 +1,6 @@
 import { Link } from "@tanstack/react-router";
-import { AlertTriangle, CheckCircle2 } from "lucide-react";
-import type { AccessConcentration, RiskTallyRow } from "@/lib/infra-summary";
+import { AlertTriangle, CheckCircle2, Star } from "lucide-react";
+import type { AccessConcentration, InfraRiskSummary, RiskTallyRow } from "@/lib/infra-summary";
 import { cn } from "@/lib/utils";
 
 /**
@@ -13,9 +13,15 @@ import { cn } from "@/lib/utils";
 export function RiskVerdict({
   tally,
   concentration,
+  main,
+  mainOnly,
+  onToggleMainOnly,
 }: {
   tally: RiskTallyRow[];
   concentration: AccessConcentration | null;
+  main: InfraRiskSummary["main"];
+  mainOnly: boolean;
+  onToggleMainOnly: () => void;
 }) {
   // Assets only. Profiles arrive in `tally` as the access-path line and are counted through what
   // they strand, so folding them in here would double-count the same incident.
@@ -54,6 +60,36 @@ export function RiskVerdict({
         <Segment value={warning} of={scored} className="bg-warning" />
         <Segment value={safe} of={scored} className="bg-success/45" />
       </div>
+
+      {main.bms + main.profiles > 0 && (
+        <button
+          type="button"
+          onClick={onToggleMainOnly}
+          aria-pressed={mainOnly}
+          className={cn(
+            "mt-4 flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-xs ring-1 transition-colors",
+            mainOnly
+              ? "bg-primary/10 ring-primary/40"
+              : "bg-muted/40 ring-border hover:bg-accent/40",
+          )}
+        >
+          <Star className={cn("size-3.5 shrink-0", mainOnly && "fill-primary", "text-primary")} />
+          <span>
+            <span className="font-semibold uppercase tracking-wider">Main</span>
+            {" · "}
+            <MainCount at={main.bmsAttention} of={main.bms} noun="Business Manager" />
+            {main.profiles > 0 && (
+              <>
+                {" · "}
+                <MainCount at={main.profilesAttention} of={main.profiles} noun="profile" />
+              </>
+            )}
+          </span>
+          <span className="ml-auto shrink-0 text-[11px] text-muted-foreground">
+            {mainOnly ? "showing main only — show everything" : "show main only"}
+          </span>
+        </button>
+      )}
 
       {concentration && (
         <div
@@ -117,6 +153,30 @@ export function RiskVerdict({
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * "2 of 4 Business Managers need attention" — or "all 4 … are redundant" when none do. Phrased in
+ * full so the number cannot be read as a total; a bare "2/4" on this row has been mistaken for
+ * "2 main BMs exist" every time it has been tried.
+ */
+function MainCount({ at, of, noun }: { at: number; of: number; noun: string }) {
+  const plural = `${noun}${of === 1 ? "" : "s"}`;
+  if (at === 0) {
+    return (
+      <span className="text-muted-foreground">
+        all {of} {plural} redundant
+      </span>
+    );
+  }
+  return (
+    <span>
+      <span className="font-semibold">
+        {at} of {of}
+      </span>{" "}
+      {plural} need{at === 1 ? "s" : ""} attention
+    </span>
   );
 }
 
