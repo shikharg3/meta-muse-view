@@ -15,7 +15,8 @@ import type { MachineStatus } from "./delivery-status";
  *
  * 1. `FIRST_PROMPT_AT` — the day's prompt, every in-scope campaign.
  * 2. `REMINDER_AT` — same day, only what is still unanswered.
- * 3. `FINAL_NOTICE_AT` — the NEXT prompt day, marked final, and also posted to the alert channel.
+ * 3. `FINAL_NOTICE_AT` — the NEXT prompt day, marked final. That mark is the BUYER's DM alone; the
+ *    alert-channel post for the same day follows `ESCALATION_DELAY_MS` later.
  *
  * Mon–Fri only (`isPromptDay`), which is what makes Friday's final notice land on Monday morning
  * instead of at the weekend.
@@ -23,6 +24,21 @@ import type { MachineStatus } from "./delivery-status";
 export const FIRST_PROMPT_AT: LocalMark = { hour: 13, minute: 30 };
 export const REMINDER_AT: LocalMark = { hour: 17, minute: 30 };
 export const FINAL_NOTICE_AT: LocalMark = { hour: 8, minute: 0 };
+
+/**
+ * How long the alert-channel escalation waits after the buyer's final-notice DM — one hour, so 09:00
+ * for the 08:00 mark.
+ *
+ * It used to be zero: a single pass DM'd "FINAL notice" and named the buyer to the channel in the
+ * same breath, so the last reminder was decoration — there was no interval in which acting on it
+ * changed anything. The hour IS that interval. The prompts stay open and their buttons stay live
+ * through it, and only what is still unanswered when it expires reaches the channel.
+ *
+ * Measured from `checkin_runs.final_noticed_at`, never from the mark: after an outage the DM can go
+ * out at 11:20, and a second wall-clock mark would then post to the channel in the very same loop
+ * iteration — reinstating the bug this delay exists to fix.
+ */
+export const ESCALATION_DELAY_MS = 60 * 60_000;
 
 /**
  * Whether the check-in prompts at all on a given Europe/Berlin calendar date.

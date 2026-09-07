@@ -10,12 +10,12 @@
  * lists per buyer.
  *
  * What is written to survive it anyway, because these cost nothing: the `checkin_runs` insert claim
- * (17:00), the conditional `escalated_at` claim (09:00) and the compare-and-swap in
- * `flushPendingComments`. What is NOT: `sendDailyLists`, which reads and then writes
- * `list_message_id` with no claim between the two.
+ * (13:30), the conditional `reminded_at` / `final_noticed_at` / `escalated_at` claims and the
+ * compare-and-swap in `flushPendingComments`. What is NOT: `sendDailyLists`, which reads and then
+ * writes `list_message_id` with no claim between the two.
  */
 import { setTimeout as sleep } from "node:timers/promises";
-import { and, eq, inArray, isNotNull, isNull, lt, sql } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, lt, lte, sql } from "drizzle-orm";
 import { db, schema } from "@/db/client";
 import { getNotionCredentials, getTelegramCredentials } from "@/lib/credentials";
 import { boardRows } from "@/notion/parse";
@@ -31,6 +31,7 @@ import {
   type ListStage,
 } from "@/lib/checkin-render";
 import {
+  ESCALATION_DELAY_MS,
   isPromptDay,
   planPrompts,
   type CheckinBoardRow,
@@ -342,20 +343,24 @@ function toListItem(p: PromptRecord): ListItem {
  * Which of the three notifications last re-sent a day's list, derived from the claim columns rather
  * than stored per prompt.
  *
- * The claims ARE the history: `reminded_at` is written by the 17:30 pass and `escalated_at` by the
+ * The claims ARE the history: `reminded_at` is written by the 17:30 pass and `final_noticed_at` by the
  * final notice, both before their sends. Deriving from them keeps `rerenderList` showing the header
  * the buyer is actually looking at — without this it would edit a "FINAL notice" message back into
  * "Daily check-in" the moment someone tapped a button on it.
+ *
+ * Keyed on `final_noticed_at`, NOT on `escalated_at`: the channel post lands an hour after that DM,
+ * and every tap inside the hour — the taps the delay exists to collect — re-renders a list whose
+ * header is already FINAL.
  */
 async function stageForDate(date: string): Promise<ListStage> {
   const [run] = await db
     .select({
       remindedAt: schema.checkinRuns.remindedAt,
-      escalatedAt: schema.checkinRuns.escalatedAt,
+      finalNoticedAt: schema.checkinRuns.finalNoticedAt,
     })
     .from(schema.checkinRuns)
     .where(eq(schema.checkinRuns.runDate, date));
-  if (run?.escalatedAt) return "final";
+  if (run?.finalNoticedAt) return "final";
   if (run?.remindedAt) return "reminder";
   return "first";
 }
@@ -539,7 +544,7 @@ function buildDeps(tg: TelegramClient): UpdateDeps {
       return row ? asPromptRow(row) : null;
     },
     // Matches on (chat, reply message id) ALONE — no state predicate, deliberately. An escalated
-    // prompt still has its force-reply box live in the chat, and the 09:00 nag exists precisely to
+    // prompt still has its force-reply box live in the chat, and the final notice exists precisely to
     // provoke that late answer; the dispatcher owns the decision and documents it.
     loadPromptByReply: async (chatId, replyMessageId) => {
       const [row] = await db
@@ -637,7 +642,7 @@ export async function pollTelegramOnce(): Promise<number> {
     console.error("[checkin] getUpdates failed:", res.error);
     // Back off rather than spin: a persistent failure (revoked token, 429) would otherwise re-poll
     // immediately in a tight loop. Capped for the same reason `sendDailyLists` caps it — the loop is
-    // sequential, so this sleep also stops the 17:00 and 09:00 gates being evaluated.
+    // sequential, so this sleep also stops the 13:30 and 08:00 gates being evaluated.
     await sleep(Math.min((res.retryAfter ?? 5) * 1000, MAX_RETRY_AFTER_MS));
     return 0;
   }
@@ -856,20 +861,82 @@ export async function remindUnanswered(now: Date): Promise<number | null> {
 }
 
 /**
- * Post unanswered prompts to the shared alert channel, once per planned day. Unroutable prompts are
- * named too, so a missing Telegram binding is visible rather than silent.
+ * Notification 3, first half: DM every buyer still holding an unanswered prompt from a previous day a
+ * list headed FINAL notice. The alert-channel post for the same day follows an hour later, in
+ * `escalateUnanswered`.
  *
- * Runs Monday–Friday only, like the prompt itself: nobody is nagged at the weekend. That is why this
- * escalates **every unescalated day before today**, not strictly yesterday — Friday's prompts must
- * still be reported, and by Monday "yesterday" is Sunday, which was never planned. The same lookback
- * covers a backlog after an outage, oldest day first, one message per day so each names its own date.
+ * Runs Monday–Friday only, like the prompt itself: nobody is nagged at the weekend. That is why it
+ * sweeps **every un-noticed day before today** rather than strictly yesterday — Friday's prompts must
+ * still be chased, and by Monday "yesterday" is Sunday, which was never planned. The same lookback
+ * drains a backlog after an outage, oldest day first, one list per day so each names its own date.
+ *
+ * `final_noticed_at` is CLAIMED before the send, for the reason every other claim here is: the deploy
+ * runbook restarts `meta-sync`, and sending first would re-nudge every buyer on the next boot. A crash
+ * after claiming loses one DM; a crash before it re-runs cleanly.
+ *
+ * Already-escalated days are excluded even though this claim column is new. They are DM'd and reported
+ * history — the migration backfills `final_noticed_at` from `escalated_at` for them, and this
+ * predicate is what makes an un-backfilled database merely miss a nudge instead of blasting a FINAL
+ * list for every day the table still remembers.
+ *
+ * Returns the number of buyers DM'd, or null when there was nothing to claim.
+ */
+export async function sendFinalNotices(now: Date): Promise<number | null> {
+  const today = berlinNow(now).date;
+  if (!isPromptDay(today)) return null;
+
+  // Stamped with `now`, not a fresh `new Date()`: this timestamp is an INPUT to the escalation's
+  // delay comparison, which reads the same `now` the worker passed in. Two clocks a loop iteration
+  // apart would make the hour approximate — and untestable, because a caller cannot then say when
+  // the DM went out.
+  const claimed = await db
+    .update(schema.checkinRuns)
+    .set({ finalNoticedAt: now })
+    .where(
+      and(
+        lt(schema.checkinRuns.runDate, today),
+        isNull(schema.checkinRuns.finalNoticedAt),
+        isNull(schema.checkinRuns.escalatedAt),
+      ),
+    )
+    .returning({ runDate: schema.checkinRuns.runDate });
+  if (claimed.length === 0) return null;
+
+  let sent = 0;
+  for (const date of claimed.map((c) => c.runDate).sort()) {
+    const dm = await resendOpenLists(date, "final");
+    sent += dm.sent;
+    // A buyer who was never warned but is about to be named to the channel is a degraded outcome, and
+    // the health badge is the only place it shows: the post an hour later says nothing about DM
+    // delivery, and by then the prompts are `escalated` either way.
+    if (dm.failed > 0) {
+      await recordServiceHealth(
+        "checkin",
+        false,
+        `final notice for ${date}: ${dm.failed} buyer DM(s) undelivered${dm.lastError ? `: ${dm.lastError}` : ""}`,
+      );
+    }
+  }
+  return sent;
+}
+
+/**
+ * Notification 3, second half: post whatever a day's final notice failed to shake loose to the shared
+ * alert channel, once per planned day. Unroutable prompts are named too, so a missing Telegram binding
+ * is visible rather than silent.
+ *
+ * Gated on that DM having had its hour (`ESCALATION_DELAY_MS`), which is the entire point of the two
+ * halves: the buyer gets an interval in which answering keeps them off the channel post, and the team
+ * still hears about everything left when it expires. The gate reads `final_noticed_at`, not a second
+ * wall-clock mark — a worker that boots at 11:20 and DMs then must not also post in that same loop
+ * iteration, which is exactly the simultaneity this replaced.
  *
  * `escalated_at` is CLAIMED before the send, not written after it. The claim is a conditional update,
- * so it matches zero rows both when a day was never planned and when another pass already claimed
- * it — that is where the "no run row" check went. Sending first and recording after would re-post the
- * entire escalation to the shared channel on the next boot, and the deploy runbook restarts
- * `meta-sync` on every deploy. A crash after claiming loses one nag; a crash before it re-runs
- * cleanly. For an at-most-once notification that is the right way round.
+ * so it matches zero rows when a day was never planned, when another pass already claimed it, and
+ * while the hour is still running — that is where the "no run row" check went. Sending first and
+ * recording after would re-post the entire escalation to the shared channel on the next boot, and the
+ * deploy runbook restarts `meta-sync` on every deploy. A crash after claiming loses one nag; a crash
+ * before it re-runs cleanly. For an at-most-once notification that is the right way round.
  *
  * An `answered` prompt is never escalated even if its comment has not flushed yet, and the flush is
  * never consulted to decide that: escalation keys on `state`, the flush keys on `notion_comment_id`,
@@ -881,11 +948,19 @@ export async function escalateUnanswered(now: Date): Promise<number | null> {
   const today = berlinNow(now).date;
   if (!isPromptDay(today)) return null;
 
-  // One UPDATE claims the whole backlog atomically, so two passes cannot both take the same day.
+  // One UPDATE claims the whole backlog atomically, so two passes cannot both take the same day. A day
+  // whose `final_noticed_at` is null never matches: `lte` on a null column is null, not true, so an
+  // undelivered final notice can never be overtaken by its own escalation.
   const claimed = await db
     .update(schema.checkinRuns)
     .set({ escalatedAt: new Date() })
-    .where(and(lt(schema.checkinRuns.runDate, today), isNull(schema.checkinRuns.escalatedAt)))
+    .where(
+      and(
+        lt(schema.checkinRuns.runDate, today),
+        isNull(schema.checkinRuns.escalatedAt),
+        lte(schema.checkinRuns.finalNoticedAt, new Date(now.getTime() - ESCALATION_DELAY_MS)),
+      ),
+    )
     .returning({ runDate: schema.checkinRuns.runDate });
   if (claimed.length === 0) return null;
 
@@ -896,13 +971,16 @@ export async function escalateUnanswered(now: Date): Promise<number | null> {
 }
 
 /**
- * One claimed day's final notice. The claim already happened, so this never re-checks `escalated_at`.
+ * One claimed day's channel post. The claim already happened, so this re-checks neither `escalated_at`
+ * nor the delay.
  *
- * Notification 3 is two sends, in this order and for this reason: the buyer's DM goes first so the
- * warning is the last thing they see before management is told, and a DM failure does NOT abort the
- * channel post. Visibility to the team is the more important half — a buyer who blocked the bot is
- * exactly the case where the escalation matters most, and letting a failed DM swallow it would make
- * the loudest failure the quietest.
+ * Re-reads the open prompts rather than trusting what the DM pass saw an hour ago, and that re-read IS
+ * the delay's payoff: a buyer who answered inside the window is absent from this message, and a day
+ * that emptied entirely posts nothing at all.
+ *
+ * A DM failure recorded by `sendFinalNotices` never suppresses this post. Visibility to the team is the
+ * more important half — a buyer who blocked the bot is exactly the case where the escalation matters
+ * most, and letting a failed DM swallow it would make the loudest failure the quietest.
  */
 async function escalateOneDay(date: string): Promise<number> {
   const open = await db
@@ -915,12 +993,6 @@ async function escalateOneDay(date: string): Promise<number> {
       ),
     );
   if (open.length === 0) return 0;
-
-  // Best-effort, and deliberately not fatal: `resendOpenLists` records its own per-prompt `note`, and
-  // the channel post below is what must happen regardless. Runs before the state flip, because
-  // `renderList` draws no buttons on an `escalated` row — after it, the final notice would arrive
-  // already inert.
-  const dm = await resendOpenLists(date, "final");
 
   const names = new Map(
     (await db.select().from(schema.mediaBuyers)).map((b) => [b.notionPersonId, b.displayName]),
@@ -953,16 +1025,6 @@ async function escalateOneDay(date: string): Promise<number> {
       `escalation for ${date} was not delivered: ${sent.error}`,
     );
     return 0;
-  }
-
-  // A delivered escalation with an undelivered final DM is still a degraded outcome: the buyer was
-  // never warned. Reported only in that case, so the normal path leaves the badge alone.
-  if (dm.failed > 0) {
-    await recordServiceHealth(
-      "checkin",
-      false,
-      `final notice for ${date}: ${dm.failed} buyer DM(s) undelivered${dm.lastError ? `: ${dm.lastError}` : ""}`,
-    );
   }
 
   // The state predicate matters even though the ids were captured moments ago: this is a blind write

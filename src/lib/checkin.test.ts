@@ -7,6 +7,7 @@ import {
   FIRST_PROMPT_AT,
   REMINDER_AT,
   FINAL_NOTICE_AT,
+  ESCALATION_DELAY_MS,
   planPrompts,
   type CheckinBoardRow,
   type CheckinBuyer,
@@ -73,6 +74,17 @@ test("the reminder follows the first prompt on the same day, and the final notic
   // The final notice is BEFORE the first prompt on the clock, which is what makes it belong to the
   // next calendar day rather than to a third slot on the same evening.
   expect(mins(FINAL_NOTICE_AT)).toBeLessThan(mins(FIRST_PROMPT_AT));
+});
+
+test("the escalation trails the final notice and still lands before the next day's prompt", () => {
+  // A zero delay is the defect this constant exists to prevent: the channel post used to go out in
+  // the same pass as the FINAL DM, so nothing the buyer did in response could change the outcome.
+  expect(ESCALATION_DELAY_MS).toBeGreaterThan(0);
+  // It cannot grow past the next prompt either. An escalation that lands after 13:30 reports a day
+  // nobody is looking at any more, from behind the fresh list sitting in the same chat.
+  const escalationMins =
+    FINAL_NOTICE_AT.hour * 60 + FINAL_NOTICE_AT.minute + ESCALATION_DELAY_MS / 60_000;
+  expect(escalationMins).toBeLessThan(FIRST_PROMPT_AT.hour * 60 + FIRST_PROMPT_AT.minute);
 });
 
 const VLAD = "2cbd872b-594c-8119-9649-0002845d8d9c";

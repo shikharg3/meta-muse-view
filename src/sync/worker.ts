@@ -3,6 +3,7 @@ import { runCycle, runBackfillCycle } from "./cycle";
 import {
   runDailyCheckin,
   remindUnanswered,
+  sendFinalNotices,
   escalateUnanswered,
   pollTelegramOnce,
   flushPendingComments,
@@ -50,9 +51,10 @@ const CHECKIN_INTERVAL_MS = 30_000;
  * every time gate, which puts scheduling precision at ~30s and costs nothing while idle.
  *
  * Re-entering the gates every 30s is intended: idempotency lives in the database (the `run_date`
- * claims, and the `reminded_at` / `escalated_at` conditional updates), not in this process. There is
- * deliberately no `lastRunDate` variable here — it would forget across a restart and would duplicate
- * the claim logic in a second place, where it could disagree with the first.
+ * claims, and the `reminded_at` / `final_noticed_at` / `escalated_at` conditional updates), not in
+ * this process. There is deliberately no `lastRunDate` variable here — it would forget across a
+ * restart and would duplicate the claim logic in a second place, where it could disagree with the
+ * first.
  *
  * Every gate is `atOrAfter`, never an equality test on the mark: a 30s loop that missed its window
  * (a long GC, a restart, a slow Postgres) must still fire late rather than skip the day entirely.
@@ -67,7 +69,8 @@ const CHECKIN_INTERVAL_MS = 30_000;
  */
 async function notificationsLoop(): Promise<void> {
   console.log(
-    "[checkin] loop started (13:30 prompt, 17:30 reminder, 08:00 final, 10:00 report, 30s poll)",
+    "[checkin] loop started (13:30 prompt, 17:30 reminder, 08:00 final, 09:00 escalation, " +
+      "10:00 report, 30s poll)",
   );
   for (;;) {
     const startedAt = Date.now();
@@ -89,10 +92,18 @@ async function notificationsLoop(): Promise<void> {
 
       // 3rd notification, before the 2nd on purpose: at 08:00 only this gate is open, and yesterday's
       // final notice must land before today's prompt replaces the buyer's attention.
+      //
+      // Two passes, one gate. The buyer's DM goes out on the mark; the channel post is held back an
+      // hour by `escalateUnanswered` itself, which is what leaves the final reminder an interval in
+      // which answering it still keeps the buyer off the escalation. Calling both here rather than
+      // adding a second mark keeps the delay measured from the DM that actually happened — after an
+      // outage the DM can go out at 11:20, and a 09:00 mark would post to the channel beside it.
       if (atOrAfter(local, FINAL_NOTICE_AT)) {
+        const noticed = await sendFinalNotices(now);
+        if (noticed !== null) console.log(`[checkin] final notice DM'd to ${noticed} buyer(s)`);
         const escalated = await escalateUnanswered(now);
         if (escalated !== null)
-          console.log(`[checkin] final notice sent, ${escalated} prompt(s) escalated`);
+          console.log(`[checkin] escalation posted, ${escalated} prompt(s) escalated`);
       }
 
       // 2nd notification. Re-sends only what is still open, once per day.

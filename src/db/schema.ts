@@ -744,15 +744,29 @@ export const checkinPrompts = pgTable(
 // Makes all three time gates idempotent. Without it the 13:30 gate would re-plan every poll iteration
 // on a day with zero in-scope rows, because "no prompts exist" is indistinguishable from "not planned".
 //
-// One claim column per notification that must not repeat: `reminded_at` for 17:30, `escalated_at` for
-// the next day's final notice. Both are claimed by conditional update BEFORE the send, so a crash
-// after claiming loses one nudge and a crash before it re-runs cleanly — the right way round for an
+// One claim column per notification that must not repeat: `reminded_at` for 17:30, `final_noticed_at`
+// for the next day's final DM to the buyer, `escalated_at` for the alert-channel post an hour after
+// it (`ESCALATION_DELAY_MS`). Each is claimed by conditional update BEFORE its send, so a crash after
+// claiming loses one nudge and a crash before it re-runs cleanly — the right way round for an
 // at-most-once notification.
+//
+// The last two were one column until the channel post was delayed: claiming both stages with
+// `escalated_at` would either re-DM the buyer when the post came due or post the moment the DM
+// landed, which is the simultaneity that made the final reminder pointless.
+//
+// Idempotent prod migration (this repo applies DDL by hand — there is no drizzle migration folder):
+//
+//   ALTER TABLE checkin_runs ADD COLUMN IF NOT EXISTS final_noticed_at timestamptz;
+//   -- Days escalated under the single-column shape were DM'd at the same instant. Backfilling from
+//   -- `escalated_at` is what stops the new 08:00 pass re-sending a FINAL list for every one of them.
+//   UPDATE checkin_runs SET final_noticed_at = escalated_at
+//     WHERE escalated_at IS NOT NULL AND final_noticed_at IS NULL;
 export const checkinRuns = pgTable("checkin_runs", {
   runDate: date("run_date").primaryKey(),
   plannedAt: timestamp("planned_at", { withTimezone: true }),
   promptsCreated: integer("prompts_created").notNull().default(0),
   remindedAt: timestamp("reminded_at", { withTimezone: true }),
+  finalNoticedAt: timestamp("final_noticed_at", { withTimezone: true }),
   escalatedAt: timestamp("escalated_at", { withTimezone: true }),
 });
 

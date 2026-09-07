@@ -61,6 +61,8 @@ export interface CheckinAdminView {
     plannedAt: string | null;
     promptsCreated: number;
     remindedAt: string | null;
+    /** The buyer's final-notice DM (08:00). `escalatedAt` is the channel post an hour after it. */
+    finalNoticedAt: string | null;
     escalatedAt: string | null;
   };
   /**
@@ -134,6 +136,7 @@ export async function fetchCheckinAdmin(): Promise<CheckinAdminView> {
         plannedAt: run?.plannedAt?.toISOString() ?? null,
         promptsCreated: run?.promptsCreated ?? 0,
         remindedAt: run?.remindedAt?.toISOString() ?? null,
+        finalNoticedAt: run?.finalNoticedAt?.toISOString() ?? null,
         escalatedAt: run?.escalatedAt?.toISOString() ?? null,
       },
       health,

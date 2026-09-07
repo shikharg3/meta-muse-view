@@ -324,9 +324,14 @@ export function MediaBuyerPanel() {
                   ? `reminded ${new Date(data.today.remindedAt).toLocaleTimeString()}`
                   : "no reminder yet"}
                 {" · "}
+                {/* The furthest stage notification 3 reached for this day, in one slot. The channel
+                    post is held an hour after the buyer's DM, so "DM'd, not yet escalated" is a
+                    normal state an admin must be able to read — and `escalated` implies the DM. */}
                 {data.today.escalatedAt
-                  ? `final notice ${new Date(data.today.escalatedAt).toLocaleTimeString()}`
-                  : "no final notice recorded"}
+                  ? `escalated ${new Date(data.today.escalatedAt).toLocaleTimeString()}`
+                  : data.today.finalNoticedAt
+                    ? `final notice ${new Date(data.today.finalNoticedAt).toLocaleTimeString()}`
+                    : "no final notice recorded"}
               </p>
             )}
             {/* Health comes after the run line on purpose: "did it run" then "did it reach anyone"
