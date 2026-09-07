@@ -242,7 +242,14 @@ export const metaCredentials = pgTable("meta_credentials", {
   notionTokenEnc: text("notion_token_enc"),
   notionDbId: text("notion_db_id"),
   anthropicTokenEnc: text("anthropic_token_enc"),
-  chatModel: text("chat_model").default("claude-opus-4-8"),
+  // The stored value wins over `DEFAULT_CHAT_MODEL`, and a column default only applies to inserts,
+  // so moving the live model takes an UPDATE. Idempotent prod migration (this repo applies DDL by
+  // hand — there is no drizzle migration folder):
+  //
+  //   ALTER TABLE meta_credentials ALTER COLUMN chat_model SET DEFAULT 'claude-opus-5';
+  //   UPDATE meta_credentials SET chat_model = 'claude-opus-5'
+  //     WHERE chat_model IN ('claude-opus-4-8', 'claude-opus-4-7');
+  chatModel: text("chat_model").default("claude-opus-5"),
   chatEffort: text("chat_effort").default("xhigh"),
   // Telegram alert delivery. The token is encrypted like every other secret here; the chat id is
   // not a secret (it is visible to anyone in the channel) so it stays readable for the settings UI.

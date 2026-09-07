@@ -1,5 +1,5 @@
 // Minimal Anthropic Messages API client. No SDK: one endpoint, fetch is enough.
-// claude-opus-4-8 uses adaptive thinking + output_config.effort (not the older
+// claude-opus-5 uses adaptive thinking + output_config.effort (not the older
 // thinking.type=enabled budget form).
 const URL = "https://api.anthropic.com/v1/messages";
 const VERSION = "2023-06-01";
@@ -124,7 +124,13 @@ export class AnthropicClient implements LlmClient {
     params: CreateMessageParams,
     on?: StreamHandlers,
   ): Promise<AnthropicResponse> {
-    // Prompt caching (GA): mark the system prompt and the final tool as cache breakpoints.
+    // Prompt caching, three of the four breakpoints the API allows:
+    //   - the last tool and the system block, explicitly: the static prefix every conversation
+    //     shares, so a brand-new chat reads it back instead of paying to write it again.
+    //   - the end of `messages`, via the top-level `cache_control`: the API puts that breakpoint on
+    //     the last cacheable block and walks it forward as the history grows. Without it the whole
+    //     conversation — including the tool results, which are the bulk of it — was re-billed at
+    //     full input price on every tool round-trip and every follow-up turn.
     // cache_control isn't on AnthropicTool, so widen locally.
     const cacheControl = { type: "ephemeral" as const };
     const tools = params.tools.map((t, i) =>
@@ -155,7 +161,10 @@ export class AnthropicClient implements LlmClient {
         },
         body: JSON.stringify({
           model: params.model,
-          max_tokens: params.maxTokens ?? 8192,
+          // Thinking is billed as output and counts against this ceiling, so a small one risks
+          // truncating the answer at the xhigh default effort. Only generated tokens are billed.
+          max_tokens: params.maxTokens ?? 32_000,
+          cache_control: cacheControl,
           thinking: { type: "adaptive" },
           output_config: { effort: params.effort },
           system: [{ type: "text", text: params.system, cache_control: cacheControl }],

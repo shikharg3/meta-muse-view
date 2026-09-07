@@ -341,7 +341,7 @@ test("runAgentLoop executes requested tools, captures KPI cards, and terminates"
     llm,
     "system",
     [{ role: "user", content: "stats for Wild last 7 days" }],
-    { model: "claude-opus-4-8", effort: "xhigh", ctx: CTX },
+    { model: "claude-opus-5", effort: "xhigh", ctx: CTX },
   );
   expect(out.reply).toContain("$200");
   expect(out.toolCalls).toMatchObject([
@@ -361,7 +361,7 @@ test("runAgentLoop stops at the iteration cap if the model never finishes", asyn
     },
   ]);
   const out = await runAgentLoop(looping, "system", [{ role: "user", content: "loop" }], {
-    model: "claude-opus-4-8",
+    model: "claude-opus-5",
     effort: "low",
     ctx: CTX,
   });
