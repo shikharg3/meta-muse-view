@@ -1,6 +1,7 @@
 import { Link } from "@tanstack/react-router";
 import { AlertTriangle, CheckCircle2 } from "lucide-react";
 import type { AccessConcentration, RiskTallyRow } from "@/lib/infra-summary";
+import { cn } from "@/lib/utils";
 
 /**
  * The one-look verdict: severity at display scale, and the single fact a count of assets can never
@@ -55,8 +56,20 @@ export function RiskVerdict({
       </div>
 
       {concentration && (
-        <div className="mt-4 flex items-start gap-2 rounded-lg bg-warning/[0.07] px-3 py-2 text-xs ring-1 ring-warning/20">
-          <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-warning" />
+        <div
+          className={cn(
+            "mt-4 flex items-start gap-2 rounded-lg px-3 py-2 text-xs ring-1",
+            concentration.blocked
+              ? "bg-destructive/[0.08] ring-destructive/25"
+              : "bg-warning/[0.07] ring-warning/20",
+          )}
+        >
+          <AlertTriangle
+            className={cn(
+              "mt-0.5 size-3.5 shrink-0",
+              concentration.blocked ? "text-destructive" : "text-warning",
+            )}
+          />
           <span>
             <Link
               to="/infrastructure/profiles"
@@ -64,20 +77,41 @@ export function RiskVerdict({
             >
               {concentration.name}
             </Link>{" "}
-            is the only usable admin of{" "}
-            <span className="font-semibold">{concentration.bms} Business Managers</span>
-            {concentration.strandedAssets > 0 ? (
+            {concentration.blocked ? (
               <>
-                {" "}
-                — one ban strands{" "}
+                cannot carry access, and{" "}
                 <span className="font-semibold">
-                  {concentration.strandedAssets} asset
-                  {concentration.strandedAssets === 1 ? "" : "s"}
+                  {concentration.bms} Business Managers it admins have no usable admin left
                 </span>
-                .
+                {concentration.assets > 0 ? (
+                  <>
+                    {" — "}
+                    <span className="font-semibold">
+                      {concentration.assets} asset{concentration.assets === 1 ? "" : "s"}
+                    </span>{" "}
+                    now sit behind a BM nobody can administer. Restoring this one profile is the
+                    shortest way back in.
+                  </>
+                ) : (
+                  ". Restoring this one profile is the shortest way back in."
+                )}
               </>
             ) : (
-              " — every asset behind them has another live path."
+              <>
+                is the only usable admin of{" "}
+                <span className="font-semibold">{concentration.bms} Business Managers</span>
+                {concentration.assets > 0 ? (
+                  <>
+                    {" — one ban strands "}
+                    <span className="font-semibold">
+                      {concentration.assets} asset{concentration.assets === 1 ? "" : "s"}
+                    </span>
+                    .
+                  </>
+                ) : (
+                  " — every asset behind them has another live path."
+                )}
+              </>
             )}
           </span>
         </div>

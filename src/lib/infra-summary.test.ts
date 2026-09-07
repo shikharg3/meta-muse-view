@@ -98,17 +98,54 @@ describe("buildRiskSummary concentration", () => {
     expect(buildRiskSummary(graph, { ...NONE, profile: 2, bm: 2 }).concentration).toBeNull();
   });
 
-  test("an unusable profile is not a concentration: its edges are already dead", () => {
+  test("a blocked profile whose BMs now have no usable admin is named as the cause", () => {
     const graph = graphOf({
-      profiles: [profile("blocked", false)],
-      bms: [bm("b1"), bm("b2")],
+      profiles: [{ ...entity("blocked", CRITICAL), usable: false }],
+      bms: [bm("b1", CRITICAL), bm("b2", CRITICAL)],
+      adAccounts: [entity("act_dark", CRITICAL)],
       profileBm: [
         { profileId: "blocked", bmId: "b1" },
         { profileId: "blocked", bmId: "b2" },
       ],
+      bmAdAccount: [{ bmId: "b1", adAccountId: "act_dark" }],
     });
 
-    expect(buildRiskSummary(graph, { ...NONE, profile: 1, bm: 2 }).concentration).toBeNull();
+    // Measured on the live registry this is the ONLY form that occurs: one suspended profile is why
+    // several BMs read "No backup", and the headline has to be able to say so. `assets` counts what
+    // sits behind those BMs, not what is provably unreachable — `usableBm` reads BM status alone.
+    expect(
+      buildRiskSummary(graph, { ...NONE, profile: 1, bm: 2, adAccount: 1 }).concentration,
+    ).toEqual({
+      profileId: "blocked",
+      name: "blocked",
+      blocked: true,
+      bms: 2,
+      assets: 1,
+    });
+  });
+
+  test("a realised loss outranks a hypothetical one", () => {
+    const graph = graphOf({
+      profiles: [
+        { ...entity("dead-hand", CRITICAL), usable: false },
+        profile("sole-live"),
+      ],
+      bms: [bm("b1"), bm("b2"), bm("b3"), bm("b4"), bm("b5")],
+      profileBm: [
+        { profileId: "dead-hand", bmId: "b1" },
+        { profileId: "dead-hand", bmId: "b2" },
+        { profileId: "sole-live", bmId: "b3" },
+        { profileId: "sole-live", bmId: "b4" },
+        { profileId: "sole-live", bmId: "b5" },
+      ],
+    });
+
+    // The live profile holds more BMs, but its loss has not happened yet.
+    expect(buildRiskSummary(graph, { ...NONE, profile: 2, bm: 5 }).concentration).toMatchObject({
+      profileId: "dead-hand",
+      blocked: true,
+      bms: 2,
+    });
   });
 
   test("an asset reached from two of the held BMs is still stranded by the one profile", () => {
@@ -129,7 +166,7 @@ describe("buildRiskSummary concentration", () => {
     // Walking each BM separately would call this account a survivor — it survives the loss of either
     // BM, but not the loss of the profile that solely holds both.
     expect(buildRiskSummary(graph, { ...NONE, profile: 1, bm: 2, adAccount: 1 })).toMatchObject({
-      concentration: { profileId: "svc", bms: 2, strandedAssets: 1 },
+      concentration: { profileId: "svc", bms: 2, blocked: false, assets: 1 },
     });
   });
 
@@ -150,7 +187,7 @@ describe("buildRiskSummary concentration", () => {
     });
 
     expect(buildRiskSummary(graph, { ...NONE, profile: 2, bm: 3, adAccount: 1 })).toMatchObject({
-      concentration: { profileId: "svc", bms: 2, strandedAssets: 0 },
+      concentration: { profileId: "svc", bms: 2, assets: 0 },
     });
   });
 
@@ -167,7 +204,7 @@ describe("buildRiskSummary concentration", () => {
 
     expect(
       buildRiskSummary(graph, { ...NONE, profile: 1, bm: 2, adAccount: 1 }).concentration,
-    ).toMatchObject({ strandedAssets: 0 });
+    ).toMatchObject({ assets: 0 });
   });
 
   test("the widest holder wins, and equal holders break on name", () => {

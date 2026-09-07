@@ -253,8 +253,9 @@ describe("buildRiskMap", () => {
     // One usable admin holds both BMs, so banning it strands the account behind them.
     expect(map.concentration).toMatchObject({
       name: "svc.admin.01",
+      blocked: false,
       bms: 2,
-      strandedAssets: 1,
+      assets: 1,
     });
     // The matrix is not a second count: its asset columns are exactly the headline number.
     const assets = map.tally.filter((r) => r.kind !== "profile");

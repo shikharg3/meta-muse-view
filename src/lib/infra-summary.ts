@@ -23,10 +23,25 @@ export interface AccessConcentration {
   /** Row id, so the caller can deep-link to the profile. */
   profileId: string;
   name: string;
-  /** BMs this profile is the only usable admin of. */
+  /**
+   * The profile cannot carry access today, so the loss is realised rather than hypothetical. Ranked
+   * above a live concentration: an outage that has already happened outranks one that might.
+   */
+  blocked: boolean;
+  /**
+   * BMs it is the only usable admin of. When `blocked`, BMs it admins that have no usable admin at
+   * all — the ones it took out.
+   */
   bms: number;
-  /** Ad accounts, pixels and pages that lose their last live path if this profile goes. */
-  strandedAssets: number;
+  /**
+   * When `blocked`: the assets sitting behind those BMs, which nobody can now administer.
+   *
+   * NOT "assets already unreachable" — `usableBm` reads a BM's own status, so an admin-less but
+   * active BM still counts as a live path for what hangs off it. Claiming otherwise here would be a
+   * second, disagreeing risk rule. Otherwise: assets that would lose their last live path if this
+   * profile went.
+   */
+  assets: number;
 }
 
 export interface InfraRiskSummary {
@@ -71,49 +86,82 @@ export function buildRiskSummary(
 }
 
 /**
- * The profile whose ban would cascade furthest: sole usable admin of two or more BMs, so one ban
- * takes all of them out at once. One BM is the ordinary case and not a concentration.
+ * The profile that concentrates the most access, in either of the two forms that matter.
  *
- * The loss is measured by removing the profile AND every BM it solely holds, not by walking each BM
- * in turn: a per-BM walk reports an asset reachable from two of those BMs as surviving, when in truth
- * it survives the loss of either one and not the loss of the profile holding both.
+ *  - **Live:** the only usable admin of two or more BMs. One ban takes all of them out at once.
+ *  - **Blocked:** already unusable, and an admin of two or more BMs that now have no usable admin.
+ *    The cascade has happened; naming it is the difference between an operator seeing four
+ *    unreachable BMs and seeing the one suspended profile that explains three of them.
+ *
+ * Measured on the live registry, only the blocked form occurs — which is exactly why it is here.
+ * One BM is the ordinary case and never a concentration.
+ *
+ * The live form's loss is measured by removing the profile AND every BM it solely holds, not by
+ * walking each BM in turn: a per-BM walk reports an asset reachable from two of those BMs as
+ * surviving, when in truth it survives the loss of either one and not of the profile holding both.
  */
 function worstConcentration(graph: InfraGraph): AccessConcentration | null {
-  const liveAdmins = new Map<string, string[]>();
+  const adminsByBm = new Map<string, { profile: string; dead: boolean }[]>();
   for (const e of graph.edges) {
-    if (e.relation !== "admin" || e.dead) continue;
-    const held = liveAdmins.get(e.target);
-    if (held) held.push(e.source);
-    else liveAdmins.set(e.target, [e.source]);
+    if (e.relation !== "admin") continue;
+    const held = adminsByBm.get(e.target);
+    if (held) held.push({ profile: e.source, dead: e.dead });
+    else adminsByBm.set(e.target, [{ profile: e.source, dead: e.dead }]);
   }
 
-  const soleOf = new Map<string, string[]>();
-  for (const [bm, admins] of liveAdmins) {
-    if (admins.length !== 1) continue;
-    const held = soleOf.get(admins[0]);
-    if (held) held.push(bm);
-    else soleOf.set(admins[0], [bm]);
+  const soleUsable = new Map<string, string[]>();
+  const strandedBms = new Map<string, string[]>();
+  for (const [bm, admins] of adminsByBm) {
+    const usable = admins.filter((a) => !a.dead);
+    if (usable.length === 1) group(soleUsable, usable[0].profile, bm);
+    // Nobody usable admins it. Every admin it has is a dead hand, and each is named as a cause.
+    else if (usable.length === 0) for (const a of admins) group(strandedBms, a.profile, bm);
   }
 
   const nodeById = new Map(graph.nodes.map((n) => [n.id, n]));
   const candidates: AccessConcentration[] = [];
-  for (const [profile, bms] of soleOf) {
+  const consider = (profile: string, bms: string[], blocked: boolean) => {
     const node = nodeById.get(profile);
-    if (!node || bms.length < 2) continue;
+    if (!node || bms.length < 2) return;
     candidates.push({
       profileId: node.entityId,
       name: node.name,
+      blocked,
+      assets: blocked
+        ? assetsBehind(graph, new Set(bms))
+        : strandedWithout(graph, new Set([profile, ...bms])),
       bms: bms.length,
-      strandedAssets: strandedWithout(graph, new Set([profile, ...bms])),
     });
-  }
+  };
+  for (const [profile, bms] of strandedBms) consider(profile, bms, true);
+  for (const [profile, bms] of soleUsable) consider(profile, bms, false);
 
   // Sorted rather than tracked in a running `best` so ties break on name — registry order is not
   // stable across reads, and a headline that flips between two equal profiles reads as a bug.
   candidates.sort(
-    (a, b) => b.bms - a.bms || b.strandedAssets - a.strandedAssets || a.name.localeCompare(b.name),
+    (a, b) =>
+      Number(b.blocked) - Number(a.blocked) ||
+      b.bms - a.bms ||
+      b.assets - a.assets ||
+      a.name.localeCompare(b.name),
   );
   return candidates[0] ?? null;
+}
+
+/** Map-of-arrays push. Three groupings in this module have to behave identically. */
+function group(map: Map<string, string[]>, key: string, value: string) {
+  const held = map.get(key);
+  if (held) held.push(value);
+  else map.set(key, [value]);
+}
+
+/**
+ * Distinct assets these BMs reach directly. Used for the blocked case, where the question is not
+ * "what would a ban cost" but "what is now sitting behind a BM nobody can administer".
+ */
+function assetsBehind(graph: InfraGraph, bms: Set<string>): number {
+  const reached = new Set(graph.edges.filter((e) => bms.has(e.source)).map((e) => e.target));
+  return graph.nodes.filter((n) => LOSABLE_KINDS.includes(n.kind) && reached.has(n.id)).length;
 }
 
 /** Assets that have a live way in today and would have none once `doomed` is gone. */
