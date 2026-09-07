@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   buildInfraGraph,
+  focusMain,
   nodeId,
   reachedFrom,
   type InfraGraph,
@@ -233,5 +234,90 @@ describe("reachedFrom", () => {
       pixel: [],
       page: [],
     });
+  });
+});
+
+describe("focusMain", () => {
+  test("keeps a starred BM, what admins it and what it reaches — and nothing else", () => {
+    const g = buildInfraGraph(
+      input({
+        profiles: [
+          { ...entity("admin-1"), usable: true },
+          { ...entity("stranger"), usable: true },
+        ],
+        bms: [
+          { ...entity("starred"), usable: true, overdue: false, main: true },
+          { ...entity("other"), usable: true, overdue: false },
+        ],
+        adAccounts: [entity("act_kept"), entity("act_dropped")],
+        profileBm: [
+          { profileId: "admin-1", bmId: "starred" },
+          { profileId: "stranger", bmId: "other" },
+        ],
+        bmAdAccount: [
+          { bmId: "starred", adAccountId: "act_kept" },
+          { bmId: "other", adAccountId: "act_dropped" },
+        ],
+      }),
+    );
+
+    const focused = focusMain(g);
+
+    expect(focused.nodes.map((n) => n.id).sort()).toEqual([
+      "adAccount:act_kept",
+      "bm:starred",
+      "profile:admin-1",
+    ]);
+    expect(focused.edges.map((e) => e.id).sort()).toEqual([
+      "access|bm:starred|adAccount:act_kept",
+      "admin|profile:admin-1|bm:starred",
+    ]);
+  });
+
+  test("stops at one hop: the second BM of a kept admin is not pulled in", () => {
+    const g = buildInfraGraph(
+      input({
+        profiles: [{ ...entity("shared-admin"), usable: true }],
+        bms: [
+          { ...entity("starred"), usable: true, overdue: false, main: true },
+          { ...entity("also-admined"), usable: true, overdue: false },
+        ],
+        profileBm: [
+          { profileId: "shared-admin", bmId: "starred" },
+          { profileId: "shared-admin", bmId: "also-admined" },
+        ],
+      }),
+    );
+
+    // Two hops would reach every BM that profile touches, and the "main view" would be the estate.
+    expect(focusMain(g).nodes.map((n) => n.id)).not.toContain("bm:also-admined");
+  });
+
+  test("an edge between two kept neighbours of different stars is not drawn", () => {
+    const g = buildInfraGraph(
+      input({
+        profiles: [
+          { ...entity("owner"), usable: true, main: true },
+          { ...entity("other-owner"), usable: true },
+        ],
+        bms: [{ ...entity("starred"), usable: true, overdue: false, main: true }],
+        pages: [{ ...entity("pg"), ownerProfileId: "other-owner" }],
+        pageBm: [{ pageId: "pg", bmId: "starred" }],
+        pageProfile: [{ pageId: "pg", profileId: "owner" }],
+      }),
+    );
+
+    const focused = focusMain(g);
+
+    // The page is kept (a star reaches it) and so is its owner (via the page), but owner→page is a
+    // relationship neither star asked about.
+    expect(focused.nodes.map((n) => n.id)).toContain("page:pg");
+    expect(focused.edges.map((e) => e.id)).not.toContain("owns|profile:other-owner|page:pg");
+  });
+
+  test("nothing starred yields an empty graph, so the lens is offered only when it can work", () => {
+    const g = buildInfraGraph(input({ bms: [{ ...entity("b1"), usable: true, overdue: false }] }));
+
+    expect(focusMain(g)).toEqual({ nodes: [], edges: [] });
   });
 });

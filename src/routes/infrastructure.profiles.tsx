@@ -7,6 +7,7 @@ import { PagePendingSkeleton } from "@/components/dashboard/TableSkeleton";
 import { StatusPill } from "@/components/dashboard/StatusPill";
 import { useSort, SortHeader } from "@/components/dashboard/SortableTable";
 import { LinkChips, type LinkOption } from "@/components/infra/LinkChips";
+import { MainStar } from "@/components/infra/MainStar";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { getCurrentUser } from "@/lib/api/auth";
 import { isAdmin } from "@/lib/auth/roles";
@@ -16,6 +17,7 @@ import {
   saveInfraProfile,
   deleteInfraProfile,
   linkInfraProfileBm,
+  setInfraProfileMain,
   setInfraProfileStatuses,
 } from "@/lib/api/infrastructure";
 import { usableBm } from "@/lib/infra-risk";
@@ -117,6 +119,16 @@ function ProfilesPage() {
     await router.invalidate();
   };
 
+  const toggleMain = async (r: ProfileView) => {
+    const res = await setInfraProfileMain({ data: { id: r.id, main: !r.isMain } });
+    if (!res.ok) {
+      setMsg(res.error ?? "Could not change the main marker");
+      return;
+    }
+    setMsg(null);
+    await router.invalidate();
+  };
+
   const remove = async (r: ProfileView) => {
     if (!window.confirm(`Delete ${r.name}?`)) return;
     const res = await deleteInfraProfile({ data: { id: r.id } });
@@ -209,8 +221,18 @@ function ProfilesPage() {
               {sorted.map((r) => (
                 <tr key={r.id} className="hover:bg-accent/40 transition-colors">
                   <td className="px-5 py-3">
-                    <div className="font-medium">{r.name}</div>
-                    <div className="font-mono text-[10px] text-muted-foreground">{r.id}</div>
+                    <div className="flex items-center gap-2">
+                      <MainStar
+                        on={r.isMain}
+                        label={r.name}
+                        hint="Main profiles lead the risk map"
+                        onToggle={() => void toggleMain(r)}
+                      />
+                      <div className="min-w-0">
+                        <div className="font-medium">{r.name}</div>
+                        <div className="font-mono text-[10px] text-muted-foreground">{r.id}</div>
+                      </div>
+                    </div>
                   </td>
                   <td className="px-3 py-3">
                     <div className="flex items-start gap-2">

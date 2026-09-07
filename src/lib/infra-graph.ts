@@ -35,6 +35,11 @@ export interface InfraGraphNode {
   risk: Risk;
   detail: string;
   overdue?: boolean;
+  /**
+   * The operator marked this as one of the ones that matter. BMs and profiles only, and never a risk
+   * input: it decides what the map leads with, not what the map says.
+   */
+  main?: boolean;
 }
 
 export interface InfraGraphEdge {
@@ -57,6 +62,7 @@ interface Entity {
   status: string;
   risk: Risk;
   detail: string;
+  main?: boolean;
 }
 
 /**
@@ -145,6 +151,38 @@ function toNode(kind: InfraNodeKind, e: Entity): InfraGraphNode {
     status: e.status,
     risk: e.risk,
     detail: e.detail,
+    ...(e.main ? { main: true } : {}),
+  };
+}
+
+/**
+ * The graph narrowed to the operator's starred infrastructure and what it touches directly.
+ *
+ * One hop, not a transitive closure: two hops from a main BM reaches the profile that admins it, then
+ * every other BM that profile admins, and the "main view" is back to being the whole estate. One hop
+ * answers the question the star was set to ask — what holds this up, and what hangs off it.
+ *
+ * Total: with no node marked main the result is empty, which is why the caller only offers this lens
+ * once something is starred.
+ */
+export function focusMain(graph: InfraGraph): InfraGraph {
+  const seeds = new Set(graph.nodes.filter((n) => n.main).map((n) => n.id));
+  if (seeds.size === 0) return { nodes: [], edges: [] };
+
+  const keep = new Set(seeds);
+  for (const e of graph.edges) {
+    if (seeds.has(e.source)) keep.add(e.target);
+    if (seeds.has(e.target)) keep.add(e.source);
+  }
+
+  return {
+    nodes: graph.nodes.filter((n) => keep.has(n.id)),
+    // Both ends kept AND one of them starred: an edge between two kept neighbours of different seeds
+    // is a relationship neither star asked about, and drawing it is how the lens leaks.
+    edges: graph.edges.filter(
+      (e) =>
+        keep.has(e.source) && keep.has(e.target) && (seeds.has(e.source) || seeds.has(e.target)),
+    ),
   };
 }
 

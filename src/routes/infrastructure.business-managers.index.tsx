@@ -7,6 +7,7 @@ import { StatusPill } from "@/components/dashboard/StatusPill";
 import { useSort, SortHeader } from "@/components/dashboard/SortableTable";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { LinkChips, type LinkOption } from "@/components/infra/LinkChips";
+import { MainStar } from "@/components/infra/MainStar";
 import {
   deleteInfraBm,
   getInfraBmBanPreview,
@@ -16,6 +17,7 @@ import {
   listInfraBms,
   listInfraProfiles,
   saveInfraBm,
+  setInfraBmMain,
   setInfraBmStatus,
   verifyInfraBm,
 } from "@/lib/api/infrastructure";
@@ -364,13 +366,23 @@ function BusinessManagersPage() {
               {sorted.map((r) => (
                 <tr key={r.id} className="hover:bg-accent/40 transition-colors">
                   <td className="px-5 py-3 font-medium">
-                    <Link
-                      to="/infrastructure/business-managers/$id"
-                      params={{ id: r.id }}
-                      className="hover:underline"
-                    >
-                      {r.name}
-                    </Link>
+                    <div className="flex items-center gap-2">
+                      <MainStar
+                        on={r.isMain}
+                        label={r.name}
+                        hint="Main Business Managers lead the risk map"
+                        onToggle={() =>
+                          void apply(setInfraBmMain({ data: { id: r.id, main: !r.isMain } }))
+                        }
+                      />
+                      <Link
+                        to="/infrastructure/business-managers/$id"
+                        params={{ id: r.id }}
+                        className="hover:underline"
+                      >
+                        {r.name}
+                      </Link>
+                    </div>
                   </td>
                   <td className="px-3 py-3">
                     <div className="flex items-center gap-1.5">

@@ -1,6 +1,11 @@
 import { db, schema } from "@/db/client";
 import { buildInfraGraph, nodeId, reachedFrom, type InfraGraph } from "@/lib/infra-graph";
-import { buildRiskSummary, type AccessConcentration, type RiskTallyRow } from "@/lib/infra-summary";
+import {
+  buildRiskSummary,
+  type AccessConcentration,
+  type InfraRiskSummary,
+  type RiskTallyRow,
+} from "@/lib/infra-summary";
 import {
   RISK_ORDER,
   isVerificationOverdue,
@@ -38,6 +43,11 @@ export interface InfraRiskRow {
    * than only that it would hurt. Zeroes are informative — "strands nothing" is an answer.
    */
   strands?: { adAccounts: number; pixels: number; pages: number };
+  /**
+   * BMs and profiles only: the operator marked this as one of the ones that matter. Display priority,
+   * never a risk input — `redundancy()` and friends cannot see it.
+   */
+  main?: boolean;
 }
 
 export interface InfraRiskMap {
@@ -48,6 +58,8 @@ export interface InfraRiskMap {
   tally: RiskTallyRow[];
   /** The profile whose ban would cascade furthest, or null when no profile solely holds two BMs. */
   concentration: AccessConcentration | null;
+  /** Counts for the operator's starred BMs and profiles — see `buildRiskSummary`. */
+  main: InfraRiskSummary["main"];
   bms: InfraRiskRow[];
   adAccounts: InfraRiskRow[];
   pixels: InfraRiskRow[];
@@ -162,6 +174,7 @@ export async function buildRiskMap(): Promise<InfraRiskMap> {
         risk: redundancy(usable),
         detail: `${usable} usable profile${usable === 1 ? "" : "s"}`,
         overdue: isVerificationOverdue(b.verifiedAt, now),
+        main: b.isMain,
       };
     })
     .sort(byRisk);
@@ -239,6 +252,7 @@ export async function buildRiskMap(): Promise<InfraRiskMap> {
         "active",
       risk: profileRisk({ usable, dependents: bmCount + owned }),
       detail: `${bmCount} BM${bmCount === 1 ? "" : "s"} · ${owned} page${owned === 1 ? "" : "s"} owned`,
+      main: p.isMain,
       usable,
     };
   });
@@ -285,6 +299,7 @@ export async function buildRiskMap(): Promise<InfraRiskMap> {
     atRisk: summary.atRisk,
     tally: summary.tally,
     concentration: summary.concentration,
+    main: summary.main,
     // `strands` needs the finished graph, so it is attached here rather than where the row is built.
     bms: bmRows.map((r) => {
       const reached = reachedFrom(graph, nodeId("bm", r.id));
@@ -301,7 +316,14 @@ export async function buildRiskMap(): Promise<InfraRiskMap> {
     pixels: pixelRows,
     pages: pageRows,
     profiles: profileEntities
-      .map((p) => ({ id: p.id, name: p.name, status: p.status, risk: p.risk, detail: p.detail }))
+      .map((p) => ({
+        id: p.id,
+        name: p.name,
+        status: p.status,
+        risk: p.risk,
+        detail: p.detail,
+        main: p.main,
+      }))
       .sort(byRisk),
     graph,
   };
