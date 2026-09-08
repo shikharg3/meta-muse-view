@@ -35,6 +35,20 @@ export async function requireAdmin(): Promise<PublicUser> {
   return me;
 }
 
+/**
+ * Throw unless the caller is signed in AND approved — the floor for pages a `member` may use.
+ *
+ * Status is checked here, unlike `requireAdmin`, because this is the only guard a non-admin ever
+ * clears: a pending or rejected account has a valid session cookie and would otherwise walk
+ * straight in. `requireAdmin` gets away without it only because status and role move together for
+ * admins — no approval flow ever leaves a pending user holding `admin`.
+ */
+export async function requireApproved(): Promise<PublicUser> {
+  const me = await currentUser();
+  if (!me || me.status !== "approved") throw new Error("Forbidden: approved access required.");
+  return me;
+}
+
 /** Throw unless the caller is a superadmin — for cross-user chat history + finance. */
 export async function requireSuperadmin(): Promise<PublicUser> {
   const me = await currentUser();

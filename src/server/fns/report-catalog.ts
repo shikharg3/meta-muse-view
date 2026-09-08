@@ -5,7 +5,7 @@ import { EVENT_MEMBERS } from "@/server/agg";
 import { REPORT_METRICS, metric } from "@/lib/report-catalog";
 import { resolveRange } from "@/server/agent/report";
 import { getClientRow, effectiveAccountIds } from "@/sync/jobs/clients";
-import { requireAdmin } from "./auth";
+import { requireApproved } from "./auth";
 
 /** Rows scanned per availability check. The picker needs presence, not precision. */
 const SAMPLE_ROWS = 5000;
@@ -97,7 +97,7 @@ export async function fetchReportCatalog(input: {
   since?: string;
   until?: string;
 }): Promise<{ keys: string[] }> {
-  await requireAdmin();
+  await requireApproved();
   const row = await getClientRow(input.clientId);
   if (!row) return { keys: [] };
   const range = resolveRange(input);
