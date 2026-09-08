@@ -10,7 +10,7 @@ import {
   type ClientReportInput,
   type ReportPayload,
 } from "@/server/agent/report";
-import { audit, requireAdmin } from "./auth";
+import { audit, requireApproved } from "./auth";
 
 // Idempotent prod migration (run once on the droplet before deploying):
 //
@@ -107,8 +107,9 @@ export interface RunSummary {
   /**
    * Commission fraction the run was produced with, or null for none.
    *
-   * INTERNAL ONLY, same rule as `ReportPayload.markup`: the ledger is behind `requireAdmin` and no
-   * client-facing artifact is rendered from a `RunSummary`.
+   * INTERNAL ONLY, same rule as `ReportPayload.markup`: it is internal to the AGENCY, not to
+   * admins. Every role behind `requireApproved` is staff and sees it; no client-facing artifact is
+   * rendered from a `RunSummary`.
    */
   markup: number | null;
 }
@@ -148,7 +149,7 @@ export function nextExportFormats(current: unknown, format: string): string[] {
 }
 
 export async function fetchTemplates(): Promise<TemplateView[]> {
-  await requireAdmin();
+  await requireApproved();
   const rows = await db
     .select({
       id: schema.reportTemplates.id,
@@ -189,7 +190,7 @@ export async function fetchTemplates(): Promise<TemplateView[]> {
 export async function saveTemplate(
   input: TemplateInput,
 ): Promise<{ ok: boolean; error?: string; id?: string }> {
-  const user = await requireAdmin();
+  const user = await requireApproved();
   const valid = validateTemplate(input);
   if (!valid.ok) return valid;
 
@@ -240,7 +241,7 @@ export async function saveTemplate(
 export async function deleteTemplate(input: {
   id: string;
 }): Promise<{ ok: boolean; error?: string }> {
-  await requireAdmin();
+  await requireApproved();
   const deleted = await db
     .delete(schema.reportTemplates)
     .where(eq(schema.reportTemplates.id, input.id))
@@ -308,7 +309,7 @@ export async function fetchReportRuns(input?: {
   clientId?: string;
   limit?: number;
 }): Promise<RunSummary[]> {
-  await requireAdmin();
+  await requireApproved();
   // Exported runs only. An unexported row is a draft somebody generated and walked away from; the
   // history tab is the ledger of what clients actually received, not of every button press.
   const exported = isNotNull(schema.reportRuns.exportedAt);
@@ -328,7 +329,7 @@ export async function fetchReportRuns(input?: {
 
 /** No `exported_at` filter, unlike the list: the builder reads back the draft it just created. */
 export async function fetchReportRun(input: { id: string }): Promise<RunDetail | null> {
-  await requireAdmin();
+  await requireApproved();
   const [row] = await db
     .select({
       ...RUN_SUMMARY_FIELDS,
@@ -358,7 +359,7 @@ export async function fetchReportRun(input: { id: string }): Promise<RunDetail |
 export async function createReportRun(
   input: ClientReportInput & { templateId?: string | null },
 ): Promise<{ ok: true; runId: string; payload: ReportPayload } | { ok: false; error: string }> {
-  const user = await requireAdmin();
+  const user = await requireApproved();
   const { templateId = null, ...params } = input;
   // Resolved here, not read back off the payload: the row stores the concrete window a preset stood
   // for on the day it ran, which is what the history list filters and displays.
@@ -385,6 +386,23 @@ export async function createReportRun(
 }
 
 /**
+ * Ad-hoc report for the client-page builder — generated, never persisted.
+ *
+ * Exists only to put a guard on this path. `generateClientReport` used to hand the request straight
+ * to the engine with NO auth at all, so an unapproved account could render a client's numbers; it
+ * was the one report route that skipped `createReportRun` and therefore every check.
+ *
+ * Guarded here rather than in the `createServerFn` wrapper, because `src/lib/api/*` is thin
+ * by convention (see `fetchReportCatalog`).
+ */
+export async function generateReportForCaller(
+  input: ClientReportInput,
+): Promise<ReportPayload | { error: string }> {
+  await requireApproved();
+  return await reportForClient(input);
+}
+
+/**
  * Stamp a run as delivered.
  *
  * `exported_at` is the moment the client FIRST received the report, so a second export of the same
@@ -395,7 +413,7 @@ export async function markReportExported(input: {
   runId: string;
   format: "csv" | "pdf";
 }): Promise<{ ok: boolean; error?: string }> {
-  await requireAdmin();
+  await requireApproved();
   const [row] = await db
     .select({
       exportedAt: schema.reportRuns.exportedAt,
@@ -416,7 +434,7 @@ export async function markReportExported(input: {
 
 /**
  * Drop never-exported drafts. Called from the sync worker's daily gate, so deliberately WITHOUT
- * `requireAdmin()` — there is no session cookie in the worker process.
+ * `requireApproved()` — there is no session cookie in the worker process.
  *
  * Only drafts are touched: an exported run is the frozen record of what a client received and is
  * kept indefinitely. Cutoff computed in JS to match the sibling prune (`pruneSyncEvents` in

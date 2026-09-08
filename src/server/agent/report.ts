@@ -68,11 +68,12 @@ export interface ReportPayload {
   /**
    * Commission fraction applied to spend (0.15 = +15%), or null when the report carries none.
    *
-   * INTERNAL ONLY. It exists so an operator can see on screen what a client is being charged over
-   * cost, and it is deliberately a number rather than prose in the subtitle: `ReportDoc` — the type
-   * the CSV and the PDF render from — has no such field, so no export can print it even by mistake.
-   * When the `client` role lands, the payload must be stripped of this at the scope boundary; today
-   * every report server fn is behind `requireAdmin`.
+   * INTERNAL ONLY — internal to the AGENCY. Every role behind `requireApproved` is staff and may
+   * see it; the boundary that matters is staff vs client, not member vs admin. It exists so an
+   * operator can see on screen what a client is being charged over cost, and it is deliberately a
+   * number rather than prose in the subtitle: `ReportDoc` — the type the CSV and the PDF render
+   * from — has no such field, so no export can print it even by mistake. If a `client` role ever
+   * lands, the payload must be stripped of this at that scope boundary.
    */
   markup: number | null;
 }
