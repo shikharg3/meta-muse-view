@@ -31,7 +31,20 @@ export default async function (req: Request): Promise<Response> {
     );
   }
 
-  const user = await createClientFromRequest(req).auth.me();
+  // `auth.me()` THROWS rather than returning null — no session, an expired token, and an
+  // unpublished app all arrive here as a `Base44Error`. Uncaught it becomes a bare 500
+  // "user worker threw an exception", which says nothing about which of those it was.
+  let user: { email?: string | null } | null = null;
+  try {
+    user = await createClientFromRequest(req).auth.me();
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    console.error("[vps] auth.me() failed:", message);
+    return Response.json(
+      { ok: false, error: { code: "unauthorized", message: `Not signed in — ${message}` } },
+      { status: 401 },
+    );
+  }
   if (!user?.email) {
     return Response.json(
       { ok: false, error: { code: "unauthorized", message: "Sign in first." } },

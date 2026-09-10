@@ -18,7 +18,15 @@ export default async function (req: Request): Promise<Response> {
     return Response.json({ error: "VPS_API_URL / VPS_API_TOKEN unset." }, { status: 503 });
   }
 
-  const user = await createClientFromRequest(req).auth.me();
+  // Throws rather than returning null; see the note in functions/vps/entry.ts.
+  let user: { email?: string | null } | null = null;
+  try {
+    user = await createClientFromRequest(req).auth.me();
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    console.error("[vps-stream] auth.me() failed:", message);
+    return Response.json({ error: `Not signed in — ${message}` }, { status: 401 });
+  }
   if (!user?.email) return Response.json({ error: "Sign in first." }, { status: 401 });
 
   const upstream = await fetch(`${base.replace(/\/+$/, "")}/api/v1/chat/stream`, {

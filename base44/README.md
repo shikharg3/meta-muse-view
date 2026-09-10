@@ -56,26 +56,64 @@ that `location` block and reloading nginx cuts Base44 off instantly**, with no e
 Port 8789, not 8788: `/opt/infra-manager` (the `infra.dotmads.com` app) already owns 8788. Check
 `ss -ltn` before picking one.
 
-## Setup
+## The Base44 side — done, and how it actually works
 
-The token is already generated and lives in `/opt/meta-next/.env` only. Read it with:
+App `6a9fc1bd1da17a04aaf31ecc` ("MetaMuse", slug `analytic-meta-muse-view`). It is a **remote
+sandbox** app: there is no local checkout of it, and **writing a file into the sandbox IS the
+deploy** (auto-committed after ~5s). Never run `base44 deploy`, `functions deploy`, `create` or
+`scaffold` against it — those assume a local project and a manual deploy step that does not exist
+here. `sandbox run` is for verification (`npm run build`, `npm run lint`) only.
+
+What lives where:
+
+| this repo (source of truth for review) | the Base44 sandbox                            |
+| -------------------------------------- | --------------------------------------------- |
+| `base44/functions/vps/entry.ts`        | `base44/functions/vps/entry.ts`               |
+| `base44/functions/vps-stream/entry.ts` | `base44/functions/vps-stream/entry.ts`        |
+| `base44/client/vps.js`                 | `src/api/vps.js`                              |
+| `base44/pages/VpsProbe.jsx`            | `src/pages/VpsProbe.jsx` (route `/vps-probe`) |
+
+Function directories MUST be kebab-case — hence `vps-stream`, not `vpsStream`. No
+`function.jsonc` is needed; the sandbox infers the function from the directory.
+
+Push a change with:
 
 ```bash
-ssh <droplet> "grep '^VPS_API_TOKEN=' /opt/meta-next/.env"
+export BASE44_APP_ID=6a9fc1bd1da17a04aaf31ecc
+cat base44/functions/vps/entry.ts \
+  | base44 sandbox write base44/functions/vps/entry.ts --overwrite --app-id "$BASE44_APP_ID" --json
 ```
 
-In the Base44 project:
+### Secrets — already set
+
+`VPS_API_URL=https://analytics.dotmads.com` and `VPS_API_TOKEN` are set on the app.
+`base44 secrets` has no `--app-id` flag but honours `BASE44_APP_ID`:
 
 ```bash
-base44 secrets set VPS_API_URL=https://analytics.dotmads.com
-base44 secrets set VPS_API_TOKEN=<that value>
-base44 functions deploy vps vpsStream
+ssh <droplet> "grep '^VPS_API_TOKEN=' /opt/meta-next/.env"   # the value, read only when needed
+BASE44_APP_ID=6a9fc1bd1da17a04aaf31ecc base44 secrets list
 ```
 
-`VPS_API_URL` is the origin only — the proxy appends `/api/v1/...` itself.
+`VPS_API_URL` is the origin only — the proxy appends `/api/v1/...` itself. To rotate: change
+`/opt/meta-next/.env`, `systemctl restart meta-web-next`, then re-set the Base44 secret. Unset it
+and the API answers `503`; it never falls open.
 
-Rotating it: change `/opt/meta-next/.env`, `systemctl restart meta-web-next`, then update the
-Base44 secret. Unset it and the API answers `503`; it never falls open.
+### Gotchas found the hard way
+
+- **`base44 login` is a device flow** that waits indefinitely. Run it as a supervised process, not
+  under a command timeout — a killed login leaves no session and the next invocation mints a new
+  code, invalidating the last.
+- **`auth.me()` throws, it does not return null.** No session, an expired token and an unpublished
+  app all arrive as a `Base44Error`. Both functions catch it and answer `401` with the underlying
+  message; uncaught it becomes a bare `500 user worker threw an exception` that says nothing.
+- **Functions are unreachable on `app.base44.com`** ("cannot be accessed from the platform
+  domain"). Use the app subdomain: `https://analytic-meta-muse-view.base44.app/functions/vps`.
+- **`base44 exec` needs a published site** — it fails with "Error fetching site URL: App not found"
+  until the app has been deployed once.
+- `functions.fetch()` returns a native `Response`; `functions.invoke()` returns the raw axios
+  response and throws on non-2xx. The client uses `fetch` — required for the NDJSON stream, and it
+  keeps the VPS's own error envelope readable.
+- `base44 exec` needs Deno on PATH.
 
 ## Promoting, once Base44 is proven
 
