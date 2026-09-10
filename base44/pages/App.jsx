@@ -1,3 +1,4 @@
+import { useEffect } from 'react';
 import { Toaster } from "@/components/ui/toaster"
 import { QueryClientProvider } from '@tanstack/react-query'
 import { queryClientInstance } from '@/lib/query-client'
@@ -6,6 +7,7 @@ import PageNotFound from './lib/PageNotFound';
 import { AuthProvider, useAuth } from '@/lib/AuthContext';
 import UserNotRegisteredError from '@/components/UserNotRegisteredError';
 import ScrollToTop from './components/ScrollToTop';
+import ProtectedRoute from '@/components/ProtectedRoute';
 import Login from './pages/Login';
 import Register from './pages/Register';
 import ForgotPassword from './pages/ForgotPassword';
@@ -13,6 +15,19 @@ import ResetPassword from './pages/ResetPassword';
 import OAuthConsent from './pages/OAuthConsent';
 import VpsProbe from './pages/VpsProbe';
 
+
+/**
+ * Where an anonymous visitor is sent. Uses the SDK's own redirect rather than `<Navigate to=
+ * "/login">` so the return URL survives — it appends `?from_url=…`, which is what brings someone
+ * back to the page they asked for after signing in.
+ */
+const SendToLogin = () => {
+  const { navigateToLogin } = useAuth();
+  useEffect(() => {
+    navigateToLogin();
+  }, [navigateToLogin]);
+  return null;
+};
 const AuthenticatedApp = () => {
   const { isLoadingAuth, isLoadingPublicSettings, authError, navigateToLogin } = useAuth();
 
@@ -52,14 +67,25 @@ const AuthenticatedApp = () => {
       <Route path="/oauth-consent" element={<OAuthConsent />} />
 
       {/*
-        `/` needs a route of its own. Without one the root falls through to the catch-all and
-        renders `The page "" could not be found` — which is exactly what a user sees straight after
-        signing in, because the SDK returns them to the app root. Points at the probe until the
-        real dashboard lands.
-      */}
-      <Route path="/" element={<Navigate to="/vps-probe" replace />} />
+        Everything past this point requires a session. Enforced ONCE here rather than per page:
+        the app's platform visibility is `public_without_login`, so without a guard an anonymous
+        visitor reaches a real page, its ops fail with 401, and the screen fills with errors
+        instead of a login prompt — which is exactly what happened on the probe.
 
-      <Route path="/vps-probe" element={<VpsProbe />} />
+        The VPS is the real boundary and refuses anything without an approved identity, so this
+        guard is about the app behaving sanely, not about protecting data.
+      */}
+      <Route element={<ProtectedRoute unauthenticatedElement={<SendToLogin />} />}>
+        {/*
+          `/` needs a route of its own. Without one the root falls through to the catch-all and
+          renders `The page "" could not be found` — exactly what a user sees straight after
+          signing in, because the SDK returns them to the app root. Points at the probe until the
+          real dashboard lands.
+        */}
+        <Route path="/" element={<Navigate to="/vps-probe" replace />} />
+        <Route path="/vps-probe" element={<VpsProbe />} />
+      </Route>
+
       <Route path="*" element={<PageNotFound />} />
     </Routes>
   );
