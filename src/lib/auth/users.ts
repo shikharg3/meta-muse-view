@@ -104,6 +104,47 @@ export async function signupWithPassword(
   return { ok: true, user: u };
 }
 
+/**
+ * Ensure a row exists for an externally-authenticated email, and return it.
+ *
+ * Base44 owns sign-up, so an email can arrive here having never existed locally. Creating it
+ * `pending` rather than rejecting it is what lets anyone sign up while role, approval status and
+ * the audit trail stay in Postgres — the caller asserts *who*, never what they may do. The row is
+ * the same shape `signupWithPassword` produces minus the password, which `users.password_hash`
+ * already allows ("null for Google-only accounts").
+ *
+ * `bootstrapRole` still applies, so an email listed in `AUTH_SUPERADMINS` /
+ * `AUTH_BOOTSTRAP_ADMINS` lands approved with its role — otherwise the very first Base44 sign-up
+ * would be a pending user with nobody able to approve them.
+ *
+ * Returns null for a malformed email. `onConflictDoNothing` covers two concurrent first requests
+ * racing on the unique email.
+ */
+export async function provisionFederatedUser(
+  email: string,
+  name?: string | null,
+): Promise<UserRow | null> {
+  const e = email.trim().toLowerCase();
+  if (!EMAIL_RE.test(e)) return null;
+  const existing = await findUserByEmail(e);
+  if (existing) return ensureBootstrap(existing);
+
+  const bootRole = await bootstrapRole(e);
+  const [u] = await db
+    .insert(schema.users)
+    .values({
+      id: randomUUID(),
+      email: e,
+      name: name?.trim() || null,
+      role: bootRole ?? "member",
+      status: bootRole ? "approved" : "pending",
+      lastLoginAt: new Date(),
+    })
+    .onConflictDoNothing({ target: schema.users.email })
+    .returning();
+  return u ?? (await findUserByEmail(e));
+}
+
 export async function loginWithPassword(email: string, password: string): Promise<AuthOutcome> {
   const u = await findUserByEmail(email);
   if (!u || !(await verifyPassword(password, u.passwordHash))) {

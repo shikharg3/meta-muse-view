@@ -2,7 +2,7 @@ import { createHash, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import { runAsActor } from "@/lib/auth/actor";
 import { authFailure } from "@/lib/auth/errors";
-import { findUserByEmail, toPublicUser, type PublicUser } from "@/lib/auth/users";
+import { provisionFederatedUser, toPublicUser, type PublicUser } from "@/lib/auth/users";
 import { env } from "@/lib/env";
 import { handleChatStream } from "@/server/agent/stream";
 import { allOps, lookupOp } from "./ops";
@@ -37,7 +37,9 @@ type ErrorCode =
   | "method_not_allowed"
   | "insecure_transport"
   | "unauthorized"
-  | "unknown_actor"
+  | "no_actor"
+  | "invalid_actor"
+  | "not_approved"
   | "bad_request"
   | "invalid_input"
   | "unknown_op"
@@ -63,13 +65,34 @@ function secretMatches(presented: string, expected: string): boolean {
   return timingSafeEqual(a, b);
 }
 
-async function resolveActor(request: Request): Promise<PublicUser | null | "unknown"> {
+/**
+ * Resolve — and on first sight create — the caller from the proxy's identity header.
+ *
+ * Base44 owns sign-up, so an email legitimately arrives having never existed here. It is created
+ * `pending`, which grants nothing: the approval floor below refuses every op but `getCurrentUser`
+ * until an admin approves the account on `/users`. Role and status stay in Postgres, so Base44
+ * still cannot mint an admin.
+ */
+async function resolveActor(request: Request): Promise<PublicUser | null | "invalid"> {
   const email = request.headers.get("x-actor-email")?.trim().toLowerCase();
   if (!email) return null;
-  const row = await findUserByEmail(email);
-  if (!row) return "unknown";
-  return toPublicUser(row);
+  const row = await provisionFederatedUser(email);
+  return row ? toPublicUser(row) : "invalid";
 }
+
+/**
+ * Ops callable by an account nobody has approved yet.
+ *
+ * Everything else requires `approved`, mirroring the cookie gate, which 403s a pending user before
+ * any server fn runs (`lib/auth/gate.ts`). This floor is not optional: 28 ops carry no
+ * authorisation check of their own — the whole dashboard, the client reads, alerts, activity,
+ * health — because the gate was always in front of them. Without it, anyone who can sign up on the
+ * Base44 app reads the agency's numbers.
+ *
+ * `getCurrentUser` has to stay reachable or the frontend cannot render its own "waiting for
+ * approval" screen.
+ */
+const PENDING_ALLOWED: Record<string, true> = { getCurrentUser: true };
 
 /**
  * Map a thrown domain error onto a status code.
@@ -124,19 +147,20 @@ export async function handleApiRequest(request: Request): Promise<Response | nul
   // Outside the op's try/catch, so an unreachable database here would otherwise escape to
   // `src/server.ts` and be answered with the HTML error page — a machine caller must always get
   // JSON, and "the DB is down" must not read as "your token is bad".
-  let actor: PublicUser | null | "unknown";
+  let actor: PublicUser | null | "invalid";
   try {
     actor = await resolveActor(request);
   } catch (e) {
     console.error("[api] actor lookup failed", e);
     return fail(503, "internal", "Could not resolve the caller — the database is unreachable.");
   }
-  if (actor === "unknown") {
-    return fail(
-      403,
-      "unknown_actor",
-      "No user with that email exists here. Have an admin approve the account on the Users page first.",
-    );
+  if (actor === "invalid") {
+    return fail(400, "invalid_actor", "X-Actor-Email is not a valid email address.");
+  }
+  // No anonymous access, even holding the token. The 28 ops with no authorisation check of their
+  // own would otherwise be readable by the bearer alone, and the proxy always knows who is asking.
+  if (!actor) {
+    return fail(401, "no_actor", "Missing X-Actor-Email — the proxy must identify the caller.");
   }
 
   if (url.pathname === CHAT_STREAM_PATH) {
@@ -173,6 +197,16 @@ export async function handleApiRequest(request: Request): Promise<Response | nul
 
   const op = lookupOp(name);
   if (!op) return fail(404, "unknown_op", `No such op: "${name}".`);
+
+  if (actor.status !== "approved" && !PENDING_ALLOWED[name]) {
+    return fail(
+      403,
+      "not_approved",
+      actor.status === "rejected"
+        ? "Your access to MetaConsole was declined."
+        : "Your account is waiting for an admin to approve it.",
+    );
+  }
 
   try {
     const data = await runAsActor(actor, () => op.run(body.data));
