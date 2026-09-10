@@ -27,35 +27,81 @@ finance and cross-user chat history. A compromised Base44 app cannot mint an adm
 **Consequence:** a teammate must exist and be approved on the VPS `/users` page, and their Base44
 login email must match their VPS account email exactly. An unknown email gets `403 unknown_actor`.
 
-## Setup
+## How this runs today: a parallel service, live app untouched
 
-On the droplet, in `/opt/meta-dashboard/.env`:
+The API is **already deployed and reachable**, and the app the team uses was never restarted to get
+there. Two processes, one database, split by path at nginx:
 
-```bash
-# 32 random bytes; rotate by changing both sides and restarting meta-web
-VPS_API_TOKEN=$(node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))")
+```
+                          ┌─ /            → 127.0.0.1:8787  meta-web       (live, untouched)
+https://analytics.dotmads.com
+                          └─ /api/v1/*    → 127.0.0.1:8789  meta-web-next  (this work)
 ```
 
-Then `systemctl restart meta-web`. Leaving it unset disables the API — `/api/v1/*` answers `503`,
-it never falls open.
+|                 | live                            | staging                        |
+| --------------- | ------------------------------- | ------------------------------ |
+| checkout        | `/opt/meta-dashboard`           | `/opt/meta-next`               |
+| branch          | `feat/meta-integration`         | `feat/base44-api`              |
+| unit            | `meta-web` (+ `meta-sync`)      | `meta-web-next` — **web only** |
+| port            | 8787                            | 8789                           |
+| `VPS_API_TOKEN` | not set ⇒ `/api/v1/*` would 503 | set                            |
+
+`meta-sync` is deliberately **not** duplicated: two workers would race on the same upsert keys and
+split the Meta rate-limit budget. The single live worker keeps ingesting and the staging process
+reads what it writes, so the API serves real, current data.
+
+nginx matches the longest prefix, so `/api/v1/` wins over `/` regardless of block order. **Deleting
+that `location` block and reloading nginx cuts Base44 off instantly**, with no effect on the team.
+
+Port 8789, not 8788: `/opt/infra-manager` (the `infra.dotmads.com` app) already owns 8788. Check
+`ss -ltn` before picking one.
+
+## Setup
+
+The token is already generated and lives in `/opt/meta-next/.env` only. Read it with:
+
+```bash
+ssh <droplet> "grep '^VPS_API_TOKEN=' /opt/meta-next/.env"
+```
 
 In the Base44 project:
 
 ```bash
 base44 secrets set VPS_API_URL=https://analytics.dotmads.com
-base44 secrets set VPS_API_TOKEN=<the same value>
+base44 secrets set VPS_API_TOKEN=<that value>
 base44 functions deploy vps vpsStream
 ```
 
 `VPS_API_URL` is the origin only — the proxy appends `/api/v1/...` itself.
 
-### TLS is a hard prerequisite
+Rotating it: change `/opt/meta-next/.env`, `systemctl restart meta-web-next`, then update the
+Base44 secret. Unset it and the API answers `503`; it never falls open.
 
-The API refuses a bearer token over plaintext when `NODE_ENV=production` (`403
-insecure_transport`), because nginx forwards the real scheme and the repo's vhosts are all
-pre-certbot `listen 80`. Run `certbot --nginx -d analytics.dotmads.com --redirect` before setting
-the token. No new vhost or DNS record is needed: `/api/v1/*` is served by the same `meta-web`
-process on the existing hostname, and the existing `location /` already proxies it.
+## Promoting, once Base44 is proven
+
+1. Rebase `feat/base44-api` onto `droplet/feat/meta-integration` and merge it to trunk. The two
+   branches have duplicate-subject commits from a rebase, so a blind merge will conflict.
+2. Before deploying: `ssh <droplet> "LABEL=pre-promote bash /opt/meta-dashboard/deploy/backup.sh"`.
+3. Add `VPS_API_TOKEN` to `/opt/meta-dashboard/.env`, deploy trunk the normal way.
+4. Remove the `/api/v1/` block from the vhost and reload nginx — one process serves both again.
+5. `systemctl disable --now meta-web-next` and delete `/opt/meta-next`.
+
+Step 3 is the only moment the team's app restarts onto this code. The unproven part is that the
+server-fn transport now validates input with real zod schemas where it previously passed data
+through an identity cast — a payload the UI sends malformed would newly be rejected. Watch
+`journalctl -u meta-web -f` through the first navigation of every section, and
+`bash /opt/meta-ops/rollback.sh` restores the previous build in about 15 seconds.
+
+## TLS
+
+Already in place — certbot has run on the droplet for `analytics.dotmads.com` and
+`analytics.madsmonitor.com`, and port 80 301-redirects. Note the vhosts committed under `deploy/`
+are the **pre-certbot templates**; the deployed files in `/etc/nginx/sites-available/` were
+rewritten in place by certbot and are captured by `deploy/backup.sh`, not by git.
+
+This matters because the API returns `403 insecure_transport` when `NODE_ENV=production` and
+`X-Forwarded-Proto` is not `https` — a bearer token crossing plaintext is a token in the clear, so
+it refuses rather than trusting that certbot was run. The `/api/v1/` location sets that header.
 
 ## Calling it
 
@@ -84,7 +130,7 @@ is safe to retry or cache.
 `unknown_actor`, `bad_request`, `invalid_input`, `unknown_op`, `forbidden`, `internal`.
 
 **Transport errors and domain errors are different things.** A 4xx envelope means the call could not
-be made. Eight ops instead answer `200` with a domain failure *inside* `data` — `getFinance` returns
+be made. Eight ops instead answer `200` with a domain failure _inside_ `data` — `getFinance` returns
 `{error:"Forbidden"}`, the user-admin and client-mapping mutations return `{ok:false,error}`. That is
 their existing contract and the UI branches on it, so it was preserved rather than normalised.
 
