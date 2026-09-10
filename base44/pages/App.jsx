@@ -1,7 +1,7 @@
 import { Toaster } from "@/components/ui/toaster"
 import { QueryClientProvider } from '@tanstack/react-query'
 import { queryClientInstance } from '@/lib/query-client'
-import { BrowserRouter as Router, Route, Routes } from 'react-router-dom';
+import { BrowserRouter as Router, Navigate, Route, Routes } from 'react-router-dom';
 import PageNotFound from './lib/PageNotFound';
 import { AuthProvider, useAuth } from '@/lib/AuthContext';
 import UserNotRegisteredError from '@/components/UserNotRegisteredError';
@@ -41,7 +41,7 @@ const AuthenticatedApp = () => {
     <Routes>
       {/*
         The auth pages the scaffold ships in src/pages/. They MUST be routed: the SDK's
-        `redirectToLogin()` sends the browser to /login?from_url=…, so without this route every
+        `redirectToLogin()` sends the browser to /login?from_url=…, so without these every
         sign-in attempt lands on PageNotFound — a 404 that looks like a broken app and is really a
         missing line here. Paths match what the SDK and the platform's page_names expect.
       */}
@@ -50,6 +50,14 @@ const AuthenticatedApp = () => {
       <Route path="/forgot-password" element={<ForgotPassword />} />
       <Route path="/reset-password" element={<ResetPassword />} />
       <Route path="/oauth-consent" element={<OAuthConsent />} />
+
+      {/*
+        `/` needs a route of its own. Without one the root falls through to the catch-all and
+        renders `The page "" could not be found` — which is exactly what a user sees straight after
+        signing in, because the SDK returns them to the app root. Points at the probe until the
+        real dashboard lands.
+      */}
+      <Route path="/" element={<Navigate to="/vps-probe" replace />} />
 
       <Route path="/vps-probe" element={<VpsProbe />} />
       <Route path="*" element={<PageNotFound />} />

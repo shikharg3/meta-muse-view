@@ -120,6 +120,28 @@ the published URL after a sandbox write means debugging the previous build.
 Backend functions are the exception: they deploy on write and serve both URLs at once, which is why
 `base44 exec` proved the whole chain green while the published frontend was still 404ing.
 
+### Publishing from the CLI
+
+No Base44 UI click and **no personal API key** needed. The Apps API deploy endpoint accepts the
+token `base44 login` already stored, which carries `apps:write`:
+
+```bash
+T=$(jq -r .accessToken ~/.base44/auth/auth.json)
+curl -s -X POST -H "Authorization: Bearer $T" -H 'Content-Type: application/json' -d '{}' \
+  "https://app.base44.com/api/apps/$BASE44_APP_ID/deploy" >/dev/null
+```
+
+An empty body deploys the current draft; pass `{"checkpoint_id": "..."}` to publish an earlier
+saved version instead — which is also the rollback. Allow ~20s, then re-check the two commit
+hashes above; they should match.
+
+The docs specify an `api_key:` header for this API and a personal key from account settings. The
+`Authorization: Bearer` form works with the CLI session token, which is preferable: it is already
+scoped (`apps:read apps:write sandbox:write`) rather than being account-wide.
+
+> Passing a bearer token in the `api_key` header returns a 500 that **echoes the whole token back**
+> in the error message. Harmless here, but do not paste those responses into a log or an issue.
+
 ### Gotchas found the hard way
 
 - **The scaffold's auth pages are NOT routed.** `src/pages/{Login,Register,ForgotPassword,`
