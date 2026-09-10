@@ -4,6 +4,7 @@ import { consumeLastCapturedError } from "./lib/error-capture";
 import { renderErrorPage } from "./lib/error-page";
 import { handleAuth } from "./lib/auth/gate";
 import { handleChatStream } from "./server/agent/stream";
+import { handleApiRequest } from "./server/api/http";
 
 type ServerEntry = {
   fetch: (request: Request, env: unknown, ctx: unknown) => Promise<Response> | Response;
@@ -42,6 +43,12 @@ async function normalizeCatastrophicSsrResponse(response: Response): Promise<Res
 export default {
   async fetch(request: Request, env: unknown, ctx: unknown) {
     try {
+      // The HTTP API for the Base44 frontend, ahead of the cookie gate on purpose: the gate 302s
+      // HTML callers to /login and 401s everything else, neither of which is a sane answer for a
+      // bearer-token machine caller. It authenticates itself and returns null for other paths.
+      const apiResponse = await handleApiRequest(request);
+      if (apiResponse) return apiResponse;
+
       // Auth gate: handles /auth/* and blocks unauthenticated access to everything
       // except the login/signup pages and static assets.
       const authResponse = await handleAuth(request);

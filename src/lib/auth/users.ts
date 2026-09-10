@@ -51,7 +51,7 @@ export async function findUserById(id: string): Promise<UserRow | null> {
   const [u] = await db.select().from(schema.users).where(eq(schema.users.id, id));
   return u ?? null;
 }
-async function findByEmail(email: string): Promise<UserRow | null> {
+export async function findUserByEmail(email: string): Promise<UserRow | null> {
   const [u] = await db
     .select()
     .from(schema.users)
@@ -86,7 +86,7 @@ export async function signupWithPassword(
   const e = email.trim().toLowerCase();
   if (!EMAIL_RE.test(e)) return { ok: false, error: "Enter a valid email address." };
   if (password.length < 8) return { ok: false, error: "Password must be at least 8 characters." };
-  if (await findByEmail(e))
+  if (await findUserByEmail(e))
     return { ok: false, error: "An account with that email already exists — try logging in." };
   const bootRole = await bootstrapRole(e);
   const [u] = await db
@@ -105,7 +105,7 @@ export async function signupWithPassword(
 }
 
 export async function loginWithPassword(email: string, password: string): Promise<AuthOutcome> {
-  const u = await findByEmail(email);
+  const u = await findUserByEmail(email);
   if (!u || !(await verifyPassword(password, u.passwordHash))) {
     return { ok: false, error: "Wrong email or password." };
   }

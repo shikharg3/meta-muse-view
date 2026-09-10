@@ -107,6 +107,39 @@ which looks exactly like a real failure.
 **Secrets** live only in `.env` (gitignored, with `.env.example` as the tracked template). Share them
 through a password manager, never through git, chat, or a commit.
 
+## Two frontends, one backend
+
+The frontend is moving to **Base44**; the backend stays here. Every backend operation is an **op**
+in `src/server/api/ops/*.ts`, and both frontends dispatch through the same ones:
+
+- the in-repo TanStack UI, via the `createServerFn` wrappers in `src/lib/api/*.ts`, which are now
+  nothing but `.handler(({ data }) => ops.someOp.run(data))`;
+- the Base44 SPA, via `POST /api/v1/<op>` in `src/server/api/http.ts`.
+
+So: **add a backend operation as an op, never as a server fn**. A wrapper that calls a delegate
+directly is invisible to Base44, and logic put in a wrapper dies with that frontend — which is
+exactly what nearly happened to `getBreakdowns`' client→accountIds lookup and to the superadmin
+gates that used to live in `src/lib/api/{finance,conversations}.ts`.
+
+Op names are the historical server-fn export names (`getOverview`, `saveInfraProfile`) in one flat
+namespace. `src/server/api/ops/index.ts` builds the table by walking module namespaces — **not** by
+side effect. `package.json` sets `"sideEffects": false`, so `import "./ops"` for registration was
+silently dropped by the bundler and shipped an empty registry in `.output/` while every in-process
+test passed. New module under `ops/` ⇒ add it to `MODULES`; `registry.test.ts` fails if you forget.
+
+`.inputValidator` in `src/lib/api/*.ts` is a **type annotation, not validation** — it always was
+(`(d: T) => d`). Real zod schemas live on the ops, so both transports validate.
+
+Auth works on both transports because `currentUser()` reads an actor context
+(`src/lib/auth/actor.ts`) before falling back to the session cookie. `requireAdmin()`,
+`requireApproved()`, `requireUser()` and `audit()` therefore need no transport-specific branches.
+Base44 asserts identity only; role, approval status and the audit trail stay in Postgres. See
+`base44/README.md`.
+
+`VPS_API_TOKEN` gates the API and is database-equivalent — Base44 backend-function secrets only,
+never frontend code, HTTPS only (the API returns `403 insecure_transport` over plaintext in
+production). Unset it and `/api/v1/*` answers `503`; it never falls open.
+
 ## Verifying before you claim something works
 
 - `bunx tsc --noEmit` and `bun run lint` must be clean.

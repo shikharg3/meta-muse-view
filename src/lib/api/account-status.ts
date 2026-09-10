@@ -1,19 +1,15 @@
 import { createServerFn } from "@tanstack/react-start";
-import {
-  fetchStatusOverrides,
-  setStatusOverride,
-  clearStatusOverride,
-} from "@/server/fns/account-status";
+import * as ops from "@/server/api/ops/account-status";
 
 export const getStatusOverrides = createServerFn({ method: "GET" }).handler(() =>
-  fetchStatusOverrides(),
+  ops.getStatusOverrides.run(undefined),
 );
 
 /** Pin one board row's Account Status. Only machine-owned values are accepted server-side. */
 export const pinStatusOverride = createServerFn({ method: "POST" })
   .inputValidator((d: { pageId: string; status: string }) => d)
-  .handler(({ data }) => setStatusOverride(data));
+  .handler(({ data }) => ops.pinStatusOverride.run(data));
 
 export const unpinStatusOverride = createServerFn({ method: "POST" })
   .inputValidator((d: { pageId: string }) => d)
-  .handler(({ data }) => clearStatusOverride(data));
+  .handler(({ data }) => ops.unpinStatusOverride.run(data));

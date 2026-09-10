@@ -1,4 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
-import { fetchMetaHealth } from "@/server/fns/health";
+import * as ops from "@/server/api/ops/health";
 
-export const getMetaHealth = createServerFn({ method: "GET" }).handler(() => fetchMetaHealth());
+export const getMetaHealth = createServerFn({ method: "GET" }).handler(() =>
+  ops.getMetaHealth.run(undefined),
+);

@@ -46,6 +46,11 @@ const schema = z.object({
         .map((x) => x.trim().toLowerCase())
         .filter(Boolean),
     ),
+  // Shared bearer secret for the HTTP API in src/server/api (the Base44 frontend's only way in).
+  // Unset disables the API entirely — /api/v1/* answers 503 rather than falling open. Treat it as
+  // database-equivalent: it must live only in a Base44 *backend function* secret, never in
+  // frontend code, and it is only ever presented over HTTPS.
+  VPS_API_TOKEN: z.string().min(32, "VPS_API_TOKEN must be at least 32 chars").optional(),
 });
 
 export type Env = z.infer<typeof schema>;

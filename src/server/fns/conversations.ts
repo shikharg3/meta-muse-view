@@ -58,8 +58,10 @@ export interface MessagePayload extends Partial<MessageExtras> {
  * What the browser gets. Deliberately NOT the full payload.
  *
  * `replay` holds every tool result the turn fetched — thousands of characters per turn that the UI
- * never renders. Shipping it would put the entire conversation's raw data through the wire on every
- * thread open, and TanStack's serializer rejects its `Record<string, unknown>` anyway.
+ * never renders — and `usage` is raw token accounting the client has no use for. Shipping them
+ * would put the entire conversation's raw data through the wire on every thread open, so every
+ * read path that returns `StoredMessage` strips both explicitly. Nothing downstream will catch a
+ * miss: over plain JSON both fields serialise perfectly happily.
  */
 export type ClientMessagePayload = Omit<MessagePayload, "replay" | "usage">;
 
@@ -291,11 +293,18 @@ export async function getAnyConversation(
     title: conv.title,
     userEmail: conv.email,
     userName: conv.name,
-    messages: rows.map((r) => ({
-      role: r.role as StoredMessage["role"],
-      content: r.content,
-      payload: r.payload as MessagePayload | null,
-      costUsd: r.costUsd,
-    })),
+    messages: rows.map((r) => {
+      const stored = r.payload as MessagePayload | null;
+      const base = {
+        role: r.role as StoredMessage["role"],
+        content: r.content,
+        costUsd: r.costUsd,
+      };
+      if (!stored) return { ...base, payload: null };
+      // Strip explicitly — `StoredMessage.payload` is `ClientMessagePayload`, and nothing else
+      // enforces that here. See the note on `ClientMessagePayload`.
+      const { replay: _replay, usage: _usage, ...payload } = stored;
+      return { ...base, payload };
+    }),
   };
 }

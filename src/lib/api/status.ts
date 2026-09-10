@@ -1,4 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
-import { fetchSyncStatus } from "@/server/fns/status";
+import * as ops from "@/server/api/ops/status";
 
-export const getSyncStatus = createServerFn({ method: "GET" }).handler(() => fetchSyncStatus());
+export const getSyncStatus = createServerFn({ method: "GET" }).handler(() =>
+  ops.getSyncStatus.run(undefined),
+);

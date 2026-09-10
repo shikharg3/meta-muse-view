@@ -1,5 +1,5 @@
 import { SESSION_COOKIE, readCookie, verifySession } from "@/lib/auth/session";
-import { findUserById } from "@/lib/auth/users";
+import { findUserById, toPublicUser, type PublicUser } from "@/lib/auth/users";
 import {
   appendTurn,
   createConversation,
@@ -9,6 +9,14 @@ import {
 import { chatTurn, type ChatMessage } from "./chat";
 import { emptyExtras, type ChatEvent } from "./events";
 
+/** Resolve the cookie session for the in-repo UI's `/api/chat/stream` calls. */
+async function userFromCookie(request: Request): Promise<PublicUser | null> {
+  const session = verifySession(readCookie(request, SESSION_COOKIE));
+  if (!session) return null;
+  const row = await findUserById(session.uid);
+  return row ? toPublicUser(row) : null;
+}
+
 /**
  * The streaming chat endpoint, served straight off the raw fetch handler in `src/server.ts`.
  *
@@ -16,18 +24,26 @@ import { emptyExtras, type ChatEvent } from "./events";
  * forced a user to watch a static spinner through five model round-trips. This writes newline-
  * delimited `ChatEvent` JSON as the turn happens.
  *
- * Auth is resolved from the session cookie on the Request rather than via `currentUser()`, because
- * there is no server-fn request context here. `handleAuth` in `server.ts` has already rejected
- * unauthenticated and non-approved callers; this re-reads the session only to learn WHO is asking,
- * which the tool registry needs for role-gated tools.
+ * Two callers, two ways of learning who is asking:
+ *
+ * - the in-repo UI posts to `/api/chat/stream` with a session cookie, already vetted by
+ *   `handleAuth`; `actor` is omitted and the session is re-read here, because there is no
+ *   server-fn request context to call `currentUser()` from.
+ * - the Base44 frontend posts to `/api/v1/chat/stream`, where `src/server/api/http.ts` has already
+ *   verified the bearer token and resolved the actor from its identity header, and passes it in.
+ *
+ * Either way the approval check below is the one that matters, and NDJSON survives the Base44
+ * proxy because `base44.functions.fetch()` hands back the raw `Response` body.
  */
-export async function handleChatStream(request: Request): Promise<Response> {
+export async function handleChatStream(
+  request: Request,
+  actor?: PublicUser | null,
+): Promise<Response> {
   if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
 
-  const session = verifySession(readCookie(request, SESSION_COOKIE));
-  if (!session) return new Response("Unauthorized", { status: 401 });
-  const user = await findUserById(session.uid);
-  if (!user || user.status !== "approved") return new Response("Forbidden", { status: 403 });
+  const user = actor === undefined ? await userFromCookie(request) : actor;
+  if (!user) return new Response("Unauthorized", { status: 401 });
+  if (user.status !== "approved") return new Response("Forbidden", { status: 403 });
 
   let body: { conversationId?: unknown; message?: unknown };
   try {

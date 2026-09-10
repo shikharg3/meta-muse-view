@@ -1,4 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
-import { fetchActivity } from "@/server/fns/activity";
+import * as ops from "@/server/api/ops/activity";
 
-export const getActivity = createServerFn({ method: "GET" }).handler(() => fetchActivity());
+export const getActivity = createServerFn({ method: "GET" }).handler(() =>
+  ops.getActivity.run(undefined),
+);

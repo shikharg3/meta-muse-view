@@ -19,9 +19,20 @@ import {
   type UserRole,
 } from "@/lib/auth/users";
 import { roleChangeError } from "@/lib/auth/roles";
+import { actorContext } from "@/lib/auth/actor";
+import { ForbiddenError, UnauthorizedError } from "@/lib/auth/errors";
 
-/** Resolve the signed-in user from the session cookie (fresh role/status from DB). */
+/**
+ * Resolve the signed-in user — from the HTTP API's actor context when there is one, otherwise from
+ * the session cookie (fresh role/status from the DB either way).
+ *
+ * The actor branch is what lets every guard below, and every `audit()` call, serve both the
+ * in-repo TanStack UI and the Base44 frontend without forking. `getCookie()` is only reachable
+ * inside a server-fn request context, which the HTTP API does not have; see `lib/auth/actor.ts`.
+ */
 export async function currentUser(): Promise<PublicUser | null> {
+  const ctx = actorContext();
+  if (ctx) return ctx.actor;
   const session = verifySession(getCookie(SESSION_COOKIE));
   if (!session) return null;
   const u = await findUserById(session.uid);
@@ -31,7 +42,7 @@ export async function currentUser(): Promise<PublicUser | null> {
 /** Throw unless the caller is an approved admin — for sensitive (settings/reset/mapping) fns. */
 export async function requireAdmin(): Promise<PublicUser> {
   const me = await currentUser();
-  if (!me || !isAdmin(me.role)) throw new Error("Forbidden: admin access required.");
+  if (!me || !isAdmin(me.role)) throw new ForbiddenError("Forbidden: admin access required.");
   return me;
 }
 
@@ -45,14 +56,32 @@ export async function requireAdmin(): Promise<PublicUser> {
  */
 export async function requireApproved(): Promise<PublicUser> {
   const me = await currentUser();
-  if (!me || me.status !== "approved") throw new Error("Forbidden: approved access required.");
+  if (!me || me.status !== "approved") {
+    throw new ForbiddenError("Forbidden: approved access required.");
+  }
   return me;
 }
 
 /** Throw unless the caller is a superadmin — for cross-user chat history + finance. */
 export async function requireSuperadmin(): Promise<PublicUser> {
   const me = await currentUser();
-  if (!me || !isSuperadmin(me.role)) throw new Error("Forbidden: superadmin access required.");
+  if (!me || !isSuperadmin(me.role)) {
+    throw new ForbiddenError("Forbidden: superadmin access required.");
+  }
+  return me;
+}
+
+/**
+ * Throw unless somebody is signed in, and return their id.
+ *
+ * Every conversations op filters by owner, so this is the ownership key rather than a permission
+ * check — a signed-in member legitimately reads their own chat history. Previously a private
+ * `requireUid()` inside `src/lib/api/conversations.ts`, i.e. in the transport layer, where the
+ * HTTP API could not reach it.
+ */
+export async function requireUser(): Promise<PublicUser> {
+  const me = await currentUser();
+  if (!me) throw new UnauthorizedError();
   return me;
 }
 
