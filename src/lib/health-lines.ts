@@ -24,6 +24,15 @@ export interface HealthInput {
   notion: HealthSource | null;
   /** `notion-budget` — writes the 🤖 columns back to the board. */
   notionBudget: HealthSource | null;
+  /**
+   * `sync-cycle` — the cycle itself, whose `note` is `full|core: running|completed`.
+   *
+   * Needed because the token check and the `notion` read are stamped at the TOP of a cycle, so
+   * their age is really "how long ago the current pass started". A daily full pass takes 4-5h
+   * against dev-tier rate limits, which made both of them trip the 2h window every single day
+   * while the sync was working perfectly. This is what tells the difference.
+   */
+  syncCycle: HealthSource | null;
 }
 
 export type Tone = "ok" | "warn" | "bad" | "idle";
@@ -47,6 +56,16 @@ export const STALE_AFTER_MIN = 120;
  */
 export const WRITE_BACK_STALE_AFTER_MIN = 36 * 60;
 
+/**
+ * How long a pass may claim to be `running` before the claim is the alarm.
+ *
+ * A worker killed mid-pass leaves `sync-cycle` reading `running` forever, and that must not
+ * suppress the staleness warning indefinitely — the outage it hides is precisely the one the 2h
+ * window exists to catch. Observed full passes run ~4h45m on dev-tier pacing through a storm of
+ * Meta "Service temporarily unavailable"; 8h is comfortably past the worst legitimate case.
+ */
+export const MAX_CYCLE_MIN = 8 * 60;
+
 /** `Date.parse`, or null when there is no usable timestamp. A malformed one must read as "never
  *  checked" rather than sliding through the `> STALE_AFTER_MIN` comparison as NaN, which is false
  *  and would paint a broken service green. */
@@ -67,6 +86,38 @@ function ageMin(iso: string | null | undefined, now: number): number | null {
 function clock(iso: string | null | undefined): string {
   const t = stamp(iso);
   return t === null ? "never" : new Date(t).toLocaleTimeString();
+}
+
+/**
+ * Why a cycle-start stamp is older than its window — or null when there is no excuse and the age
+ * is a real warning.
+ *
+ * `running`: a pass is in flight, so the token/Notion stamps are already as fresh as they can be;
+ * the next refresh happens when it ends. `settling`: a pass finished within the normal window, so
+ * the next one re-stamps shortly. `null` also covers the stuck case — a pass claiming `running`
+ * past {@link MAX_CYCLE_MIN} means the worker died mid-pass, which must warn rather than excuse.
+ */
+function cycleExcuse(
+  cycle: HealthSource | null,
+  now: number,
+): { kind: "running" | "settling"; phase: string; age: number } | null {
+  if (!cycle?.ok) return null;
+  const age = ageMin(cycle.checkedAt, now);
+  if (age === null) return null;
+  const note = cycle.note ?? "";
+  const phase = note.startsWith("full") ? "full" : "core";
+  if (note.endsWith("running")) {
+    return age <= MAX_CYCLE_MIN ? { kind: "running", phase, age } : null;
+  }
+  return age <= STALE_AFTER_MIN ? { kind: "settling", phase, age } : null;
+}
+
+/** How the excuse reads in a tooltip, so both lines say the same thing. */
+function excuseTitle(e: { kind: "running" | "settling"; phase: string; age: number }): string {
+  const hrs = e.age >= 60 ? `${Math.round(e.age / 60)}h` : `${Math.round(e.age)}m`;
+  return e.kind === "running"
+    ? `a ${e.phase} sync pass has been running for ${hrs} and re-checks when it finishes`
+    : `the ${e.phase} pass finished ${hrs} ago and the next one re-checks shortly`;
 }
 
 function metaLine(d: HealthInput, now: number): StatusLine {
@@ -90,10 +141,22 @@ function metaLine(d: HealthInput, now: number): StatusLine {
     };
   }
   if (age !== null && age > STALE_AFTER_MIN) {
+    // The token is re-checked at the TOP of each cycle, so this age is the age of the current
+    // pass's start, not evidence the worker is down. Only warn when the cycle cannot explain it.
+    const excuse = cycleExcuse(d.syncCycle, now);
+    if (!excuse) {
+      return {
+        tone: "warn",
+        label: "Meta: sync stale",
+        title: `Token OK, but last verified ${Math.round(age / 60)}h ago — the sync worker may be down.`,
+      };
+    }
     return {
-      tone: "warn",
-      label: "Meta: sync stale",
-      title: `Token OK, but last verified ${Math.round(age / 60)}h ago — the sync worker may be down.`,
+      tone: "ok",
+      label: tierLabel ? `Meta OK · ${tierLabel}` : "Meta OK",
+      title:
+        `Meta app + system token OK${tierLabel ? ` · ${tierLabel} rate limits` : ""} · ` +
+        `last verified ${clock(d.checkedAt)} — ${excuseTitle(excuse)}`,
     };
   }
   return {
@@ -144,15 +207,28 @@ function notionLine(d: HealthInput, now: number): StatusLine | null {
   const rAge = ageMin(read?.checkedAt, now);
   const wAge = ageMin(write?.checkedAt, now);
   const stale: { which: string; age: number }[] = [];
-  if (read && rAge !== null && rAge > STALE_AFTER_MIN) stale.push({ which: "sync", age: rAge });
-  if (write && wAge !== null && wAge > WRITE_BACK_STALE_AFTER_MIN)
+  // The read runs at the top of each cycle, so a long pass makes it look stale when it is not; the
+  // write-back has its own 36h window and needs no such allowance.
+  const excuse = cycleExcuse(d.syncCycle, now);
+  if (read && rAge !== null && rAge > STALE_AFTER_MIN && !excuse) {
+    stale.push({ which: "sync", age: rAge });
+  }
+  if (write && wAge !== null && wAge > WRITE_BACK_STALE_AFTER_MIN) {
     stale.push({ which: "board writes", age: wAge });
+  }
   if (stale.length > 0) {
     const worst = stale.reduce((a, b) => (b.age > a.age ? b : a));
     return {
       tone: "warn",
       label: `Notion: ${worst.which} stale`,
       title: `Notion ${worst.which} OK but last succeeded ${Math.round(worst.age / 60)}h ago.`,
+    };
+  }
+  if (read && rAge !== null && rAge > STALE_AFTER_MIN && excuse) {
+    return {
+      tone: "ok",
+      label: "Notion OK",
+      title: `Notion board OK · sync ${clock(read.checkedAt)} — ${excuseTitle(excuse)}`,
     };
   }
 

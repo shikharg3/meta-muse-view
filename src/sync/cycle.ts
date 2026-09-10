@@ -268,8 +268,18 @@ export function isCycleRunning(): boolean {
  */
 export const MIN_CYCLE_GAP_MS = 45 * 60_000;
 
-/** Service key under which the cycle records its own start/finish, doubling as the cooldown clock. */
+/** Service key the cycle records its start/finish under, for the UI's health badge. */
 const CYCLE_SERVICE = "sync-cycle";
+
+/**
+ * Separate key holding ONLY the cycle's start time, which is what the cooldown measures.
+ *
+ * `CYCLE_SERVICE` is rewritten on completion so the badge can show `full: completed`, which means
+ * reading the cooldown off it measures start-to-*finish* — the exact opposite of what the comment
+ * below promises. A 4h45m full pass then bought itself another 45 minutes of silence after it
+ * ended, delaying the core pass that re-checks the token and the Notion board.
+ */
+const CYCLE_START_SERVICE = "sync-cycle-start";
 
 /**
  * One full sync cycle (token health → per-account structure/insights/breakdowns).
@@ -286,7 +296,12 @@ export async function runCycle(opts: { full?: boolean; force?: boolean } = {}): 
     return false;
   }
   if (!opts.force) {
-    const since = await msSinceLastCycle(CYCLE_SERVICE);
+    // Falls back to the legacy key: on the first run after this change `sync-cycle-start` does not
+    // exist yet, and treating "no row" as "no cooldown" would fire a sweep the instant the worker
+    // restarts — the exact hazard the floor exists to prevent. The legacy row is start-or-finish,
+    // so the fallback can only ever under-report the gap, i.e. err towards skipping.
+    const since =
+      (await msSinceLastCycle(CYCLE_START_SERVICE)) ?? (await msSinceLastCycle(CYCLE_SERVICE));
     if (since !== null && since < MIN_CYCLE_GAP_MS) {
       console.log(
         `[sync] last cycle started ${Math.round(since / 60_000)}m ago; ` +
@@ -299,6 +314,7 @@ export async function runCycle(opts: { full?: boolean; force?: boolean } = {}): 
   try {
     // Stamped BEFORE any Meta call so the cooldown measures spacing between bursts, not between
     // completions — a 4h full pass must not license a second sweep the moment it ends.
+    await recordServiceHealth(CYCLE_START_SERVICE, true, opts.full ? "full" : "core");
     await recordServiceHealth(CYCLE_SERVICE, true, opts.full ? "full: running" : "core: running");
     // Notion client board first: independent of Meta credentials and non-fatal.
     try {

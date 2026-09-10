@@ -89,6 +89,10 @@ export const getDataFreshness: AgentTool = {
       },
       notion: service(h.notion, now),
       notionBudget: service(h.notionBudget, now),
+      // Without this the model reads a 5h-old token/Notion timestamp and reports a broken sync,
+      // contradicting the badge on screen. `note` is `full|core: running|completed`, so a long
+      // pass in flight is the explanation, not an outage.
+      syncCycle: service(h.syncCycle, now),
       staleAfterMinutes: STALE_AFTER_MIN,
       writeBackStaleAfterMinutes: WRITE_BACK_STALE_AFTER_MIN,
     };

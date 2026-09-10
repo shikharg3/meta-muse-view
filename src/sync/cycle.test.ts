@@ -159,9 +159,13 @@ test("a restart cannot re-trigger a sweep inside the cooldown, and the clock sur
   // sweep of every account. An in-process timer cannot stop that — the timestamp has to be in the
   // database, because the process is what restarted.
   await db.execute(sql`truncate table service_health cascade`);
+  await recordServiceHealth("sync-cycle-start", true, "core");
   await recordServiceHealth("sync-cycle", true, "core: running");
 
-  const since = await msSinceLastCycle("sync-cycle");
+  // `sync-cycle-start` is the cooldown clock, not `sync-cycle`: the latter is rewritten on
+  // completion, so reading the gap off it measured start-to-finish and let a 4h45m full pass buy
+  // itself another 45 minutes of silence after it had already ended.
+  const since = await msSinceLastCycle("sync-cycle-start");
   expect(since).not.toBeNull();
   expect(since!).toBeLessThan(MIN_CYCLE_GAP_MS);
 
@@ -185,13 +189,14 @@ test("a restart cannot re-trigger a sweep inside the cooldown, and the clock sur
 
 test("the cooldown lapses once the gap has passed", async () => {
   await db.execute(sql`truncate table service_health cascade`);
+  await recordServiceHealth("sync-cycle-start", true, "core");
   await recordServiceHealth("sync-cycle", true, "core: completed");
   await db
     .update(schema.serviceHealth)
     .set({ checkedAt: new Date(Date.now() - MIN_CYCLE_GAP_MS - 60_000) })
-    .where(eq(schema.serviceHealth.service, "sync-cycle"));
+    .where(eq(schema.serviceHealth.service, "sync-cycle-start"));
 
-  const since = await msSinceLastCycle("sync-cycle");
+  const since = await msSinceLastCycle("sync-cycle-start");
   expect(since!).toBeGreaterThan(MIN_CYCLE_GAP_MS);
 
   await runCycle();

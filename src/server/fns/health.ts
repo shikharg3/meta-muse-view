@@ -13,6 +13,9 @@ export interface MetaHealth {
    *  column stopped it for six days in Aug 2026 while `notion` stayed green — so the badge needs
    *  both. Null = never run. */
   notionBudget: ServiceHealth | null;
+  /** "sync-cycle": the pass itself. Lets the badge tell a 4-5h full pass apart from a dead worker —
+   *  the token check and the `notion` read are both stamped at the top of a cycle. */
+  syncCycle: ServiceHealth | null;
   lastRefreshAt: string | null; // max lastInsightsSync — the last successful data refresh (ISO)
 }
 
@@ -28,9 +31,10 @@ export async function fetchMetaHealth(): Promise<MetaHealth> {
     })
     .from(schema.tokenHealth)
     .where(eq(schema.tokenHealth.id, "singleton"));
-  const [notion, notionBudget] = await Promise.all([
+  const [notion, notionBudget, syncCycle] = await Promise.all([
     getServiceHealth("notion"),
     getServiceHealth("notion-budget"),
+    getServiceHealth("sync-cycle"),
   ]);
   const [sync] = await db
     .select({ last: sql<string | null>`max(${schema.syncState.lastInsightsSync})` })
@@ -46,6 +50,7 @@ export async function fetchMetaHealth(): Promise<MetaHealth> {
       note: null,
       notion,
       notionBudget,
+      syncCycle,
       lastRefreshAt,
     };
   return {
@@ -56,6 +61,7 @@ export async function fetchMetaHealth(): Promise<MetaHealth> {
     note: row.note ?? null,
     notion,
     notionBudget,
+    syncCycle,
     lastRefreshAt,
   };
 }
