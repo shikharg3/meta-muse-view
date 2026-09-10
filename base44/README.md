@@ -98,7 +98,35 @@ BASE44_APP_ID=6a9fc1bd1da17a04aaf31ecc base44 secrets list
 `/opt/meta-next/.env`, `systemctl restart meta-web-next`, then re-set the Base44 secret. Unset it
 and the API answers `503`; it never falls open.
 
+### Two URLs: draft vs published
+
+```
+https://preview--analytic-meta-muse-view.base44.app   the DRAFT — every sandbox write, immediately
+https://analytic-meta-muse-view.base44.app            the PUBLISHED build — only changes on Publish
+```
+
+Sandbox writes are auto-committed within seconds but do **not** reach the published site. Compare
+`last_git_commit_hash` (draft) with `last_deployed_git_commit_hash` (live) to see the gap:
+
+```bash
+T=$(jq -r .accessToken ~/.base44/auth/auth.json)
+curl -s -H "Authorization: Bearer $T" https://app.base44.com/api/apps/$BASE44_APP_ID \
+  | jq -r '"draft=\(.last_git_commit_hash) live=\(.last_deployed_git_commit_hash)"'
+```
+
+**Iterate against the preview URL**, and Publish only when a change should go live. Chasing a bug on
+the published URL after a sandbox write means debugging the previous build.
+
+Backend functions are the exception: they deploy on write and serve both URLs at once, which is why
+`base44 exec` proved the whole chain green while the published frontend was still 404ing.
+
 ### Gotchas found the hard way
+
+- **The scaffold's auth pages are NOT routed.** `src/pages/{Login,Register,ForgotPassword,`
+  `ResetPassword,OAuthConsent}.jsx` all ship with the scaffold, but `src/App.jsx` starts with only
+  a `{/* Add your page Route elements here */}` comment. `base44.auth.redirectToLogin()` sends the
+  browser to `/login?from_url=…`, so until those five `<Route>`s exist every sign-in lands on
+  `PageNotFound` — a 404 that reads as a broken app and is one missing line in `App.jsx`.
 
 - **`base44 login` is a device flow** that waits indefinitely. Run it as a supervised process, not
   under a command timeout — a killed login leaves no session and the next invocation mints a new

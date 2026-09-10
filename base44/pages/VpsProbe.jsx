@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { callVps, VpsCallError } from '@/api/vps';
+import { useAuth } from '@/lib/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -93,6 +94,7 @@ function Check({ check }) {
 
 export default function VpsProbe() {
   const [run, setRun] = useState(false);
+  const { isAuthenticated, isLoadingAuth, navigateToLogin, user } = useAuth();
 
   return (
     <div className="mx-auto max-w-2xl p-6">
@@ -105,16 +107,40 @@ export default function VpsProbe() {
             Calls the DigitalOcean backend through the <code>vps</code> function. The database, the
             Meta sync and every business rule stay on the VPS; this app only renders.
           </p>
-          {run ? (
+
+          {/*
+            The app is public-without-login, so an anonymous visitor reaches this page. Every op
+            needs a Base44 identity — the function resolves `auth.me()` and forwards the email as
+            the actor — so without a session all six checks return 401 "Authentication required",
+            which looks like a broken bridge and is not one. Ask for the sign-in instead.
+          */}
+          {isLoadingAuth ? (
+            <p className="mt-4 text-sm">Checking your session…</p>
+          ) : !isAuthenticated ? (
+            <div className="mt-4">
+              <p className="text-sm">
+                Sign in first — every op is executed as <em>you</em>, and the VPS decides what you
+                may see from its own users table.
+              </p>
+              <Button className="mt-3" onClick={navigateToLogin}>
+                Sign in
+              </Button>
+            </div>
+          ) : run ? (
             <div className="mt-4">
               {CHECKS.map((c) => (
                 <Check key={c.op} check={c} />
               ))}
             </div>
           ) : (
-            <Button className="mt-4" onClick={() => setRun(true)}>
-              Run the checks
-            </Button>
+            <div className="mt-4">
+              <p className="text-sm text-muted-foreground">
+                Signed in as <span className="font-mono">{user?.email ?? 'unknown'}</span>
+              </p>
+              <Button className="mt-3" onClick={() => setRun(true)}>
+                Run the checks
+              </Button>
+            </div>
           )}
         </CardContent>
       </Card>
