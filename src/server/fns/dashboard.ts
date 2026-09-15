@@ -58,10 +58,25 @@ export interface EntityTotals {
   clicks: number;
   conversions: number;
   revenue: number;
+  /**
+   * The largest single day of reach in the window. Reach is de-duplicated within a row, so days
+   * cannot be added together to make a window figure.
+   */
   reach: number;
+  /**
+   * Person-days: the daily reach figures added up, counting a returning person once per day.
+   * Deliberately NOT a number of people — it exists to be the denominator of an average daily
+   * frequency, which is the only frequency these rows can support honestly.
+   */
+  reachDays: number;
 }
 
-/** Summed insight totals grouped by entity, for a level over the window. */
+/**
+ * Summed insight totals grouped by entity, for a level over the window.
+ *
+ * `reach` and `reachDays` are the same column aggregated two ways on purpose — see `EntityTotals`.
+ * Frequency needs the person-day sum; a displayed head count needs the peak day.
+ */
 function totalsByEntity(level: string, w: DateWindow, accountIds?: string[]) {
   return db
     .select({
@@ -72,6 +87,7 @@ function totalsByEntity(level: string, w: DateWindow, accountIds?: string[]) {
       conversions: sql<number>`coalesce(sum(${schema.insightsDaily.conversions}),0)`,
       revenue: sql<number>`coalesce(sum(${schema.insightsDaily.conversionValues}),0)`,
       reach: sql<number>`coalesce(max(${schema.insightsDaily.reach}),0)`,
+      reachDays: sql<number>`coalesce(sum(${schema.insightsDaily.reach}),0)`,
     })
     .from(schema.insightsDaily)
     .where(
@@ -206,29 +222,50 @@ export async function objectiveResults(w: DateWindow): Promise<{
   return { campaign, account, total: { value: totalValue, label: dominantLabel(totalLabelSpend) } };
 }
 
-/** Account-level totals summed over [since, before). `reach` is the sum of daily reach. */
+/**
+ * Account-level totals over [since, before).
+ *
+ * Everything here is additive except `reach`, which is a de-duplicated head count per daily row:
+ * the same person reached on Monday and Tuesday is one person, not two, so `sum(reach)` is not a
+ * number of people at all. This used to sum it anyway, which made the reach delta the movement of
+ * a quantity no card ever displayed — the KPI tiles show the peak day (`totalsByEntity` takes
+ * `max`), so a growing peak against a shrinking day-sum pointed the badge the opposite way to the
+ * figure it sat next to.
+ *
+ * So reach is computed the same way the tiles compute it: each entity's largest single day, added
+ * across the entities in scope. For one account that is simply its peak day. It is still not
+ * window reach — that cannot be derived from daily rows, only requested from Meta for the exact
+ * range — but the value and its delta are now the same quantity.
+ */
 async function sumWindow(since: string, before?: string, entityId?: string): Promise<Totals> {
   const conds = [eq(schema.insightsDaily.level, "account"), gte(schema.insightsDaily.date, since)];
   if (before) conds.push(lt(schema.insightsDaily.date, before));
   if (entityId) conds.push(eq(schema.insightsDaily.entityId, entityId));
-  const [r] = await db
-    .select({
-      spend: sql<number>`coalesce(sum(${schema.insightsDaily.spend}),0)`,
-      impressions: sql<number>`coalesce(sum(${schema.insightsDaily.impressions}),0)`,
-      clicks: sql<number>`coalesce(sum(${schema.insightsDaily.clicks}),0)`,
-      conversions: sql<number>`coalesce(sum(${schema.insightsDaily.conversions}),0)`,
-      revenue: sql<number>`coalesce(sum(${schema.insightsDaily.conversionValues}),0)`,
-      reach: sql<number>`coalesce(sum(${schema.insightsDaily.reach}),0)`,
-    })
-    .from(schema.insightsDaily)
-    .where(and(...conds));
+  const [rows, peaks] = await Promise.all([
+    db
+      .select({
+        spend: sql<number>`coalesce(sum(${schema.insightsDaily.spend}),0)`,
+        impressions: sql<number>`coalesce(sum(${schema.insightsDaily.impressions}),0)`,
+        clicks: sql<number>`coalesce(sum(${schema.insightsDaily.clicks}),0)`,
+        conversions: sql<number>`coalesce(sum(${schema.insightsDaily.conversions}),0)`,
+        revenue: sql<number>`coalesce(sum(${schema.insightsDaily.conversionValues}),0)`,
+      })
+      .from(schema.insightsDaily)
+      .where(and(...conds)),
+    db
+      .select({ peak: sql<number>`coalesce(max(${schema.insightsDaily.reach}),0)` })
+      .from(schema.insightsDaily)
+      .where(and(...conds))
+      .groupBy(schema.insightsDaily.entityId),
+  ]);
+  const r = rows[0];
   return {
     spend: num(r?.spend),
     impressions: num(r?.impressions),
     clicks: num(r?.clicks),
     conversions: num(r?.conversions),
     revenue: num(r?.revenue),
-    reach: num(r?.reach),
+    reach: peaks.reduce((total, p) => total + num(p.peak), 0),
   };
 }
 
@@ -643,7 +680,12 @@ export async function fetchCampaigns(
         spend: sk.spend,
         ctr: sk.ctr,
         roas: sk.roas,
-        frequency: sk.impressions / Math.max(1, sk.reach),
+        // Impressions per person-day. The denominator has to be the summed daily reach, not the
+        // peak day: dividing a whole window's impressions by one day's head count scaled this
+        // figure by the length of the selected range, so the same ad set read 5x on a 7-day view
+        // and 20x on a 30-day one. Not Meta's window frequency — that needs de-duplicated window
+        // reach, which daily rows cannot give — but a stable fatigue signal.
+        frequency: sk.impressions / Math.max(1, num(st?.reachDays)),
         // From the ad-set's OWN action totals, so it is correct whether or not ads were loaded.
         results: isReachSpec(rs)
           ? sk.reach
@@ -674,7 +716,8 @@ export async function fetchCampaigns(
       cpc: k.cpc,
       cpm: k.cpm,
       roas: k.roas,
-      frequency: k.impressions / Math.max(1, k.reach),
+      // Impressions per person-day — see the ad-set note above.
+      frequency: k.impressions / Math.max(1, num(t?.reachDays)),
       // Campaign-level action totals — independent of whether ads/ad sets were loaded.
       results: isReachSpec(rs)
         ? k.reach
