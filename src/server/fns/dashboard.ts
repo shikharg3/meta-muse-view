@@ -663,6 +663,12 @@ export async function fetchCampaigns(
       accountName: accName.get(c.accountId) ?? c.accountId,
       spend: k.spend,
       impressions: k.impressions,
+      // `clicks` and `reach` were computed into `k` above and then dropped from the payload, so
+      // any consumer re-aggregating a filtered campaign list could only derive CTR and CPC as
+      // zero. They are the numerator and the denominator of two of the headline metrics; a client
+      // shown "0.00% CTR" for a campaign that plainly has clicks is the cost of omitting them.
+      clicks: k.clicks,
+      reach: k.reach,
       conversions: k.conversions,
       ctr: k.ctr,
       cpc: k.cpc,

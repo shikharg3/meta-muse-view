@@ -75,6 +75,9 @@ export interface Campaign {
   accountName: string;
   spend: number;
   impressions: number;
+  /** Clicks and reach for the window — the numerator/denominator behind CTR, CPC and frequency. */
+  clicks: number;
+  reach: number;
   conversions: number;
   ctr: number;
   cpc: number;
