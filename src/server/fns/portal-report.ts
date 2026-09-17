@@ -177,11 +177,19 @@ async function buildRows(
     return bucket;
   };
 
-  // A whole-range report answers "what did this cost me", so every group the caller selected earns
-  // a row even at zero — its absence would read as a missing campaign rather than a quiet one. A
-  // split report does not: one empty row per silent day is noise, and there is no question a day
-  // with no delivery answers.
-  if (req.granularity === "range") {
+  // A whole-range report answers "what did this cost me", so a group the caller NAMED earns a row
+  // even at zero — asking about a campaign and getting nothing back reads as a failure, not as an
+  // answer. Brands are always seeded for the same reason: a client knows their own brands, and
+  // "your brand spent nothing this month" is the answer.
+  //
+  // An unfiltered campaign report is the one case that is not a question about specific campaigns,
+  // and seeding it would list every abandoned draft on the account — the same noise the campaign
+  // table drops in `delivered()`. Those campaigns simply never open a bucket.
+  //
+  // A split report seeds nothing at all: one empty row per silent day is noise, and there is no
+  // question a day with no delivery answers.
+  const seedZeroRows = req.breakdown !== "campaign" || wanted.size > 0;
+  if (req.granularity === "range" && seedZeroRows) {
     for (const id of campaignIds) {
       const group = groupOf(id);
       if (group !== undefined) bucketAt(group, null);

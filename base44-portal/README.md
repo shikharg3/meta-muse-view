@@ -99,6 +99,15 @@ Steps 2 and 3 are optional — names and commission both have defaults that work
 Notion board has no ad accounts on it yet, the brand screen says so and data appears as soon as
 the board is filled in.
 
+A client's campaign list holds only the campaigns that DELIVERED in the window they are looking
+at. Meta keeps every campaign ever created on an account, so a grant covering 34 campaigns
+typically means 6 that ran and 28 abandoned drafts and duplicates; listing all of them is noise,
+and Ads Manager hides no-delivery campaigns by default too. The rule is "no delivery", not "no
+spend" — a campaign with any figure the portal also sums stays on the list, so the table's columns
+always add up to the overview's totals. An unfiltered whole-range report follows the same rule;
+asking a report about specific campaigns still returns their zeroes, because that is the answer.
+Campaign detail pages stay reachable either way, so an old link never 403s.
+
 To revoke: remove the grant (immediate), or set the user `rejected`, or delete them — deleting
 cascades their grants. Deleting a brand also deletes grants pointing at it, because
 `portal_grants.target_id` deliberately carries no foreign key.

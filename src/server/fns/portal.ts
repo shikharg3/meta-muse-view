@@ -574,8 +574,35 @@ export async function fetchPortalOverview(
 }
 
 /**
- * One row per visible campaign, including campaigns that spent nothing in the window — a client
- * asking "what happened to that campaign" needs to find it, and its absence would read as a bug.
+ * Whether a campaign delivered anything at all in the window.
+ *
+ * Meta keeps every campaign ever created on an account, so a client's list is mostly history:
+ * 28 of betonline.ag's 34 in-scope campaigns are abandoned drafts and duplicates that have never
+ * spent a penny. Listing them is not transparency, it is noise — Ads Manager itself defaults to
+ * hiding campaigns with no delivery in the selected range, so this matches the tool the numbers
+ * come from.
+ *
+ * EVERY metric is checked, not just spend and impressions. That is the point: this can then never
+ * drop a row that contributed to a total the client is also shown, so the campaign table's column
+ * sums stay equal to the overview's. A campaign that somehow recorded a registration without an
+ * impression stays on the list rather than quietly vanishing from a figure that still counts it.
+ */
+export const delivered = (t: Totals, regs: number, deps: number): boolean =>
+  t.spend !== 0 ||
+  t.impressions !== 0 ||
+  t.clicks !== 0 ||
+  t.reach !== 0 ||
+  t.conversions !== 0 ||
+  t.revenue !== 0 ||
+  regs !== 0 ||
+  deps !== 0;
+
+/**
+ * One row per campaign that delivered in the window.
+ *
+ * A campaign that did nothing in the window is left out — see `delivered()`. Its detail page is
+ * still reachable and still answers, because the id is checked against the scope rather than
+ * against this list: a client following an old link gets their campaign, not a 403.
  */
 export async function fetchPortalCampaigns(
   w: DateWindow,
@@ -604,14 +631,18 @@ export async function fetchPortalCampaigns(
     // keeps an internal name from ever standing in for a missing alias.
     if (alias === undefined || brandId === undefined) continue;
     const sums = events.get(id);
+    const t = totals(byCampaign.get(id) ?? []);
+    const regs = registrations(sums);
+    const deps = deposits(sums);
+    if (!delivered(t, regs, deps)) continue;
     rows.push({
       id,
       name: alias,
       brandId,
       status: facts.get(id)?.status ?? "paused",
-      ...deriveKpis(totals(byCampaign.get(id) ?? [])),
-      registrations: registrations(sums),
-      deposits: deposits(sums),
+      ...deriveKpis(t),
+      registrations: regs,
+      deposits: deps,
     });
   }
   return rows.sort((a, b) => b.spend - a.spend);
