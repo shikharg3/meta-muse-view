@@ -121,6 +121,50 @@ directly is invisible to Base44, and logic put in a wrapper dies with that front
 exactly what nearly happened to `getBreakdowns`' client→accountIds lookup and to the superadmin
 gates that used to live in `src/lib/api/{finance,conversations}.ts`.
 
+### Three frontends now, and two of them are customer-facing
+
+A **second** Base44 app (`6a91757327c7555d5f5a8f91`, "DotAnalytics") serves the agency's *customers*.
+It reaches the same ops through the same `/api/v1/invoke`, but the audience is chosen by **which
+bearer secret arrives** — not by a role on the caller:
+
+| secret             | audience | reachable ops     | identity table |
+| ------------------ | -------- | ----------------- | -------------- |
+| `VPS_API_TOKEN`    | staff    | all of them       | `users`        |
+| `PORTAL_API_TOKEN` | customer | **`portal*` only** | `portal_users` |
+
+**The `portal` prefix IS the allowlist.** Name a staff op `portalSomething` and you have just
+published it to every customer. `src/server/api/ops/portal-admin.ts` throws at module load if a
+staff op name starts with it, and `src/server/api/portal-surface.test.ts` asserts the set of
+`portal*` ops equals an exact list — so widening the customer surface is a reviewed line in a diff,
+never an accident. Do not relax either guard.
+
+Why customers are not just rows in `users`: `provisionFederatedUser()` CREATES a `users` row for
+any email the proxy asserts, and `approved` is one flag that unlocks all ~100 ops — including the 28
+that carry no authorisation check of their own, because the cookie gate was always in front of them.
+Approving a customer there would hand them the agency's numbers. `portal_users` auto-creates
+nothing and refuses an unknown email.
+
+Three things must never reach a customer, and each is enforced in code rather than by review:
+
+- **Raw spend and the commission rate.** `src/portal/markup.ts` folds the rate into `spend` on each
+  daily campaign row *before* aggregation, so every derived cost metric is consistent and there is
+  no list of "cost keys" to keep in step. Aggregating raw and multiplying at the end is the shape
+  that silently reports true cost for whichever metric someone adds next. Raw spend does not
+  survive `markupRows()`, and no frontend performs markup arithmetic.
+- **`campaigns.name`.** It encodes account, objective and buying strategy. The portal renders
+  `portal_campaigns.alias`; a campaign with no alias is **invisible** rather than falling back to
+  the internal name. Forgetting to name a campaign costs a client a row, never a leak.
+- **Another client's anything.** Scope resolves through `ownedCampaignIds()` into an explicit
+  campaign whitelist (`src/portal/scope.ts`); an empty scope returns no rows, never "no filter".
+  Portal ops read `level = 'campaign'` insight rows only — the one grain at which both markup and
+  ownership are well defined.
+
+The customer app also contains the agency's admin UI, at its owner's request, so it holds
+`VPS_API_TOKEN` too behind a `staff` backend function that requires the Base44 role `admin`. That
+role check is load-bearing, not decoration: without it, forwarding a customer's request would enrol
+every customer in the staff `users` table via `provisionFederatedUser()`. See
+`base44-portal/README.md`.
+
 Op names are the historical server-fn export names (`getOverview`, `saveInfraProfile`) in one flat
 namespace. `src/server/api/ops/index.ts` builds the table by walking module namespaces — **not** by
 side effect. `package.json` sets `"sideEffects": false`, so `import "./ops"` for registration was

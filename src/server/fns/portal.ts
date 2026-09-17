@@ -56,8 +56,15 @@ const num = (v: unknown): number => Number(v ?? 0);
 const REGISTRATION_FAMILY = "Registrations";
 const DEPOSIT_FAMILY = "Purchases";
 
-/** A scoped campaign-level day, before markup, carrying the action jsonb the families need. */
-interface ScopedDay extends RawDayRow {
+/**
+ * A scoped campaign-level day, before markup, carrying the action jsonb the families need.
+ *
+ * Exported with the handful of helpers below so the report builder (`./portal-report.ts`) reads
+ * and aggregates through exactly this code rather than a second implementation of it: two
+ * aggregations over the same rows are two chances to disagree about reach, markup or the event
+ * families, and a report that contradicts the dashboard it sits next to is worse than no report.
+ */
+export interface ScopedDay extends RawDayRow {
   actions: unknown;
 }
 
@@ -206,7 +213,7 @@ async function scopeFor(brandIds: string[] | undefined): Promise<PortalScope> {
  * query and deliberately so: a whitelist enforced in exactly one WHERE clause is one careless edit
  * away from folding another client's spend into a total.
  */
-async function scopedDays(
+export async function scopedDays(
   scope: PortalScope,
   since: string,
   until: string,
@@ -280,7 +287,7 @@ async function readWindow(
 }
 
 /** `action_type` → summed count, bucketed by `key` — the input `familyCount` expects. */
-function actionCounts<K>(
+export function actionCounts<K>(
   rows: ScopedDay[],
   key: (row: ScopedDay) => K,
 ): Map<K, Map<string, number>> {
@@ -303,9 +310,9 @@ function actionCounts<K>(
 
 const EMPTY_SUMS = new Map<string, number>();
 
-const registrations = (sums: Map<string, number> | undefined): number =>
+export const registrations = (sums: Map<string, number> | undefined): number =>
   familyCount(sums ?? EMPTY_SUMS, REGISTRATION_FAMILY);
-const deposits = (sums: Map<string, number> | undefined): number =>
+export const deposits = (sums: Map<string, number> | undefined): number =>
   familyCount(sums ?? EMPTY_SUMS, DEPOSIT_FAMILY);
 
 /**
@@ -316,7 +323,7 @@ const deposits = (sums: Map<string, number> | undefined): number =>
  * adding the days produces a figure that is not a number of people at all. This is the convention
  * the internal dashboard's KPI tiles use, so the two surfaces report the same quantity.
  */
-function totals(rows: MarkedDayRow[]): Totals {
+export function totals(rows: MarkedDayRow[]): Totals {
   const peak = new Map<string, number>();
   let impressions = 0;
   let clicks = 0;

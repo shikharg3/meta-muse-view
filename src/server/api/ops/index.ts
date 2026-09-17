@@ -13,6 +13,7 @@ import * as infrastructure from "./infrastructure";
 import * as portal from "./portal";
 import * as portalAdmin from "./portal-admin";
 import * as portalCreative from "./portal-creative";
+import * as portalReport from "./portal-report";
 import * as reportCatalog from "./report-catalog";
 import * as reports from "./reports";
 import * as settings from "./settings";
@@ -46,6 +47,7 @@ const MODULES: Record<string, unknown> = {
   portal,
   portalAdmin,
   portalCreative,
+  portalReport,
   reportCatalog,
   reports,
   settings,

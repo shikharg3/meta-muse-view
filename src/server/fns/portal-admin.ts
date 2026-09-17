@@ -265,6 +265,45 @@ export async function replaceBrandAccounts(input: {
 
 // ── Campaign presentation ──────────────────────────────────────────────────────────────────────
 
+/** One curated campaign, exactly as stored. Absent rows stay absent — see `fetchCampaignPresentation`. */
+export interface CampaignPresentationView {
+  campaignId: string;
+  alias: string | null;
+  hidden: boolean;
+  updatedAt: string;
+}
+
+/**
+ * Read back what `upsertCampaignPresentation` stored, for the admin screen that curates it.
+ *
+ * Campaigns with no row are simply missing from the result rather than defaulted to
+ * `{alias: campaigns.name}`: the absence IS the state the operator has to see ("not named, so no
+ * client can see it"), and synthesising the internal name as an alias is the exact leak the table
+ * exists to prevent — a screen that showed it would invite one Save to publish it verbatim.
+ */
+export async function fetchCampaignPresentation(
+  input: { campaignIds?: string[] } = {},
+): Promise<CampaignPresentationView[]> {
+  await requireAdmin();
+  const ids = input.campaignIds;
+  if (ids && ids.length === 0) return [];
+  const rows = await db
+    .select({
+      campaignId: schema.portalCampaigns.campaignId,
+      alias: schema.portalCampaigns.alias,
+      hidden: schema.portalCampaigns.hidden,
+      updatedAt: schema.portalCampaigns.updatedAt,
+    })
+    .from(schema.portalCampaigns)
+    .where(ids ? inArray(schema.portalCampaigns.campaignId, ids) : undefined);
+  return rows.map((r) => ({
+    campaignId: r.campaignId,
+    alias: r.alias,
+    hidden: r.hidden,
+    updatedAt: r.updatedAt.toISOString(),
+  }));
+}
+
 /**
  * Name a campaign for the client, or hide it again.
  *

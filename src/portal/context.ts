@@ -37,3 +37,12 @@ export function currentPortalActor(): PortalActor {
   }
   return actor;
 }
+
+/**
+ * True when the current call arrived on the portal transport, i.e. a customer is asking.
+ *
+ * Exists so a privileged resolver can refuse structurally instead of relying on its own doc
+ * comment being read — see `agencyBrandScope` in `./scope.ts`, which bypasses the grant layer
+ * entirely and is therefore safe only for a `requireAdmin()`-cleared caller.
+ */
+export const inPortalContext = (): boolean => storage.getStore() !== undefined;

@@ -4,6 +4,7 @@ import {
   createPortalUser,
   fetchBrands,
   fetchCampaignCommission,
+  fetchCampaignPresentation,
   fetchPortalUsers,
   removeBrand,
   removeCampaignCommission,
@@ -90,6 +91,18 @@ export const setBrandAccounts = defineOp({
 });
 
 // ── Campaign presentation
+
+export const listCampaignPresentation = defineOp({
+  name: staffName("listCampaignPresentation"),
+  mode: "read",
+  /** Optional, never required: the whole table is a few hundred rows and the admin list wants it
+   *  all, but the campaign screen narrows it when it already knows which ids it is showing. */
+  input: z
+    .object({ campaignIds: z.array(z.string().min(1)).optional() })
+    .optional()
+    .default({}),
+  handler: (input) => fetchCampaignPresentation(input),
+});
 
 export const saveCampaignPresentation = defineOp({
   name: staffName("saveCampaignPresentation"),

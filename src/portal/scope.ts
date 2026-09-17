@@ -1,5 +1,6 @@
 import { eq, inArray } from "drizzle-orm";
 import { db, schema } from "@/db/client";
+import { inPortalContext } from "@/portal/context";
 import { ownedCampaignIds } from "@/server/fns/campaign-attribution";
 import { effectiveAccountIds } from "@/sync/jobs/clients";
 
@@ -142,10 +143,43 @@ export async function portalScope(actor: PortalActor): Promise<PortalScope> {
   }
   if (grantedBrandIds.size === 0) return EMPTY_SCOPE(actor);
 
+  return brandScope(actor, [...grantedBrandIds], {
+    wholeBrands: grantedBrandIds,
+    campaigns: grantedCampaignIds,
+  });
+}
+
+/** How much of a brand a caller may see, when the brand itself was not granted outright. */
+interface GrantNarrowing {
+  /** Brands granted outright — every campaign the brand owns is visible. */
+  wholeBrands: ReadonlySet<string>;
+  /** Campaigns granted individually, for a brand reached only through such a grant. */
+  campaigns: ReadonlySet<string>;
+}
+
+/**
+ * brands → accounts → owned campaigns → client-facing aliases.
+ *
+ * Split out of `portalScope` so a STAFF caller can run the identical resolution over arbitrary
+ * brands: an admin holds no `portal_grants`, so `portalScope` would hand the agency's own view of
+ * a client report an empty scope. The grant layer is the only difference between the two callers,
+ * and it is a parameter rather than a second copy of this function because a copy is what would
+ * eventually disagree with this one about ownership or the alias gate.
+ *
+ * `narrowing === null` means "no grant layer at all", which is legitimate exactly once: for a
+ * caller `requireAdmin()` has already cleared.
+ */
+async function brandScope(
+  actor: PortalActor,
+  brandIds: string[],
+  narrowing: GrantNarrowing | null,
+): Promise<PortalScope> {
+  if (brandIds.length === 0) return EMPTY_SCOPE(actor);
+
   const brandRows = await db
     .select()
     .from(schema.brands)
-    .where(inArray(schema.brands.id, [...grantedBrandIds]));
+    .where(inArray(schema.brands.id, brandIds));
   if (brandRows.length === 0) return EMPTY_SCOPE(actor);
 
   const accountRows = await db
@@ -213,9 +247,10 @@ export async function portalScope(actor: PortalActor): Promise<PortalScope> {
       .map((c) => c.id)
       .filter((id) => ownedSet === null || ownedSet.has(id));
 
-    const wanted = grantedBrandIds.has(b.id)
-      ? brandCampaignIds
-      : brandCampaignIds.filter((id) => grantedCampaignIds.has(id));
+    const wanted =
+      narrowing === null || narrowing.wholeBrands.has(b.id)
+        ? brandCampaignIds
+        : brandCampaignIds.filter((id) => narrowing.campaigns.has(id));
     if (wanted.length === 0) continue;
 
     for (const id of wanted) {
@@ -256,6 +291,43 @@ export async function portalScope(actor: PortalActor): Promise<PortalScope> {
     aliasOf,
     brandOf,
   };
+}
+
+/**
+ * Every visible campaign of the requested brands, with no grant layer — for STAFF callers only.
+ *
+ * The agency's own copy of a client-facing report has to resolve brands the caller was never
+ * granted, because a member of staff is granted nothing: `portal_grants` is the customer's table.
+ * So this is the one entry point that takes brand ids as a LOOKUP rather than a filter, and the
+ * only safe caller is an op that has already called `requireAdmin()`.
+ *
+ * An empty selection means every brand the agency has, which is the agency-wide report. The alias
+ * gate still applies: the point of the staff copy is to see exactly what the customer sees.
+ *
+ * `actor` never reaches a response from here — it exists because a scope is defined relative to
+ * somebody — so staff callers pass a synthetic one built from their own identity.
+ *
+ * It refuses outright on the portal transport. That check is not defence in depth: this function
+ * is exported from the same module every `portal*` op imports for `portalScope` and
+ * `narrowToBrands`, so the single most likely way it gets misused is a future portal op reaching
+ * for it by autocomplete and silently returning every brand the agency has. A doc comment does not
+ * survive that; a throw does.
+ */
+export async function agencyBrandScope(
+  actor: PortalActor,
+  brandIds: string[] | undefined,
+): Promise<PortalScope> {
+  if (inPortalContext()) {
+    throw new Error(
+      "agencyBrandScope() was called on the portal transport — it bypasses portal_grants and is " +
+        "admin-only. A portal op must use portalScope() + narrowToBrands().",
+    );
+  }
+  const ids =
+    brandIds && brandIds.length > 0
+      ? brandIds
+      : (await db.select({ id: schema.brands.id }).from(schema.brands)).map((b) => b.id);
+  return brandScope(actor, ids, null);
 }
 
 /**

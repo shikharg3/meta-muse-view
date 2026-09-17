@@ -28,6 +28,7 @@ const CLIENT_REACHABLE_OPS = [
   "portalCampaigns",
   "portalCreatives",
   "portalOverview",
+  "portalReport",
 ] as const;
 
 test("the portal token reaches exactly the reviewed client-facing ops", () => {
