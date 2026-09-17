@@ -1,4 +1,5 @@
-import { and, eq, inArray, notInArray, sql, type SQL } from "drizzle-orm";
+import { and, eq, inArray, notInArray, or, sql, type SQL } from "drizzle-orm";
+import type { PgColumn } from "drizzle-orm/pg-core";
 import { db, schema } from "@/db/client";
 
 /**
@@ -130,16 +131,49 @@ export async function accountIsExcludedOnly(
   return Number(row?.n ?? 0) === 0;
 }
 
+/**
+ * `(level, entity_id)` scope for one of the two insight tables.
+ *
+ * Built from `inArray` rather than a hand-written `= ANY(...)`: drizzle expands a JS array in a
+ * template into a parameter LIST (`($1, $2, $3)`), which `ANY` rejects — the first version of this
+ * function shipped that and failed on the real database.
+ */
+function insightScope(
+  level: PgColumn,
+  entityId: PgColumn,
+  accountId: PgColumn,
+  scope: { campaignIds: string[]; adSetIds: string[]; adIds: string[]; accountIds: string[] },
+): SQL | undefined {
+  const parts = [
+    scope.campaignIds.length && and(eq(level, "campaign"), inArray(entityId, scope.campaignIds)),
+    scope.adSetIds.length && and(eq(level, "adset"), inArray(entityId, scope.adSetIds)),
+    scope.adIds.length && and(eq(level, "ad"), inArray(entityId, scope.adIds)),
+    scope.accountIds.length && and(eq(level, "account"), inArray(accountId, scope.accountIds)),
+  ].filter((part): part is SQL => Boolean(part));
+  return parts.length ? or(...parts) : undefined;
+}
+
 async function countRows(
   table: typeof schema.insightsDaily | typeof schema.insightsBreakdownDaily,
-  where: SQL,
+  where: SQL | undefined,
 ): Promise<number> {
+  if (!where) return 0;
   const [row] = await db
     .select({ n: sql<number>`count(*)::int` })
     .from(table)
     .where(where);
   return Number(row?.n ?? 0);
 }
+
+/** Name match, as the sweep's set-based predicate. */
+const nameMatches = (column: PgColumn): SQL => sql`${column} ~* ${EXCLUDED_NAME_SQL}`;
+
+/** `column IN ids OR <name matches>`, with the empty-id case left to the name match alone. */
+const byIdOrName = (idColumn: PgColumn, nameColumn: PgColumn, list: string[]): SQL => {
+  const name = nameMatches(nameColumn);
+  const scoped = list.length ? or(inArray(idColumn, list), name) : name;
+  return scoped ?? name;
+};
 
 /**
  * Delete every trace of the excluded campaigns, and record their ids so ingest keeps refusing them.
@@ -157,9 +191,7 @@ export async function purgeExcluded(): Promise<PurgeReport> {
   const campaignRows = await db
     .select({ id: schema.campaigns.id, accountId: schema.campaigns.accountId })
     .from(schema.campaigns)
-    .where(
-      sql`${schema.campaigns.id} = ANY(${recorded}) OR ${schema.campaigns.name} ~* ${EXCLUDED_NAME_SQL}`,
-    );
+    .where(byIdOrName(schema.campaigns.id, schema.campaigns.name, recorded));
   const campaignIds = [...new Set([...recorded, ...campaignRows.map((r) => r.id)])];
 
   // Ad sets and ads: by parentage AND by their own names — an ad set called "KyloPeptides" under a
@@ -167,9 +199,7 @@ export async function purgeExcluded(): Promise<PurgeReport> {
   const adSetRows = await db
     .select({ id: schema.adSets.id })
     .from(schema.adSets)
-    .where(
-      sql`${schema.adSets.campaignId} = ANY(${campaignIds}) OR ${schema.adSets.name} ~* ${EXCLUDED_NAME_SQL}`,
-    );
+    .where(byIdOrName(schema.adSets.campaignId, schema.adSets.name, campaignIds));
   const adSetIds = [
     ...new Set([...adSetRows.map((r) => r.id), ...excludedIdsOfKind(known, "adset")]),
   ];
@@ -177,9 +207,7 @@ export async function purgeExcluded(): Promise<PurgeReport> {
   const adRows = await db
     .select({ id: schema.ads.id, creativeId: schema.ads.creativeId })
     .from(schema.ads)
-    .where(
-      sql`${schema.ads.adSetId} = ANY(${adSetIds}) OR ${schema.ads.name} ~* ${EXCLUDED_NAME_SQL}`,
-    );
+    .where(byIdOrName(schema.ads.adSetId, schema.ads.name, adSetIds));
   const adIds = [...new Set([...adRows.map((r) => r.id), ...excludedIdsOfKind(known, "ad")])];
 
   // Accounts whose entire campaign list is excluded — see `accountIsExcludedOnly`. Accounts already
@@ -195,10 +223,12 @@ export async function purgeExcluded(): Promise<PurgeReport> {
       .select({ n: sql<number>`count(*)::int` })
       .from(schema.campaigns)
       .where(
-        and(
-          eq(schema.campaigns.accountId, accountId),
-          notInArray(schema.campaigns.id, campaignIds),
-        ),
+        campaignIds.length
+          ? and(
+              eq(schema.campaigns.accountId, accountId),
+              notInArray(schema.campaigns.id, campaignIds),
+            )
+          : eq(schema.campaigns.accountId, accountId),
       );
     if (Number(survivor?.n ?? 0) === 0) emptiedAccounts.push(accountId);
   }
@@ -207,44 +237,53 @@ export async function purgeExcluded(): Promise<PurgeReport> {
   const candidates = [
     ...new Set(adRows.map((r) => r.creativeId).filter((id): id is string => Boolean(id))),
   ];
-  const stillUsed = candidates.length
-    ? await db
-        .select({ id: schema.ads.creativeId })
-        .from(schema.ads)
-        .where(
-          and(
-            inArray(schema.ads.creativeId, candidates),
-            notInArray(schema.ads.id, adIds.length ? adIds : [""]),
-          ),
-        )
-    : [];
+  const stillUsed =
+    candidates.length && adIds.length
+      ? await db
+          .select({ id: schema.ads.creativeId })
+          .from(schema.ads)
+          .where(and(inArray(schema.ads.creativeId, candidates), notInArray(schema.ads.id, adIds)))
+      : [];
   const keep = new Set(stillUsed.map((r) => r.id).filter((id): id is string => Boolean(id)));
   const creativeIds = candidates.filter((id) => !keep.has(id));
 
-  // Bare column names: `level`, `entity_id` and `account_id` are spelled the same in both insight
-  // tables, so one predicate serves both instead of two near-copies drifting apart.
-  const entityWhere = sql`
-    (level = 'campaign' AND entity_id = ANY(${campaignIds}))
-    OR (level = 'adset' AND entity_id = ANY(${adSetIds}))
-    OR (level = 'ad' AND entity_id = ANY(${adIds}))
-    OR (level = 'account' AND account_id = ANY(${emptiedAccounts}))`;
+  // One scope, applied to each insight table's own columns — the two tables spell these columns the
+  // same, so the shape is shared without hand-writing SQL that neither table's types can check.
+  const scope = { campaignIds, adSetIds, adIds, accountIds: emptiedAccounts };
+  const insightWhere = insightScope(
+    schema.insightsDaily.level,
+    schema.insightsDaily.entityId,
+    schema.insightsDaily.accountId,
+    scope,
+  );
+  const breakdownWhere = insightScope(
+    schema.insightsBreakdownDaily.level,
+    schema.insightsBreakdownDaily.entityId,
+    schema.insightsBreakdownDaily.accountId,
+    scope,
+  );
   const allIds = [...campaignIds, ...adSetIds, ...adIds];
-  const activityWhere = sql`${schema.metaActivities.objectId} = ANY(${allIds}) OR (${schema.metaActivities.raw}->>'object_name') ~* ${EXCLUDED_NAME_SQL}`;
+  const activityByName = sql`(${schema.metaActivities.raw}->>'object_name') ~* ${EXCLUDED_NAME_SQL}`;
+  const activityWhere = allIds.length
+    ? or(inArray(schema.metaActivities.objectId, allIds), activityByName)
+    : activityByName;
 
-  const insightRows = await countRows(schema.insightsDaily, entityWhere);
-  const breakdownRows = await countRows(schema.insightsBreakdownDaily, entityWhere);
+  const insightRows = await countRows(schema.insightsDaily, insightWhere);
+  const breakdownRows = await countRows(schema.insightsBreakdownDaily, breakdownWhere);
   const [activityCount] = await db
     .select({ n: sql<number>`count(*)::int` })
     .from(schema.metaActivities)
     .where(activityWhere);
-  const [overrideCount] = await db
-    .select({ n: sql<number>`count(*)::int` })
-    .from(schema.campaignClientOverrides)
-    .where(sql`${schema.campaignClientOverrides.campaignId} = ANY(${campaignIds})`);
+  const [overrideCount] = campaignIds.length
+    ? await db
+        .select({ n: sql<number>`count(*)::int` })
+        .from(schema.campaignClientOverrides)
+        .where(inArray(schema.campaignClientOverrides.campaignId, campaignIds))
+    : [{ n: 0 }];
 
   // Children first, parents last.
-  await db.delete(schema.insightsDaily).where(entityWhere);
-  await db.delete(schema.insightsBreakdownDaily).where(entityWhere);
+  if (insightWhere) await db.delete(schema.insightsDaily).where(insightWhere);
+  if (breakdownWhere) await db.delete(schema.insightsBreakdownDaily).where(breakdownWhere);
   await db.delete(schema.metaActivities).where(activityWhere);
   if (creativeIds.length)
     await db.delete(schema.adCreatives).where(inArray(schema.adCreatives.id, creativeIds));
