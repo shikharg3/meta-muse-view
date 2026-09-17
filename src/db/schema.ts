@@ -894,18 +894,31 @@ export const brands = pgTable(
     // Markup applied to this brand's campaigns unless a campaign has its own rate history.
     // Null falls back to `PORTAL_DEFAULT_COMMISSION`.
     defaultCommission: doublePrecision("default_commission"),
+    // Which Notion board rows ("projects"/engagements) this brand covers, as page ids.
+    // NULL means follow the client: every project it has now and every one it gains later, which
+    // is what makes a new month's engagement reach the portal without anyone re-saving the brand.
+    // A stored account list would be a cache of a fact that changes upstream. See
+    // `src/portal/brand-accounts.ts`.
+    projectIds: jsonb("project_ids"), // string[] of Notion page ids, or NULL = all
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index("brands_client_idx").on(t.clientId)],
 );
 
 /**
- * Which ad accounts feed a brand. Many-to-one in practice, but modelled many-to-many because a
- * brand genuinely can span accounts (one per market) and an account can be re-pointed at a new
- * brand when it is recycled.
+ * An OPTIONAL narrowing override on a brand's derived account list.
+ *
+ * Not the primary mapping — `brands.project_ids` is. A brand's accounts come from the Notion board
+ * rows it covers, because that fact already exists upstream and re-typing it guarantees a stale
+ * second copy. This table exists only for what project grain cannot express: one client running
+ * two commercial brands out of a single engagement.
+ *
+ * **Rows here intersect, never add.** Widening from this table could pull in an account the client
+ * does not own, which is the one mistake that leaks data across clients. Empty (the normal case)
+ * means no narrowing at all. See `src/portal/brand-accounts.ts`.
  *
  * No FK to `accounts`: that table is sync-owned and a row can disappear when Meta stops returning
- * an account, which must not delete an operator's mapping.
+ * an account, which must not delete an operator's override.
  */
 export const brandAccounts = pgTable(
   "brand_accounts",

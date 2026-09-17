@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { and, eq, inArray } from "drizzle-orm";
 import { db, schema } from "@/db/client";
 import { addDays } from "@/lib/range";
+import { LIVE_STATUSES } from "@/notion/parse";
+import { brandAccountIds, clientProjects, projectSelection } from "@/portal/brand-accounts";
 import { effectiveAccountIds } from "@/sync/jobs/clients";
 import { audit, requireAdmin } from "./auth";
 import { ownedCampaignIds } from "./campaign-attribution";
@@ -19,6 +21,97 @@ import { ownedCampaignIds } from "./campaign-attribution";
  * render that string inline, and a thrown validation error loses the reason.
  */
 
+// ── Projects (Notion engagements) ──────────────────────────────────────────────────────────────
+
+export interface ClientProjectView {
+  pageId: string;
+  /** The Notion row title, e.g. "betonline.ag (August/September)". */
+  title: string;
+  status: string | null;
+  /** True while the engagement is current — see `LIVE_STATUSES`. */
+  live: boolean;
+  /** Accounts on this row that the client still effectively owns. */
+  accountIds: string[];
+  /** Accounts the row lists that are no longer the client's, so the count reads honestly. */
+  droppedAccountCount: number;
+  /** Campaigns this client owns across those accounts. */
+  campaignCount: number;
+}
+
+/**
+ * The client's projects, for the brand setup screen.
+ *
+ * This is what replaces picking ad accounts by hand. The Notion board already records, per
+ * engagement, which accounts it runs on; the sync stores those rows at row grain for exactly this.
+ * So the operator chooses a client, sees its engagements, and the accounts follow.
+ *
+ * `campaignCount` goes through `ownedCampaignIds()` rather than counting every campaign on the
+ * accounts, because a recycled account carries another client's campaigns too and the number has to
+ * mean "what this client would actually get".
+ *
+ * Rows are returned newest-status-first: live engagements at the top, then the rest in board order,
+ * so the common case needs no reading. A row whose accounts have all been dropped from the client
+ * is still returned — with `accountIds` empty — because hiding it would make the board and this
+ * screen disagree about what exists.
+ */
+export async function fetchClientProjects(clientId: string): Promise<ClientProjectView[]> {
+  await requireAdmin();
+  const [client] = await db
+    .select({
+      notionAccountIds: schema.clients.notionAccountIds,
+      manualAddIds: schema.clients.manualAddIds,
+      manualRemoveIds: schema.clients.manualRemoveIds,
+      raw: schema.clients.raw,
+    })
+    .from(schema.clients)
+    .where(eq(schema.clients.id, clientId));
+  if (!client) return [];
+
+  const effective = new Set(effectiveAccountIds(client));
+  const projects = clientProjects(client.raw);
+  if (projects.length === 0) return [];
+
+  const allAccountIds = [
+    ...new Set(projects.flatMap((p) => p.accountIds).filter((id) => effective.has(id))),
+  ];
+  const owned = allAccountIds.length === 0 ? [] : await ownedCampaignIds(clientId, allAccountIds);
+  const ownedSet = owned === null ? null : new Set(owned);
+  const campaignRows =
+    allAccountIds.length === 0
+      ? []
+      : await db
+          .select({ id: schema.campaigns.id, accountId: schema.campaigns.accountId })
+          .from(schema.campaigns)
+          .where(inArray(schema.campaigns.accountId, allAccountIds));
+  const campaignsByAccount = new Map<string, string[]>();
+  for (const c of campaignRows) {
+    const list = campaignsByAccount.get(c.accountId);
+    if (list) list.push(c.id);
+    else campaignsByAccount.set(c.accountId, [c.id]);
+  }
+
+  const views = projects.map((p, order): ClientProjectView & { order: number } => {
+    const accountIds = p.accountIds.filter((id) => effective.has(id));
+    const ids = accountIds
+      .flatMap((a) => campaignsByAccount.get(a) ?? [])
+      .filter((id) => ownedSet === null || ownedSet.has(id));
+    return {
+      pageId: p.pageId,
+      title: p.title,
+      status: p.status,
+      live: p.status !== null && LIVE_STATUSES.includes(p.status),
+      accountIds: [...new Set(accountIds)].sort(),
+      droppedAccountCount: p.accountIds.length - accountIds.length,
+      campaignCount: new Set(ids).size,
+      order,
+    };
+  });
+
+  return views
+    .sort((a, b) => Number(b.live) - Number(a.live) || a.order - b.order)
+    .map(({ order: _order, ...view }) => view);
+}
+
 // ── Brands ─────────────────────────────────────────────────────────────────────────────────────
 
 export interface BrandAdminView {
@@ -29,7 +122,14 @@ export interface BrandAdminView {
   website: string | null;
   monthlyBudget: number | null;
   defaultCommission: number | null;
+  /** Resolved on read from the project selection — not a stored mapping. */
   accountIds: string[];
+  /** `null` = follows the client, including engagements it has not won yet. */
+  projectIds: string[] | null;
+  /** Projects on the client's Notion board in total. */
+  projectCount: number;
+  /** How many of those this brand covers. Equal to `projectCount` when it follows the client. */
+  selectedProjectCount: number;
   /** Campaigns this brand's client owns on those accounts. */
   campaignCount: number;
   /** How many of those a client can actually see — i.e. how much of the brand has been curated. */
@@ -38,17 +138,20 @@ export interface BrandAdminView {
 }
 
 /**
- * Every brand, with the mapping an operator edits and the two counts that explain it.
+ * Every brand, with the accounts its project selection resolves to and the counts that explain it.
  *
- * The counts go through `ownedCampaignIds()` per brand rather than a cheap `brand_accounts ⋈
- * campaigns` join, which would be one query for all of them: a recycled account is claimed by two
- * clients, and the join would credit each of them with the other's campaigns. This number has to
- * agree with what `portalScope()` resolves, so it is resolved the same way — brands are a
- * hand-maintained table of tens of rows, so the per-brand round trip is affordable.
+ * Accounts are DERIVED here, exactly as `portalScope()` derives them, rather than read back from a
+ * stored mapping — that is the point of `brands.project_ids`, and computing it a second way here
+ * would let the admin screen and the portal disagree about what a client can see.
+ *
+ * The campaign counts go through `ownedCampaignIds()` per brand rather than a cheap
+ * `accounts ⋈ campaigns` join: a recycled account is claimed by two clients, and the join would
+ * credit each of them with the other's campaigns. Brands are a table of tens of rows, so the
+ * per-brand round trip is affordable.
  */
 export async function fetchBrands(): Promise<BrandAdminView[]> {
   await requireAdmin();
-  const [brandRows, clientRows, mappingRows, presentationRows] = await Promise.all([
+  const [brandRows, clientRows, overrideRows, presentationRows] = await Promise.all([
     db.select().from(schema.brands),
     db
       .select({
@@ -57,6 +160,7 @@ export async function fetchBrands(): Promise<BrandAdminView[]> {
         notionAccountIds: schema.clients.notionAccountIds,
         manualAddIds: schema.clients.manualAddIds,
         manualRemoveIds: schema.clients.manualRemoveIds,
+        raw: schema.clients.raw,
       })
       .from(schema.clients),
     db.select().from(schema.brandAccounts),
@@ -71,23 +175,35 @@ export async function fetchBrands(): Promise<BrandAdminView[]> {
   if (brandRows.length === 0) return [];
 
   const clientById = new Map(clientRows.map((c) => [c.id, c]));
-  const effectiveByClient = new Map(clientRows.map((c) => [c.id, new Set(effectiveAccountIds(c))]));
 
-  const accountsByBrand = new Map<string, string[]>();
-  for (const m of mappingRows) {
-    const list = accountsByBrand.get(m.brandId);
+  const overridesByBrand = new Map<string, string[]>();
+  for (const m of overrideRows) {
+    const list = overridesByBrand.get(m.brandId);
     if (list) list.push(m.accountId);
-    else accountsByBrand.set(m.brandId, [m.accountId]);
+    else overridesByBrand.set(m.brandId, [m.accountId]);
   }
 
-  const mappedAccountIds = [...new Set(mappingRows.map((m) => m.accountId))];
+  // Resolve first: the campaign lookup below needs the union of every brand's accounts, and that
+  // is only known once each project selection has been applied.
+  const resolved = brandRows.map((b) => {
+    const client = clientById.get(b.clientId);
+    return {
+      brand: b,
+      client,
+      accountIds: client
+        ? brandAccountIds(b.projectIds, client, overridesByBrand.get(b.id) ?? []).sort()
+        : [],
+    };
+  });
+
+  const allAccountIds = [...new Set(resolved.flatMap((r) => r.accountIds))];
   const campaignRows =
-    mappedAccountIds.length === 0
+    allAccountIds.length === 0
       ? []
       : await db
           .select({ id: schema.campaigns.id, accountId: schema.campaigns.accountId })
           .from(schema.campaigns)
-          .where(inArray(schema.campaigns.accountId, mappedAccountIds));
+          .where(inArray(schema.campaigns.accountId, allAccountIds));
   const campaignsByAccount = new Map<string, string[]>();
   for (const c of campaignRows) {
     const list = campaignsByAccount.get(c.accountId);
@@ -100,19 +216,16 @@ export async function fetchBrands(): Promise<BrandAdminView[]> {
   );
 
   const views = await Promise.all(
-    brandRows.map(async (b): Promise<BrandAdminView> => {
-      const accountIds = [...(accountsByBrand.get(b.id) ?? [])].sort();
-      const client = clientById.get(b.clientId);
-      // The client's own account list can be narrower than the brand mapping (an account removed in
-      // the UI), and campaigns on a dropped account are no longer this client's to show.
-      const onClient = effectiveByClient.get(b.clientId);
-      const usable = onClient ? accountIds.filter((id) => onClient.has(id)) : [];
-
-      const owned = usable.length === 0 ? [] : await ownedCampaignIds(b.clientId, usable);
+    resolved.map(async ({ brand: b, client, accountIds }): Promise<BrandAdminView> => {
+      const owned = accountIds.length === 0 ? [] : await ownedCampaignIds(b.clientId, accountIds);
       const ownedSet = owned === null ? null : new Set(owned);
-      const ids = usable
+      const ids = accountIds
         .flatMap((a) => campaignsByAccount.get(a) ?? [])
         .filter((id) => ownedSet === null || ownedSet.has(id));
+
+      const projects = clientProjects(client?.raw);
+      const selection = projectSelection(b.projectIds);
+      const selectedIds = new Set(selection ?? []);
 
       return {
         id: b.id,
@@ -123,6 +236,12 @@ export async function fetchBrands(): Promise<BrandAdminView[]> {
         monthlyBudget: b.monthlyBudget,
         defaultCommission: b.defaultCommission,
         accountIds,
+        projectIds: selection,
+        projectCount: projects.length,
+        selectedProjectCount:
+          selection === null
+            ? projects.length
+            : projects.filter((p) => selectedIds.has(p.pageId)).length,
         campaignCount: ids.length,
         visibleCampaignCount: ids.filter((id) => visible.has(id)).length,
         createdAt: b.createdAt.toISOString(),
@@ -143,6 +262,17 @@ export interface UpsertBrandInput {
   website?: string | null;
   monthlyBudget?: number | null;
   defaultCommission?: number | null;
+  /**
+   * Which of the client's Notion projects this brand covers.
+   *
+   * Three distinct values, and the difference matters:
+   * - `null` — follow the client, now and in future. The default for a new brand.
+   * - `string[]` — exactly these page ids.
+   * - absent (`undefined`) — leave an existing brand's selection alone. Only meaningful on update.
+   *
+   * JSON carries the first two and drops the third, so the wire format expresses all three.
+   */
+  projectIds?: string[] | null;
 }
 
 /**
@@ -178,6 +308,9 @@ export async function upsertBrand(
     monthlyBudget: input.monthlyBudget ?? null,
     defaultCommission: input.defaultCommission ?? null,
   };
+  // Distinguished from `null` on purpose: `null` means "follow the client" and is a real setting,
+  // while an absent key on an update means "do not touch the selection I already have".
+  const selection = input.projectIds === undefined ? undefined : (input.projectIds ?? null);
 
   if (input.id) {
     const [existing] = await db
@@ -186,13 +319,16 @@ export async function upsertBrand(
       .where(eq(schema.brands.id, input.id));
     if (!existing) return { ok: false, error: "Brand not found" };
 
-    await db.update(schema.brands).set(fields).where(eq(schema.brands.id, input.id));
+    await db
+      .update(schema.brands)
+      .set(selection === undefined ? fields : { ...fields, projectIds: selection })
+      .where(eq(schema.brands.id, input.id));
     await audit("portal.brand.update", `${name} (${input.id})`);
     return { ok: true, id: input.id };
   }
 
   const id = randomUUID();
-  await db.insert(schema.brands).values({ ...fields, id });
+  await db.insert(schema.brands).values({ ...fields, id, projectIds: selection ?? null });
   await audit("portal.brand.create", `${name} (${id})`);
   return { ok: true, id };
 }

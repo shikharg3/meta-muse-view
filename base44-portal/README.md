@@ -10,14 +10,14 @@ Customer's browser ──invoke──▶ base44/functions/portal ──Bearer─
 
 ## Two apps, two tokens, one API
 
-|                 | internal                              | client portal                             |
-| --------------- | ------------------------------------- | ----------------------------------------- |
-| Base44 app      | `6a9fc1bd1da17a04aaf31ecc` (MetaMuse) | `6a91757327c7555d5f5a8f91` (DotAnalytics) |
-| slug            | `analytic-meta-muse-view`             | `wakeful-data-pulse-view`                 |
-| function        | `vps`, `vps-stream`                   | `portal`                                  |
-| secret          | `VPS_API_TOKEN`                       | `PORTAL_API_TOKEN`                        |
-| ops reachable   | all of them                           | **only `portal*`**                        |
-| identity table  | `users` (staff)                       | `portal_users` (customers)                |
+|                | internal                              | client portal                             |
+| -------------- | ------------------------------------- | ----------------------------------------- |
+| Base44 app     | `6a9fc1bd1da17a04aaf31ecc` (MetaMuse) | `6a91757327c7555d5f5a8f91` (DotAnalytics) |
+| slug           | `analytic-meta-muse-view`             | `wakeful-data-pulse-view`                 |
+| function       | `vps`, `vps-stream`                   | `portal`                                  |
+| secret         | `VPS_API_TOKEN`                       | `PORTAL_API_TOKEN`                        |
+| ops reachable  | all of them                           | **only `portal*`**                        |
+| identity table | `users` (staff)                       | `portal_users` (customers)                |
 
 `src/server/api/http.ts` picks the audience from **which secret arrives**, not from a role on the
 caller. That is the entire boundary, and it is why the portal app is safe to publish: it cannot
@@ -42,7 +42,7 @@ Authorisation is `portal_grants` → `brands` → `brand_accounts` → `ownedCam
 
 Enforced in `src/portal/markup.ts` and `src/portal/scope.ts`, not by reviewer discipline:
 
-- **Raw spend.** Commission is folded into `spend` on each daily campaign row *before* aggregation,
+- **Raw spend.** Commission is folded into `spend` on each daily campaign row _before_ aggregation,
   so every derived cost metric is consistent and there is no list of "cost keys" to forget.
 - **The commission rate itself.** It exists server-side only.
 - **`campaigns.name`.** The internal Meta name encodes account, objective and buying strategy. The
@@ -62,7 +62,7 @@ so a half-finished setup shows a client nothing rather than showing them somethi
 happens in the customer app's own `/admin` section, signed in as a Base44 user whose role is
 `admin`.
 
-1. **Create the brand.** `/admin` → Brands → *Create brand*. Pick the agency client it belongs to,
+1. **Create the brand.** `/admin` → Brands → _Create brand_. Pick the agency client it belongs to,
    give it the name and website **the client should see**, and set the monthly budget — that figure
    is what the portal's pacing compares marked-up spend against, so it must be in client-facing
    money. Leave the default commission blank to fall back to `PORTAL_DEFAULT_COMMISSION` (10%).
@@ -109,10 +109,10 @@ cat base44-portal/client/portal.js \
   | base44 sandbox write src/api/portal.js --overwrite --app-id "$BASE44_APP_ID" --json
 ```
 
-| this repo (source of truth for review)      | the Base44 sandbox                |
-| ------------------------------------------- | --------------------------------- |
-| `base44-portal/functions/portal/entry.ts`   | `base44/functions/portal/entry.ts` |
-| `base44-portal/client/portal.js`            | `src/api/portal.js`               |
+| this repo (source of truth for review)    | the Base44 sandbox                 |
+| ----------------------------------------- | ---------------------------------- |
+| `base44-portal/functions/portal/entry.ts` | `base44/functions/portal/entry.ts` |
+| `base44-portal/client/portal.js`          | `src/api/portal.js`                |
 
 Secrets are already set on the app (`PORTAL_API_URL`, `PORTAL_API_TOKEN`). To rotate: change
 `/opt/meta-next/.env`, `systemctl restart meta-web-next`, then re-set the Base44 secret.

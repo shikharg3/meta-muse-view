@@ -3,6 +3,7 @@ import {
   addPortalGrant,
   createPortalUser,
   fetchBrands,
+  fetchClientProjects,
   fetchCampaignCommission,
   fetchCampaignPresentation,
   fetchPortalUsers,
@@ -53,6 +54,15 @@ const campaignId = z.object({ campaignId: z.string().min(1) });
 const accountId = z.string().regex(/^act_\d+$/, "Expected an act_<digits> ad account id");
 const money = z.number().finite().nullable().optional();
 
+// ── Projects
+
+export const listClientProjects = defineOp({
+  name: staffName("listClientProjects"),
+  mode: "read",
+  input: z.object({ clientId: z.string().min(1) }),
+  handler: (input) => fetchClientProjects(input.clientId),
+});
+
 // ── Brands
 
 export const listBrands = defineOp({
@@ -72,6 +82,13 @@ export const saveBrand = defineOp({
     website: nullableText,
     monthlyBudget: money,
     defaultCommission: money,
+    /**
+     * `null` = follow the client (the default for a new brand, and what makes a future engagement
+     * appear by itself). An array = exactly those Notion page ids. OMITTED on an update = leave
+     * the existing selection alone, which is why this is `.optional()` on top of `.nullable()`
+     * rather than defaulting.
+     */
+    projectIds: z.array(z.string().min(1)).nullable().optional(),
   }),
   handler: (input) => upsertBrand(input),
 });
@@ -83,6 +100,10 @@ export const deleteBrand = defineOp({
   handler: (input) => removeBrand(input),
 });
 
+/**
+ * A NARROWING override on the accounts a brand's projects resolve to — not the mapping itself.
+ * Pass an empty array to clear it and go back to the full project-derived list.
+ */
 export const setBrandAccounts = defineOp({
   name: staffName("setBrandAccounts"),
   mode: "write",

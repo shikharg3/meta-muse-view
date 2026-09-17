@@ -1,4 +1,4 @@
-import { base44 } from '@/api/base44Client';
+import { base44 } from "@/api/base44Client";
 
 /**
  * The agency-side client, used ONLY by the `/admin` routes.
@@ -14,7 +14,7 @@ import { base44 } from '@/api/base44Client';
 export class StaffError extends Error {
   constructor(op, info) {
     super(info.message);
-    this.name = 'StaffError';
+    this.name = "StaffError";
     this.op = op;
     this.info = info;
   }
@@ -23,13 +23,13 @@ export class StaffError extends Error {
 function readError(raw, op, status) {
   if (
     raw &&
-    typeof raw === 'object' &&
-    typeof raw.code === 'string' &&
-    typeof raw.message === 'string'
+    typeof raw === "object" &&
+    typeof raw.code === "string" &&
+    typeof raw.message === "string"
   ) {
     return raw;
   }
-  return { code: 'unreachable', message: `"${op}" failed (${status}).` };
+  return { code: "unreachable", message: `"${op}" failed (${status}).` };
 }
 
 /**
@@ -41,14 +41,14 @@ function readError(raw, op, status) {
  * into a throw — only transport and authorisation problems throw here.
  */
 export async function callStaff(op, data) {
-  const res = await base44.functions.fetch('/staff', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
+  const res = await base44.functions.fetch("/staff", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
     body: JSON.stringify({ op, data }),
   });
 
   const body = await res.json().catch(() => null);
-  if (body && typeof body === 'object' && 'ok' in body) {
+  if (body && typeof body === "object" && "ok" in body) {
     if (body.ok === true) return body.data;
     throw new StaffError(op, readError(body.error, op, res.status));
   }
@@ -57,5 +57,5 @@ export async function callStaff(op, data) {
 
 /** True when the signed-in account is not an agency admin — the UI shows "not authorised". */
 export function isNotAdmin(err) {
-  return err instanceof StaffError && err.info.code === 'forbidden';
+  return err instanceof StaffError && err.info.code === "forbidden";
 }

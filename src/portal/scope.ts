@@ -2,7 +2,7 @@ import { eq, inArray } from "drizzle-orm";
 import { db, schema } from "@/db/client";
 import { inPortalContext } from "@/portal/context";
 import { ownedCampaignIds } from "@/server/fns/campaign-attribution";
-import { effectiveAccountIds } from "@/sync/jobs/clients";
+import { brandAccountIds } from "@/portal/brand-accounts";
 
 /**
  * Who is asking, and exactly what they may see.
@@ -182,7 +182,10 @@ async function brandScope(
     .where(inArray(schema.brands.id, brandIds));
   if (brandRows.length === 0) return EMPTY_SCOPE(actor);
 
-  const accountRows = await db
+  // The `brand_accounts` rows are a NARROWING override, not the mapping — see
+  // `src/portal/brand-accounts.ts`. Normally there are none and the accounts come entirely from
+  // the client's Notion board rows.
+  const overrideRows = await db
     .select({ brandId: schema.brandAccounts.brandId, accountId: schema.brandAccounts.accountId })
     .from(schema.brandAccounts)
     .where(
@@ -191,20 +194,40 @@ async function brandScope(
         brandRows.map((b) => b.id),
       ),
     );
-  const accountsByBrand = new Map<string, string[]>();
-  for (const r of accountRows) {
-    const list = accountsByBrand.get(r.brandId);
+  const overridesByBrand = new Map<string, string[]>();
+  for (const r of overrideRows) {
+    const list = overridesByBrand.get(r.brandId);
     if (list) list.push(r.accountId);
-    else accountsByBrand.set(r.brandId, [r.accountId]);
+    else overridesByBrand.set(r.brandId, [r.accountId]);
   }
+
+  // One query for every client involved, rather than one per brand inside the loop below: two
+  // brands on the same client is the normal case, and this used to re-read the same row each time.
+  const clientRows = await db
+    .select({
+      id: schema.clients.id,
+      notionAccountIds: schema.clients.notionAccountIds,
+      manualAddIds: schema.clients.manualAddIds,
+      manualRemoveIds: schema.clients.manualRemoveIds,
+      raw: schema.clients.raw,
+    })
+    .from(schema.clients)
+    .where(inArray(schema.clients.id, [...new Set(brandRows.map((b) => b.clientId))]));
+  const clientById = new Map(clientRows.map((c) => [c.id, c]));
 
   const brands: ScopedBrand[] = [];
   const brandOf = new Map<string, string>();
   const visible = new Set<string>();
 
   for (const b of brandRows) {
-    const accountIds = accountsByBrand.get(b.id) ?? [];
-    if (accountIds.length === 0) continue;
+    const clientRow = clientById.get(b.clientId);
+    if (!clientRow) continue;
+
+    // Resolved on every read, so a new engagement on the Notion board reaches the portal without
+    // the brand being re-saved. `brandAccountIds` already intersects with the client's effective
+    // accounts, so an account removed in the UI stays removed even if a stale board row lists it.
+    const usable = brandAccountIds(b.projectIds, clientRow, overridesByBrand.get(b.id) ?? []);
+    if (usable.length === 0) continue;
 
     const brand: ScopedBrand = {
       id: b.id,
@@ -213,25 +236,8 @@ async function brandScope(
       website: b.website,
       monthlyBudget: b.monthlyBudget,
       defaultCommission: b.defaultCommission,
-      accountIds,
+      accountIds: usable,
     };
-
-    // The client's own account list can be narrower than the brand mapping (an account removed in
-    // the UI), so intersect before resolving ownership — otherwise a removed account's campaigns
-    // come back through the brand.
-    const clientRow = await db
-      .select({
-        notionAccountIds: schema.clients.notionAccountIds,
-        manualAddIds: schema.clients.manualAddIds,
-        manualRemoveIds: schema.clients.manualRemoveIds,
-      })
-      .from(schema.clients)
-      .where(eq(schema.clients.id, b.clientId))
-      .then((rows) => rows[0]);
-    if (!clientRow) continue;
-    const clientAccounts = new Set(effectiveAccountIds(clientRow));
-    const usable = accountIds.filter((id) => clientAccounts.has(id));
-    if (usable.length === 0) continue;
 
     // null = "no ownership restriction needed", i.e. every campaign on these accounts is this
     // client's. Otherwise it is the explicit whitelist.
