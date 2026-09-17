@@ -5,6 +5,8 @@ import { authFailure } from "@/lib/auth/errors";
 import { provisionFederatedUser, toPublicUser, type PublicUser } from "@/lib/auth/users";
 import { env } from "@/lib/env";
 import { handleChatStream } from "@/server/agent/stream";
+import { runAsPortalActor } from "@/portal/context";
+import { resolvePortalActor, touchPortalActor, type PortalActor } from "@/portal/scope";
 import { allOps, lookupOp } from "./ops";
 
 /**
@@ -32,13 +34,18 @@ const CHAT_STREAM_PATH = `${PREFIX}chat/stream`;
 
 const envelope = z.object({ op: z.string().min(1).optional(), data: z.unknown().optional() });
 
+/** Which shared secret the caller presented, and therefore which ops they may address at all. */
+type Audience = "staff" | "portal";
+
 type ErrorCode =
   | "api_disabled"
+  | "misconfigured"
   | "method_not_allowed"
   | "insecure_transport"
   | "unauthorized"
   | "no_actor"
   | "invalid_actor"
+  | "unknown_actor"
   | "not_approved"
   | "bad_request"
   | "invalid_input"
@@ -115,6 +122,90 @@ function errorResponse(op: string, e: unknown): Response {
   return fail(500, "internal", "The operation failed. Check the server log.");
 }
 
+/** The prefix that marks an op as callable by a client. Enforced, not merely a naming habit. */
+const PORTAL_OP_PREFIX = "portal";
+/**
+ * Answer a request that presented the PORTAL token.
+ *
+ * Three things are deliberately different from the staff path above:
+ *
+ * 1. **The op must be a `portal*` op.** An allowlist by construction: the staff ops are not merely
+ *    unauthorised here, they are unaddressable, and a new staff op cannot accidentally become
+ *    client-reachable by being added to a module.
+ * 2. **An unknown email is refused, not created.** The staff path calls `provisionFederatedUser()`,
+ *    which is right for a colleague signing in for the first time but wrong for a public sign-up
+ *    form: it would fill the staff Users page with customers. An operator invites a portal user.
+ * 3. **The staff actor context is explicitly empty.** `runAsActor(null, …)` wraps the call, so any
+ *    staff check reached from portal code (`requireAdmin()`, `requireApproved()`) fails closed
+ *    instead of reading a cookie that is not there. The portal actor lives in its own context.
+ */
+async function handlePortalRequest(request: Request, url: URL): Promise<Response> {
+  if (url.pathname === `${PREFIX}_ops` && request.method === "GET") {
+    return Response.json({
+      ok: true,
+      data: allOps()
+        .filter((o) => o.name.startsWith(PORTAL_OP_PREFIX))
+        .map((o) => ({ name: o.name, mode: o.mode })),
+    });
+  }
+  if (request.method !== "POST") {
+    return fail(405, "method_not_allowed", "Ops are invoked with POST.");
+  }
+
+  const email = request.headers.get("x-actor-email")?.trim().toLowerCase();
+  if (!email) {
+    return fail(401, "no_actor", "Missing X-Actor-Email — the proxy must identify the caller.");
+  }
+
+  let actor: PortalActor | null;
+  try {
+    actor = await resolvePortalActor(email);
+  } catch (e) {
+    console.error("[portal] actor lookup failed", e);
+    return fail(503, "internal", "Could not resolve the caller — the database is unreachable.");
+  }
+  // Says nothing about whether the address exists: the portal shows its own "no access yet"
+  // screen, and confirming which emails are customers of the agency is not this endpoint's job.
+  if (!actor) {
+    return fail(403, "unknown_actor", "This account has no portal access.");
+  }
+  if (actor.status !== "approved") {
+    return fail(
+      403,
+      "not_approved",
+      actor.status === "rejected"
+        ? "Your portal access was withdrawn."
+        : "Your portal access is not active yet.",
+    );
+  }
+
+  let body: z.infer<typeof envelope>;
+  try {
+    body = envelope.parse(await request.json());
+  } catch {
+    return fail(400, "bad_request", "Body must be JSON.");
+  }
+
+  const tail = url.pathname.slice(PREFIX.length);
+  const name = tail === "invoke" ? body.op : tail;
+  if (!name) {
+    return fail(400, "bad_request", "Missing op name — POST to /api/v1/<op> or send {op}.");
+  }
+  // Checked before the lookup so a staff op reports the same "no such op" a typo does, rather than
+  // confirming which internal operations exist.
+  const op = name.startsWith(PORTAL_OP_PREFIX) ? lookupOp(name) : undefined;
+  if (!op) return fail(404, "unknown_op", `No such op: "${name}".`);
+
+  void touchPortalActor(actor.id);
+
+  try {
+    const data = await runAsActor(null, () => runAsPortalActor(actor, () => op.run(body.data)));
+    return Response.json({ ok: true, data: data ?? null });
+  } catch (e) {
+    return errorResponse(name, e);
+  }
+}
+
 /**
  * Answer an API request, or return `null` when the path is not ours.
  *
@@ -125,9 +216,22 @@ export async function handleApiRequest(request: Request): Promise<Response | nul
   const url = new URL(request.url);
   if (!url.pathname.startsWith(PREFIX)) return null;
 
-  const token = env().VPS_API_TOKEN;
-  if (!token) {
-    return fail(503, "api_disabled", "VPS_API_TOKEN is not set on this server.");
+  // Two audiences share this surface, told apart by WHICH secret was presented — not by a role on
+  // the caller. The internal token authorises every op; the portal token authorises only `portal*`,
+  // and each of those scopes itself to the calling client's own grants.
+  //
+  // Deciding on the token is what makes the client-facing app safe to ship: it physically cannot
+  // address `getFinance` or `resetAndResync`, so a compromise of that app exposes one client's
+  // marked-up figures rather than the agency's. A role check on a single shared token would leave
+  // those ops one forgotten `if` away.
+  const { VPS_API_TOKEN: staffToken, PORTAL_API_TOKEN: portalToken } = env();
+  if (!staffToken && !portalToken) {
+    return fail(503, "api_disabled", "Neither VPS_API_TOKEN nor PORTAL_API_TOKEN is set.");
+  }
+  // Identical secrets would silently promote every portal caller to staff, because the staff
+  // comparison below runs first. Refuse rather than pick a winner.
+  if (staffToken && portalToken && staffToken === portalToken) {
+    return fail(503, "misconfigured", "VPS_API_TOKEN and PORTAL_API_TOKEN must differ.");
   }
 
   // A bearer token crossing plain HTTP is a token in the clear. nginx forwards the real scheme, so
@@ -140,9 +244,14 @@ export async function handleApiRequest(request: Request): Promise<Response | nul
   }
 
   const presented = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "") ?? "";
-  if (!presented || !secretMatches(presented, token)) {
+  let audience: Audience | null = null;
+  if (presented && staffToken && secretMatches(presented, staffToken)) audience = "staff";
+  else if (presented && portalToken && secretMatches(presented, portalToken)) audience = "portal";
+  if (!audience) {
     return fail(401, "unauthorized", "Invalid or missing bearer token.");
   }
+
+  if (audience === "portal") return handlePortalRequest(request, url);
 
   // Outside the op's try/catch, so an unreachable database here would otherwise escape to
   // `src/server.ts` and be answered with the HTML error page — a machine caller must always get

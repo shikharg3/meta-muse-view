@@ -10,6 +10,9 @@ import * as dashboard from "./dashboard";
 import * as finance from "./finance";
 import * as health from "./health";
 import * as infrastructure from "./infrastructure";
+import * as portal from "./portal";
+import * as portalAdmin from "./portal-admin";
+import * as portalCreative from "./portal-creative";
 import * as reportCatalog from "./report-catalog";
 import * as reports from "./reports";
 import * as settings from "./settings";
@@ -40,6 +43,9 @@ const MODULES: Record<string, unknown> = {
   finance,
   health,
   infrastructure,
+  portal,
+  portalAdmin,
+  portalCreative,
   reportCatalog,
   reports,
   settings,

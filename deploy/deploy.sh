@@ -22,7 +22,10 @@ main() {
   local branch="${BRANCH:-feat/meta-integration}"
   local remote="${REMOTE:-origin}"
   local lock="/var/lock/meta-deploy.lock"
-  local health="http://127.0.0.1:8787/login"
+  local health="${HEALTH:-http://127.0.0.1:8787/login}"
+  # The staging checkout (/opt/meta-next, :8789) runs the web unit ONLY — duplicating meta-sync
+  # would put two workers on the same upsert keys and split the Meta rate-limit budget.
+  local services="${SERVICES:-meta-web meta-sync}"
 
   command -v bun >/dev/null || {
     echo "deploy: bun not found on PATH" >&2
@@ -71,9 +74,10 @@ main() {
   echo "deploy: building"
   bun run build
 
-  echo "deploy: restarting meta-web + meta-sync"
+  echo "deploy: restarting $services"
   # meta-sync is long-lived and only picks up new sync/job code on restart.
-  systemctl restart meta-web meta-sync
+  # shellcheck disable=SC2086  # deliberate word splitting: $services is a unit list
+  systemctl restart $services
 
   echo "deploy: waiting for health"
   local code=""
@@ -83,13 +87,18 @@ main() {
     sleep 1
   done
 
-  local web sync
-  web="$(systemctl is-active meta-web || true)"
-  sync="$(systemctl is-active meta-sync || true)"
-  echo "deploy: meta-web=$web meta-sync=$sync health=$code commit=${after:0:8}"
+  local failed=""
+  for unit in $services; do
+    local state
+    state="$(systemctl is-active "$unit" || true)"
+    echo "deploy: $unit=$state"
+    [[ "$state" == "active" ]] || failed="$failed $unit"
+  done
+  echo "deploy: health=$code commit=${after:0:8}"
 
-  if [[ "$web" != "active" || "$sync" != "active" || "$code" != "200" ]]; then
-    echo "deploy: FAILED — check 'journalctl -u meta-web -n 50' and 'journalctl -u meta-sync -n 50'" >&2
+  if [[ -n "$failed" || "$code" != "200" ]]; then
+    echo "deploy: FAILED — check${failed:- the health target}" >&2
+    for unit in $services; do echo "         journalctl -u $unit -n 50" >&2; done
     exit 1
   fi
   echo "deploy: ok"

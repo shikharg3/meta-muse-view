@@ -853,3 +853,159 @@ export const reportRuns = pgTable(
     index("report_runs_client_idx").on(t.clientId, t.exportedAt),
   ],
 );
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Client portal (the Base44 "DotAnalytics" app).
+//
+// OPERATOR-OWNED: no sync job writes any table below. The Meta sync owns `accounts`, `campaigns`
+// and the insights tables; everything here is the commercial layer an operator curates on top —
+// which brand a client sees, who may see it, and at what markup.
+//
+// The portal is a DIFFERENT trust domain to the internal dashboard. Its callers are the agency's
+// customers, not staff, so they get their own identity table rather than a role inside `users`:
+// `provisionFederatedUser()` auto-creates a `users` row for any email the Base44 proxy asserts, and
+// pointing a client-facing app at that would both fill the staff Users page with customers and make
+// "approved" — a single binary flag that unlocks all 100 ops — the only thing standing between a
+// client and the agency's own numbers. See `src/portal/scope.ts`.
+
+/**
+ * A brand is what a client SEES: a presentation grouping of one or more ad accounts.
+ *
+ * Not the same thing as a client. One client (`clients`, synced from Notion) can run several
+ * brands, and the portal's whole navigation is brand-first, so the grouping has to exist as its own
+ * row rather than being derived from account names.
+ *
+ * RESTRICT on `client_id`: a brand's figures are only meaningful through its client's campaign
+ * ownership (shared and recycled ad accounts make account-based attribution wrong), so a brand must
+ * never outlive the client row it resolves through.
+ */
+export const brands = pgTable(
+  "brands",
+  {
+    id: text("id").primaryKey(), // crypto.randomUUID()
+    clientId: text("client_id")
+      .notNull()
+      .references(() => clients.id, { onDelete: "restrict" }),
+    name: text("name").notNull(), // client-facing brand name, never an internal account name
+    website: text("website"),
+    // Contracted monthly budget in client-facing money (markup already included), which is what
+    // the portal's pacing widget compares marked-up spend against. Null = no pacing shown.
+    monthlyBudget: doublePrecision("monthly_budget"),
+    // Markup applied to this brand's campaigns unless a campaign has its own rate history.
+    // Null falls back to `PORTAL_DEFAULT_COMMISSION`.
+    defaultCommission: doublePrecision("default_commission"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("brands_client_idx").on(t.clientId)],
+);
+
+/**
+ * Which ad accounts feed a brand. Many-to-one in practice, but modelled many-to-many because a
+ * brand genuinely can span accounts (one per market) and an account can be re-pointed at a new
+ * brand when it is recycled.
+ *
+ * No FK to `accounts`: that table is sync-owned and a row can disappear when Meta stops returning
+ * an account, which must not delete an operator's mapping.
+ */
+export const brandAccounts = pgTable(
+  "brand_accounts",
+  {
+    brandId: text("brand_id")
+      .notNull()
+      .references(() => brands.id, { onDelete: "cascade" }),
+    accountId: text("account_id").notNull(), // act_<digits>
+  },
+  (t) => [
+    primaryKey({ columns: [t.brandId, t.accountId] }),
+    index("brand_accounts_account_idx").on(t.accountId),
+  ],
+);
+
+/**
+ * A portal login. Separate from `users` on purpose — see the block comment above.
+ *
+ * `email` is the Base44-authenticated address, lowercased, and is the only thing the portal proxy
+ * asserts. Unlike `provisionFederatedUser`, nothing here is auto-created: an unknown email is
+ * refused outright, so a client cannot bring themselves into existence by signing up on Base44.
+ */
+export const portalUsers = pgTable("portal_users", {
+  id: text("id").primaryKey(), // crypto.randomUUID()
+  email: text("email").notNull().unique(), // lowercased
+  name: text("name"),
+  // "pending" | "approved" | "rejected". Pending grants nothing at all, not even a read.
+  status: text("status").notNull().default("pending"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  invitedBy: text("invited_by").references(() => users.id, { onDelete: "set null" }),
+  lastSeenAt: timestamp("last_seen_at", { withTimezone: true }),
+});
+
+/**
+ * What one portal user may see: whole brands, or single campaigns.
+ *
+ * Polymorphic (`scope` + `target_id`) rather than two nullable FK columns, because Postgres treats
+ * NULLs as distinct and a `unique(user, brand_id)` constraint therefore would not stop duplicate
+ * campaign grants. One uniqueness rule covers both kinds.
+ *
+ * `target_id` carries no FK for the same reason `campaign_client_overrides` carries none: a grant
+ * pointing at something that no longer exists is simply ignored when the scope is resolved, which
+ * is strictly safer than a cascade that silently widens or erases access.
+ */
+export const portalGrants = pgTable(
+  "portal_grants",
+  {
+    id: text("id").primaryKey(), // crypto.randomUUID()
+    portalUserId: text("portal_user_id")
+      .notNull()
+      .references(() => portalUsers.id, { onDelete: "cascade" }),
+    scope: text("scope").notNull(), // "brand" | "campaign"
+    targetId: text("target_id").notNull(), // brands.id or campaigns.id
+    grantedBy: text("granted_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("portal_grants_unique").on(t.portalUserId, t.scope, t.targetId),
+    index("portal_grants_target_idx").on(t.scope, t.targetId),
+  ],
+);
+
+/**
+ * Commission history per campaign: each row is a rate that applies FROM `from_date` onwards, and
+ * the period's end is always derived from the next row. Storing only the start date is what makes
+ * overlapping or contradictory periods unrepresentable.
+ *
+ * This is the agency's margin, so it exists server-side and nowhere else. The portal never receives
+ * a rate or a raw spend figure — `src/portal/markup.ts` folds the rate into the numbers before they
+ * are serialised. A rate shipped to the browser would tell every client exactly what they are
+ * being charged over the odds.
+ */
+export const campaignCommissions = pgTable(
+  "campaign_commissions",
+  {
+    campaignId: text("campaign_id").notNull(),
+    fromDate: date("from_date").notNull(),
+    rate: doublePrecision("rate").notNull(), // percent uplift, e.g. 12 = +12%
+    setBy: text("set_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.campaignId, t.fromDate] })],
+);
+
+/**
+ * The client-facing presentation of one campaign.
+ *
+ * `campaigns.name` is the internal Meta name (`LP_UKIE_ABO_PUR_0625`) and it encodes the account,
+ * the objective and the buying strategy. It must never reach a client, so the portal renders
+ * `alias` and nothing else.
+ *
+ * A campaign with no row here, or a row with no alias, is INVISIBLE to the portal rather than
+ * falling back to the internal name. That asymmetry is deliberate: forgetting to name a campaign
+ * should cost a client a missing row, not leak the agency's naming convention. `hidden` is the
+ * explicit opt-out for a campaign that is named but should not be shown yet.
+ */
+export const portalCampaigns = pgTable("portal_campaigns", {
+  campaignId: text("campaign_id").primaryKey(),
+  alias: text("alias"), // client-facing name; null = not shown
+  hidden: boolean("hidden").notNull().default(false),
+  updatedBy: text("updated_by").references(() => users.id, { onDelete: "set null" }),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});

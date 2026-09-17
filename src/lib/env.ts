@@ -51,6 +51,12 @@ const schema = z.object({
   // database-equivalent: it must live only in a Base44 *backend function* secret, never in
   // frontend code, and it is only ever presented over HTTPS.
   VPS_API_TOKEN: z.string().min(32, "VPS_API_TOKEN must be at least 32 chars").optional(),
+  // Bearer secret for the CLIENT PORTAL audience of the same HTTP API. Deliberately a second,
+  // separate token rather than a role on the first: it is held by a client-facing Base44 app, so
+  // it must be able to invoke ONLY the `portal*` ops, each of which scopes itself to the calling
+  // client's own grants. Compromising that app therefore exposes one client's marked-up figures,
+  // never the agency's. Unset disables the portal audience; the internal API is unaffected.
+  PORTAL_API_TOKEN: z.string().min(32, "PORTAL_API_TOKEN must be at least 32 chars").optional(),
 });
 
 export type Env = z.infer<typeof schema>;
