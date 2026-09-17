@@ -21,6 +21,7 @@ import { deriveKpis } from "@/server/agg";
 import { requireAdmin } from "./auth";
 import {
   actionCounts,
+  delivered,
   deposits,
   registrations,
   scopedDays,
@@ -177,19 +178,20 @@ async function buildRows(
     return bucket;
   };
 
-  // A whole-range report answers "what did this cost me", so a group the caller NAMED earns a row
-  // even at zero — asking about a campaign and getting nothing back reads as a failure, not as an
-  // answer. Brands are always seeded for the same reason: a client knows their own brands, and
-  // "your brand spent nothing this month" is the answer.
+  // Zero rows exist only for groups the caller NAMED. Asking a report about a specific campaign
+  // and getting nothing back reads as a failure rather than as an answer, so its zeroes are the
+  // answer; a report nobody filtered is not a question about specific campaigns, and every silent
+  // group is dropped below.
   //
-  // An unfiltered campaign report is the one case that is not a question about specific campaigns,
-  // and seeding it would list every abandoned draft on the account — the same noise the campaign
-  // table drops in `delivered()`. Those campaigns simply never open a bucket.
+  // "Has rows" is NOT the same question as "delivered": Meta writes a zero-valued row for a day a
+  // campaign did not run, so 34 of this brand's campaigns open a bucket while 14 actually spent
+  // anything. Filtering on the assembled totals is what keeps an exported CSV from listing the
+  // abandoned drafts the client's own campaign table already drops.
   //
-  // A split report seeds nothing at all: one empty row per silent day is noise, and there is no
-  // question a day with no delivery answers.
-  const seedZeroRows = req.breakdown !== "campaign" || wanted.size > 0;
-  if (req.granularity === "range" && seedZeroRows) {
+  // A split report seeds nothing either way: one empty row per silent day is noise, and there is
+  // no question a day with no delivery answers.
+  const named = wanted.size > 0;
+  if (req.granularity === "range" && named) {
     for (const id of campaignIds) {
       const group = groupOf(id);
       if (group !== undefined) bucketAt(group, null);
@@ -206,18 +208,20 @@ async function buildRows(
   // key — so a period's registrations and its spend are always the same set of days.
   const events = actionCounts(days, (d: ScopedDay) => bucketKey(d) ?? "");
 
-  const rows: PortalReportRow[] = [...buckets].map(([key, bucket]) => {
-    const sums = events.get(key);
-    return {
-      label: bucket.label,
-      period: bucket.period,
-      metrics: {
-        ...deriveKpis(totals(bucket.rows)),
-        registrations: registrations(sums),
-        deposits: deposits(sums),
-      },
-    };
-  });
+  const rows: PortalReportRow[] = [...buckets]
+    .map(([key, bucket]) => {
+      const sums = events.get(key);
+      return {
+        label: bucket.label,
+        period: bucket.period,
+        metrics: {
+          ...deriveKpis(totals(bucket.rows)),
+          registrations: registrations(sums),
+          deposits: deposits(sums),
+        },
+      };
+    })
+    .filter(({ metrics }) => named || delivered(metrics, metrics.registrations, metrics.deposits));
 
   // Chronological first — a split report is read down the time axis — then the biggest spender
   // within each period, which is the order the campaign table uses.
