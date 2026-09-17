@@ -14,6 +14,7 @@ import { addDays } from "@/lib/range";
 import { syncClients } from "./jobs/clients";
 import { syncNotionDailyBudgets } from "./jobs/notion-budget";
 import { syncEdges, syncActivities, syncLeadForms } from "./jobs/objects";
+import { purgeExcluded } from "./exclusions";
 import {
   markSync,
   recordTokenHealth,
@@ -410,6 +411,21 @@ export async function runCycle(opts: { full?: boolean; force?: boolean } = {}): 
     // Persist the tier seen on this cycle's live headers so the next cycle sizes pacing correctly
     // (a downgrade after an app swap pulls concurrency back down automatically).
     await recordObservedTier(client.observedTier());
+    // Remove whatever the ingest filters could not see BEFORE anything reads these tables: an
+    // excluded campaign must not reach alert detection, the Notion push, or a dashboard mid-cycle.
+    // A quiet sweep is all zeroes and logs nothing — see `src/sync/exclusions.ts`.
+    try {
+      const purged = await purgeExcluded();
+      const rows = purged.insightRows + purged.breakdownRows + purged.activities + purged.overrides;
+      if (purged.campaigns || purged.adSets || purged.ads || rows)
+        console.log(
+          `[sync] exclusions: purged ${purged.campaigns} campaign(s), ${purged.adSets} ad set(s), ` +
+            `${purged.ads} ad(s), ${purged.adCreatives} creative(s), ${purged.insightRows} insight row(s), ` +
+            `${purged.breakdownRows} breakdown row(s), ${purged.activities} activity row(s)`,
+        );
+    } catch (e) {
+      console.error("[sync] exclusion purge failed:", e);
+    }
     try {
       const n = await detectSpendDropAlerts();
       if (n > 0) console.log(`[sync] alerts: ${n} new spend-drop alert(s)`);

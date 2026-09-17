@@ -213,6 +213,21 @@ export const syncCheckpoints = pgTable(
   (t) => [primaryKey({ columns: [t.accountId, t.dataset] })],
 );
 
+/**
+ * Meta ids the sync must never store — see `src/sync/exclusions.ts` for the whole mechanism.
+ *
+ * Ids only, never names: the point of an exclusion is that the excluded campaign's name does not
+ * live in this database, so there is nothing here to read it back off. `reason` records how an id
+ * got here ("purge" from the sweep, "name" from an ingest filter) purely so an operator can tell a
+ * deliberate seed from something the pattern caught later.
+ */
+export const syncExclusions = pgTable("sync_exclusions", {
+  id: text("id").primaryKey(),
+  kind: text("kind").notNull(), // "campaign" | "adset" | "ad" | "account"
+  reason: text("reason").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const tokenHealth = pgTable("token_health", {
   id: text("id").primaryKey().default("singleton"),
   checkedAt: timestamp("checked_at", { withTimezone: true }),

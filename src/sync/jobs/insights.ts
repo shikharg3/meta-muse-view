@@ -3,6 +3,7 @@ import type { InsightRow, InsightsClient } from "@/meta/types";
 import { normalizeInsightRow } from "@/meta/insights";
 import { INSIGHT_METRIC_GROUPS, ATTRIBUTION_WINDOWS } from "@/meta/fieldsets";
 import { MetaAuthError, MetaCircuitOpenError } from "@/meta/client";
+import { accountIsExcludedOnly, loadExclusions } from "../exclusions";
 
 export type Level = "account" | "campaign" | "adset" | "ad";
 
@@ -66,6 +67,16 @@ export async function syncInsightsRange(
   groups: string[][] = INSIGHT_METRIC_GROUPS,
 ): Promise<number> {
   let written = 0;
+  // Excluded campaigns must not reach this table either. Every non-account request already asks for
+  // `campaign_id` (it is in each metric group), so a row can be judged on its own contents; the
+  // account level carries no campaign id at all, which is why an account whose whole campaign list
+  // was excluded is dropped wholesale instead. See `src/sync/exclusions.ts`.
+  const excluded = await loadExclusions();
+  if (level === "account" && (await accountIsExcludedOnly(accountId, excluded))) return 0;
+  const isExcludedRow = (row: InsightRow, entityId: string): boolean =>
+    Boolean(excluded[entityId]) ||
+    Boolean(row.campaign_id && excluded[String(row.campaign_id)]) ||
+    Boolean(row.adset_id && excluded[String(row.adset_id)]);
   // Long ranges are chunked so each request stays within Meta's per-call data limits.
   for (const window of chunkRange(since, until)) {
     // Request every metric in compatible groups, merged by (entity, date) so each daily row carries
@@ -149,6 +160,7 @@ export async function syncInsightsRange(
     for (const merged of byKey.values()) {
       const entityId =
         level === "account" ? accountId : String(merged[ID_FIELD[level]] ?? accountId);
+      if (isExcludedRow(merged, entityId)) continue;
       const base = normalizeInsightRow(merged, level, entityId, accountId);
       const win = attributionWindows ? winMap.get(`${entityId}:${base.date}`) : undefined;
       // When not capturing windows (backfill), omit the columns so an older chunk never nulls out

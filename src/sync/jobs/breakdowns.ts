@@ -3,6 +3,7 @@ import type { InsightsClient } from "@/meta/types";
 import { pickAction, DEFAULT_CONVERSION_TYPE } from "@/meta/insights";
 import { trailingRange, chunkRange, type Level } from "./insights";
 import { MetaAuthError, MetaCircuitOpenError } from "@/meta/client";
+import { accountIsExcludedOnly, loadExclusions } from "../exclusions";
 
 const n = (v: unknown) => (v == null ? 0 : Number(v) || 0);
 
@@ -78,6 +79,11 @@ export async function syncBreakdowns(
     opts.since && opts.until
       ? { since: opts.since, until: opts.until }
       : trailingRange(opts.days ?? 28, opts.today);
+  // `campaign_id` is requested below levels where it is not the key, purely so an excluded
+  // campaign's breakdown rows can be recognised: unlike the plain insight request, the breakdown
+  // fieldset is minimal, and an ad-level row otherwise names no campaign at all.
+  const excluded = await loadExclusions();
+  if (level === "account" && (await accountIsExcludedOnly(accountId, excluded))) return 0;
   const fields = [
     "spend",
     "impressions",
@@ -86,6 +92,7 @@ export async function syncBreakdowns(
     "actions",
     "action_values",
     ...(idField ? [idField] : []),
+    ...(level === "adset" || level === "ad" ? ["campaign_id"] : []),
   ];
 
   let written = 0;
@@ -104,6 +111,7 @@ export async function syncBreakdowns(
         for (const r of rows) {
           const rec = r as Record<string, unknown>;
           const entityId = idField ? String(rec[idField] ?? accountId) : accountId;
+          if (excluded[entityId] || excluded[String(rec.campaign_id ?? "")]) continue;
           const dims: Record<string, string> = {};
           for (const dim of group) dims[dim] = dimLabel(rec[dim]);
           const v = {

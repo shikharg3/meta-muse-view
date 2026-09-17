@@ -1,5 +1,6 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { runCycle, runBackfillCycle } from "./cycle";
+import { purgeExcluded } from "./exclusions";
 import {
   runDailyCheckin,
   remindUnanswered,
@@ -172,7 +173,19 @@ async function notificationsLoop(): Promise<void> {
   }
 }
 
-if (process.argv.includes("--once")) {
+if (process.argv.includes("--purge-exclusions")) {
+  // The scrub, on demand: the same sweep the hourly cycle runs, for the first pass over data that
+  // landed before the ingest filters existed. Idempotent — a second run reports zeroes.
+  purgeExcluded()
+    .then((r) => {
+      console.log("[purge]", JSON.stringify(r));
+      process.exit(0);
+    })
+    .catch((e) => {
+      console.error("[purge] failed:", e);
+      process.exit(1);
+    });
+} else if (process.argv.includes("--once")) {
   // Manual one-shot: a full (all-metrics) refresh. Forced past the restart cooldown — someone ran
   // this on purpose.
   runCycle({ full: true, force: true })

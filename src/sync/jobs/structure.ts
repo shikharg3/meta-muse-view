@@ -1,6 +1,12 @@
 import { db, schema } from "@/db/client";
 import type { GraphNode, InsightsClient } from "@/meta/types";
 import { NODE_FIELDS } from "@/meta/fieldsets";
+import {
+  loadExclusions,
+  matchesExcludedName,
+  registerExclusions,
+  type ExclusionKind,
+} from "../exclusions";
 
 const now = () => new Date();
 const str = (v: unknown): string | null => (v == null ? null : String(v));
@@ -36,7 +42,22 @@ export async function syncStructure(client: InsightsClient, accountId: string): 
   const campaigns = await client.getChildren(accountId, "campaigns", NODE_FIELDS.campaign, {
     limit: 100,
   });
+  // Excluded campaigns are refused here, at the only door their structure can come through, and
+  // their ids are recorded so the insight/breakdown/activity filters — which see ids and no names —
+  // can refuse them too. See `src/sync/exclusions.ts`.
+  const excluded = await loadExclusions();
+  const refused: { id: string; kind: ExclusionKind; reason: string }[] = [];
+  const drop = (node: GraphNode, kind: ExclusionKind, parentExcluded: boolean): boolean => {
+    const id = String(node.id);
+    if (excluded[id]) return true;
+    if (!parentExcluded && !matchesExcludedName(str(node.name))) return false;
+    refused.push({ id, kind, reason: parentExcluded ? "parent" : "name" });
+    excluded[id] = kind;
+    return true;
+  };
+
   for (const c of campaigns) {
+    if (drop(c, "campaign", false)) continue;
     const vals = {
       id: String(c.id),
       accountId,
@@ -63,6 +84,9 @@ export async function syncStructure(client: InsightsClient, accountId: string): 
 
   const adsets = await client.getChildren(accountId, "adsets", NODE_FIELDS.adset, { limit: 50 });
   for (const s of adsets) {
+    // Parentage first, then the ad set's own name: "KyloPeptides" sitting under a differently-named
+    // campaign is exactly what parentage alone would let through.
+    if (drop(s, "adset", Boolean(excluded[reqStr(s.campaign_id, "")]))) continue;
     const vals = {
       id: String(s.id),
       accountId,
@@ -93,6 +117,11 @@ export async function syncStructure(client: InsightsClient, accountId: string): 
 
   const ads = await client.getChildren(accountId, "ads", NODE_FIELDS.ad, { limit: 100 });
   for (const a of ads) {
+    // The ad payload carries `campaign_id` as well as `adset_id`, so an ad is judged against both
+    // its parents rather than relying on the order these three loops happen to run in.
+    const orphaned =
+      Boolean(excluded[reqStr(a.campaign_id, "")]) || Boolean(excluded[reqStr(a.adset_id, "")]);
+    if (drop(a, "ad", orphaned)) continue;
     const vals = {
       id: String(a.id),
       accountId,
@@ -111,6 +140,11 @@ export async function syncStructure(client: InsightsClient, accountId: string): 
       .insert(schema.ads)
       .values(vals)
       .onConflictDoUpdate({ target: schema.ads.id, set: vals });
+  }
+
+  if (refused.length) {
+    await registerExclusions(refused);
+    console.log(`[structure] ${accountId}: refused ${refused.length} excluded node(s)`);
   }
 }
 

@@ -1,5 +1,6 @@
 import { db, schema } from "@/db/client";
 import type { GraphNode, InsightsClient } from "@/meta/types";
+import { loadExclusions, matchesExcludedName } from "../exclusions";
 
 const str = (v: unknown): string | null => (v == null ? null : String(v));
 
@@ -152,11 +153,15 @@ export async function syncActivities(
     limit: 500,
     since: since.toISOString().slice(0, 10),
   });
+  // The change history names its object: an excluded campaign's edits carry both its id and its
+  // name, so both are refused — otherwise the Activity feed would still read "KP · budget updated".
+  const excluded = await loadExclusions();
   let written = 0;
   for (const r of rows) {
     const eventTime = r.event_time ? new Date(String(r.event_time)) : null;
     const eventType = str(r.event_type) ?? "unknown";
     const objectId = str(r.object_id);
+    if ((objectId && excluded[objectId]) || matchesExcludedName(str(r.object_name))) continue;
     const id = `${accountId}|${r.event_time ?? ""}|${eventType}|${objectId ?? ""}`;
     const vals = {
       id,
