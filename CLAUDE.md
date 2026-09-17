@@ -44,16 +44,17 @@ convenient it looks.
   different purposes and neither substitutes for the other:
   - `origin` (GitHub) — the collaboration source of truth. This is what the other operator pulls.
   - `droplet` (`ssh://…/opt/meta.git`, a bare repo on the server) — **the only path code takes onto
-    the server.** The deployed checkout's own `origin` is that bare repo, *not* GitHub, and there is
+    the server.** The deployed checkout's own `origin` is that bare repo, _not_ GitHub, and there is
     no hook. Push to GitHub alone and the server sees nothing.
   - `madsmonitor` — a code mirror pushed by the maintainer only; it needs a separate key, so do not
     expect it to work from every machine.
 
   Because forgetting the `droplet` push deploys stale code while reporting success, always pass
   `EXPECT` when deploying (see below) — it turns that mistake into a hard failure.
+
 - **Stage explicitly — never `git add -A` or `git add .`** Scratch files (`.tmp-*.ts`, screenshots,
   local notes) are not all gitignored, and one careless commit puts them in three remotes.
-- Conventional commit messages. Explain *why* in the body when the reasoning is not obvious from the
+- Conventional commit messages. Explain _why_ in the body when the reasoning is not obvious from the
   diff; the interesting commits here are the ones that correct a wrong assumption.
 
 ## Deploying
@@ -71,7 +72,7 @@ does not come back. Deploying by hand is what it replaces: there is a single che
 `.output/`, and `meta-web` boots directly from `.output/server/index.mjs`, so two overlapping deploys
 can restart onto a half-written build.
 
-*Worth fixing properly at some point:* point the server checkout's `origin` at GitHub with a deploy
+_Worth fixing properly at some point:_ point the server checkout's `origin` at GitHub with a deploy
 key, so one push is enough and the bare repo stops being a second source of truth. That needs a
 deploy key added on the GitHub side, so it is a deliberate change rather than something to do in
 passing.
@@ -81,7 +82,7 @@ changes — it is long-lived and only picks up new code on restart.
 
 ## Databases — read this before running anything
 
-**There is no local database.** `DATABASE_URL` in local dev points at the *production* Postgres
+**There is no local database.** `DATABASE_URL` in local dev points at the _production_ Postgres
 through an SSH tunnel:
 
 ```bash
@@ -123,13 +124,13 @@ gates that used to live in `src/lib/api/{finance,conversations}.ts`.
 
 ### Three frontends now, and two of them are customer-facing
 
-A **second** Base44 app (`6a91757327c7555d5f5a8f91`, "DotAnalytics") serves the agency's *customers*.
+A **second** Base44 app (`6a91757327c7555d5f5a8f91`, "DotAnalytics") serves the agency's _customers_.
 It reaches the same ops through the same `/api/v1/invoke`, but the audience is chosen by **which
 bearer secret arrives** — not by a role on the caller:
 
-| secret             | audience | reachable ops     | identity table |
-| ------------------ | -------- | ----------------- | -------------- |
-| `VPS_API_TOKEN`    | staff    | all of them       | `users`        |
+| secret             | audience | reachable ops      | identity table |
+| ------------------ | -------- | ------------------ | -------------- |
+| `VPS_API_TOKEN`    | staff    | all of them        | `users`        |
 | `PORTAL_API_TOKEN` | customer | **`portal*` only** | `portal_users` |
 
 **The `portal` prefix IS the allowlist.** Name a staff op `portalSomething` and you have just
@@ -147,13 +148,18 @@ nothing and refuses an unknown email.
 Three things must never reach a customer, and each is enforced in code rather than by review:
 
 - **Raw spend and the commission rate.** `src/portal/markup.ts` folds the rate into `spend` on each
-  daily campaign row *before* aggregation, so every derived cost metric is consistent and there is
+  daily campaign row _before_ aggregation, so every derived cost metric is consistent and there is
   no list of "cost keys" to keep in step. Aggregating raw and multiplying at the end is the shape
   that silently reports true cost for whichever metric someone adds next. Raw spend does not
   survive `markupRows()`, and no frontend performs markup arithmetic.
-- **`campaigns.name`.** It encodes account, objective and buying strategy. The portal renders
-  `portal_campaigns.alias`; a campaign with no alias is **invisible** rather than falling back to
-  the internal name. Forgetting to name a campaign costs a client a row, never a leak.
+- **A campaign name that names somebody else.** The client-facing name DEFAULTS to `campaigns.name`
+  — the owner's call, and true of most of them, which were written for a human to read. The tail is
+  not: of 627 campaigns, 99 carry a " - Copy" suffix, 38 are opaque ids, 13 are Meta's placeholder
+  text, and 4 name a DIFFERENT client, one of them shipping a competitor's tracking URL.
+  `src/portal/name-review.ts` flags exactly those so an operator overrides the name or sets
+  `hidden`; agency strategy vocabulary ("prospecting", "lookalike") is deliberately not flagged,
+  because flagging 54 rows nobody would act on teaches people to ignore the flag.
+  `portal_campaigns.alias` is the override, and `hidden` is the only way to withhold a campaign.
 - **Another client's anything.** Scope resolves through `ownedCampaignIds()` into an explicit
   campaign whitelist (`src/portal/scope.ts`); an empty scope returns no rows, never "no filter".
   Portal ops read `level = 'campaign'` insight rows only — the one grain at which both markup and
@@ -196,7 +202,7 @@ production). Unset it and `/api/v1/*` answers `503`; it never falls open.
 ## Invariants worth not breaking
 
 - **Meta is the system of record.** Notion and every other system mirror it. Columns prefixed `🤖`
-  on the Notion board are machine-owned and written only for *live* engagements; a finished or paused
+  on the Notion board are machine-owned and written only for _live_ engagements; a finished or paused
   row keeps whatever the team recorded, because its ad accounts get recycled onto the next client.
 - **A campaign's `effective_status` does not mean it can spend.** Meta stops delivery at the account
   level when an account is disabled or its prepaid `spend_cap` is exhausted, and leaves campaigns

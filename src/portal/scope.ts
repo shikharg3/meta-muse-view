@@ -218,6 +218,10 @@ async function brandScope(
   const brands: ScopedBrand[] = [];
   const brandOf = new Map<string, string>();
   const visible = new Set<string>();
+  // Meta's own campaign name, which is the default client-facing label. Collected here because the
+  // campaigns are already being read per brand and re-querying them for the name would double the
+  // round trips on the portal's hottest path.
+  const metaName = new Map<string, string>();
 
   for (const b of brandRows) {
     const clientRow = clientById.get(b.clientId);
@@ -245,9 +249,10 @@ async function brandScope(
     const ownedSet = owned === null ? null : new Set(owned);
 
     const onAccounts = await db
-      .select({ id: schema.campaigns.id })
+      .select({ id: schema.campaigns.id, name: schema.campaigns.name })
       .from(schema.campaigns)
       .where(inArray(schema.campaigns.accountId, usable));
+    for (const c of onAccounts) metaName.set(c.id, c.name);
 
     const brandCampaignIds = onAccounts
       .map((c) => c.id)
@@ -268,9 +273,15 @@ async function brandScope(
 
   if (visible.size === 0) return EMPTY_SCOPE(actor);
 
-  // Final gate: a campaign is only shown once an operator has given it a client-facing alias.
-  // Falling back to `campaigns.name` here would leak the internal naming convention, so an unnamed
-  // or explicitly hidden campaign drops out of the scope entirely.
+  // The client-facing name defaults to the Meta campaign name, and `portal_campaigns.alias` is an
+  // override for when it is not good enough. That is the owner's call and it matches reality: most
+  // of these names are already written for a human ("Welcome Offer Casino", "Betheboss CA").
+  //
+  // The cost is real and is handled in the admin screens rather than here: 99 of 627 names carry a
+  // " - Copy" suffix, 38 are opaque ids, 13 are Meta's own placeholder text, and 4 name a
+  // DIFFERENT client. `listCampaignPresentation` flags those so they get looked at; an operator
+  // then either overrides the alias or sets `hidden`. What this function must not do is invent a
+  // name or silently drop a campaign — a missing row now means "use the Meta name", not "hide".
   const presentation = await db
     .select({
       campaignId: schema.portalCampaigns.campaignId,
@@ -280,10 +291,16 @@ async function brandScope(
     .from(schema.portalCampaigns)
     .where(inArray(schema.portalCampaigns.campaignId, [...visible]));
 
+  const override = new Map(presentation.map((p) => [p.campaignId, p]));
+
   const aliasOf = new Map<string, string>();
-  for (const p of presentation) {
-    if (p.hidden || !p.alias) continue;
-    aliasOf.set(p.campaignId, p.alias);
+  for (const id of visible) {
+    const row = override.get(id);
+    if (row?.hidden) continue; // the explicit opt-out, and now the only way to hide a campaign
+    const name = row?.alias?.trim() || metaName.get(id)?.trim();
+    // A campaign with neither an override nor a name on the Meta row has nothing to label it with,
+    // so it stays out rather than rendering blank.
+    if (name) aliasOf.set(id, name);
   }
 
   const campaignIds = [...visible].filter((id) => aliasOf.has(id));

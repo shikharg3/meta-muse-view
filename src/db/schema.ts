@@ -1004,20 +1004,26 @@ export const campaignCommissions = pgTable(
 );
 
 /**
- * The client-facing presentation of one campaign.
+ * A client-facing OVERRIDE for one campaign. Sparse on purpose: most campaigns need no row.
  *
- * `campaigns.name` is the internal Meta name (`LP_UKIE_ABO_PUR_0625`) and it encodes the account,
- * the objective and the buying strategy. It must never reach a client, so the portal renders
- * `alias` and nothing else.
+ * The default client-facing name is `campaigns.name`, Meta's own. That is the owner's call and it
+ * matches the data — most of these names were already written for a human to read ("Welcome Offer
+ * Casino", "Betheboss CA"), so demanding an alias for all 627 would be busywork that leaves the
+ * portal empty until it is done.
  *
- * A campaign with no row here, or a row with no alias, is INVISIBLE to the portal rather than
- * falling back to the internal name. That asymmetry is deliberate: forgetting to name a campaign
- * should cost a client a missing row, not leak the agency's naming convention. `hidden` is the
- * explicit opt-out for a campaign that is named but should not be shown yet.
+ * The tail is the part that needs attention, and it is real: of 627 campaigns, 99 carry a
+ * " - Copy" suffix, 38 are opaque ids like `fbmdpwa4oUnBF0505cab2266_4`, 13 are Meta's own
+ * placeholder text ("New Traffic Campaign with recommended settings"), and 4 name a DIFFERENT
+ * client — one ships a competitor's tracking URL. `fetchCampaignPresentation()` flags exactly
+ * those so an operator can override the name or hide the campaign, instead of the whole feature
+ * being gated on naming everything.
+ *
+ * `alias` null (or no row) = use the Meta name. `hidden` = the explicit opt-out, and now the only
+ * way to keep a campaign out of the portal.
  */
 export const portalCampaigns = pgTable("portal_campaigns", {
   campaignId: text("campaign_id").primaryKey(),
-  alias: text("alias"), // client-facing name; null = not shown
+  alias: text("alias"), // client-facing override; null = fall back to campaigns.name
   hidden: boolean("hidden").notNull().default(false),
   updatedBy: text("updated_by").references(() => users.id, { onDelete: "set null" }),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

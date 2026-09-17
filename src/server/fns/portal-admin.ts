@@ -1,21 +1,23 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import { db, schema } from "@/db/client";
 import { addDays } from "@/lib/range";
 import { LIVE_STATUSES } from "@/notion/parse";
 import { brandAccountIds, clientProjects, projectSelection } from "@/portal/brand-accounts";
+import { clientTokens, reviewName, type NameFlag } from "@/portal/name-review";
 import { effectiveAccountIds } from "@/sync/jobs/clients";
 import { audit, requireAdmin } from "./auth";
-import { ownedCampaignIds } from "./campaign-attribution";
+import { loadCampaignOwnership, ownedCampaignIds } from "./campaign-attribution";
 
 /**
  * The staff side of the client portal: what a brand is, what it is charged, and who may see it.
  *
- * Everything the portal shows a client is curated here and nowhere else — a campaign without an
- * alias is invisible, a user without a grant sees nothing, and the commission history is what turns
- * the agency's raw spend into the client-facing figure. None of it is reachable from the portal
- * itself: `requireAdmin()` opens every function, and the ops that wrap them are named so that
- * `src/server/api/http.ts` cannot route a client token to them.
+ * Everything the portal shows a client is curated here and nowhere else — a brand's projects decide
+ * its ad accounts, a user without a grant sees nothing, and the commission history is what turns
+ * the agency's raw spend into the client-facing figure. Campaign names default to Meta's own, so
+ * this module's job there is to flag the ones that should not be shown as-is. None of it is
+ * reachable from the portal itself: `requireAdmin()` opens every function, and the ops that wrap
+ * them are named so that `src/server/api/http.ts` cannot route a client token to them.
  *
  * Mutations return `{ok,error?}` instead of throwing, matching the infra registry: the admin screens
  * render that string inline, and a thrown validation error loses the reason.
@@ -401,21 +403,36 @@ export async function replaceBrandAccounts(input: {
 
 // ── Campaign presentation ──────────────────────────────────────────────────────────────────────
 
-/** One curated campaign, exactly as stored. Absent rows stay absent — see `fetchCampaignPresentation`. */
+/** One campaign as the renamer screen needs it: what a client sees, where it came from, and why it might need a look. */
 export interface CampaignPresentationView {
   campaignId: string;
+  /** Meta's own campaign name — the default client-facing label. */
+  metaName: string;
+  accountId: string;
+  /** The operator's override, or null when the Meta name is being used. */
   alias: string | null;
+  /** What a client actually sees. */
+  effectiveName: string;
+  source: "meta" | "custom";
   hidden: boolean;
-  updatedAt: string;
+  /** Empty for a name that is fine as-is. See `src/portal/name-review.ts`. */
+  flags: NameFlag[];
+  /** The other client's name when `mentions-other-client` fired, so the row can say who. */
+  mentionsClient: string | null;
+  updatedAt: string | null;
 }
 
 /**
- * Read back what `upsertCampaignPresentation` stored, for the admin screen that curates it.
+ * Every campaign with the name a client would see, for the bulk renamer.
  *
- * Campaigns with no row are simply missing from the result rather than defaulted to
- * `{alias: campaigns.name}`: the absence IS the state the operator has to see ("not named, so no
- * client can see it"), and synthesising the internal name as an alias is the exact leak the table
- * exists to prevent — a screen that showed it would invite one Save to publish it verbatim.
+ * Driven by `campaigns`, not by `portal_campaigns`: the default name is Meta's, so a campaign with
+ * no override row is the NORMAL case and has to appear in this list — it is the thing most likely
+ * to need renaming. The old version read the override table alone and therefore listed only the
+ * campaigns already dealt with.
+ *
+ * Ownership comes from `loadCampaignOwnership()` rather than the account, because a shared account
+ * is claimed by several clients and comparing a name against the wrong owner would flag a campaign
+ * for naming its own client.
  */
 export async function fetchCampaignPresentation(
   input: { campaignIds?: string[] } = {},
@@ -423,33 +440,69 @@ export async function fetchCampaignPresentation(
   await requireAdmin();
   const ids = input.campaignIds;
   if (ids && ids.length === 0) return [];
-  const rows = await db
-    .select({
-      campaignId: schema.portalCampaigns.campaignId,
-      alias: schema.portalCampaigns.alias,
-      hidden: schema.portalCampaigns.hidden,
-      updatedAt: schema.portalCampaigns.updatedAt,
+
+  const [campaignRows, overrideRows, clientRows, ownership] = await Promise.all([
+    db
+      .select({
+        id: schema.campaigns.id,
+        name: schema.campaigns.name,
+        accountId: schema.campaigns.accountId,
+      })
+      .from(schema.campaigns)
+      .where(ids ? inArray(schema.campaigns.id, ids) : undefined),
+    db
+      .select({
+        campaignId: schema.portalCampaigns.campaignId,
+        alias: schema.portalCampaigns.alias,
+        hidden: schema.portalCampaigns.hidden,
+        updatedAt: schema.portalCampaigns.updatedAt,
+      })
+      .from(schema.portalCampaigns),
+    db
+      .select({ id: schema.clients.id, name: schema.clients.name })
+      .from(schema.clients)
+      .where(isNull(schema.clients.removedAt)),
+    loadCampaignOwnership(),
+  ]);
+
+  const overrideBy = new Map(overrideRows.map((r) => [r.campaignId, r]));
+  const tokens = clientTokens(clientRows);
+
+  return campaignRows
+    .map((c): CampaignPresentationView => {
+      const row = overrideBy.get(c.id);
+      const alias = row?.alias?.trim() || null;
+      const review = reviewName(c.name, ownership.ownerOf(c), tokens);
+      return {
+        campaignId: c.id,
+        metaName: c.name,
+        accountId: c.accountId,
+        alias,
+        effectiveName: alias ?? c.name,
+        source: alias ? "custom" : "meta",
+        hidden: row?.hidden ?? false,
+        // An override replaces the name, so the Meta name's problems stop being the client's
+        // problem — except naming another client, which an operator should still be told about
+        // because the Meta-side name is what the media buyer sees and it is still wrong there.
+        flags: alias ? review.flags.filter((f) => f === "mentions-other-client") : review.flags,
+        mentionsClient: review.mentionsClient,
+        updatedAt: row?.updatedAt.toISOString() ?? null,
+      };
     })
-    .from(schema.portalCampaigns)
-    .where(ids ? inArray(schema.portalCampaigns.campaignId, ids) : undefined);
-  return rows.map((r) => ({
-    campaignId: r.campaignId,
-    alias: r.alias,
-    hidden: r.hidden,
-    updatedAt: r.updatedAt.toISOString(),
-  }));
+    .sort(
+      (a, b) => b.flags.length - a.flags.length || a.effectiveName.localeCompare(b.effectiveName),
+    );
 }
 
 /**
- * Name a campaign for the client, or hide it again.
+ * Override a campaign's client-facing name, or hide it.
  *
- * This is what makes a campaign appear at all: `portalScope()` drops every campaign without a row
- * here, because falling back to `campaigns.name` would leak the internal naming convention
- * (`LP_UKIE_ABO_PUR_0625` names the account, objective and buying strategy). Clearing the alias is
- * therefore a valid way to withdraw a campaign, and `hidden` withdraws one that keeps its name.
+ * `alias: null` clears the override and falls back to Meta's name — it no longer withdraws the
+ * campaign, because the Meta name is the default. `hidden: true` is the only way to keep a
+ * campaign out of the portal.
  *
  * The campaign id is checked against `campaigns` — the column has no FK, so a typo would otherwise
- * be stored as a row that can never match anything and reads as "named, but still not showing".
+ * be stored as a row that can never match anything.
  */
 export async function upsertCampaignPresentation(input: {
   campaignId: string;
@@ -489,6 +542,85 @@ export async function upsertCampaignPresentation(input: {
     `${input.campaignId}: ${alias ? `"${alias}"` : "no alias"}${input.hidden ? ", hidden" : ""}`,
   );
   return { ok: true };
+}
+
+export interface BulkPresentationItem {
+  campaignId: string;
+  /** null clears the override and falls back to Meta's name. */
+  alias: string | null;
+  hidden: boolean;
+}
+
+/**
+ * Apply a whole screen's worth of renames at once.
+ *
+ * The renamer lists every campaign of a brand, so saving row by row would be dozens of round trips
+ * and could leave the screen half-applied if one failed. Everything goes in one transaction: either
+ * the operator's edits all land or none do, and there is no state where some campaigns show a new
+ * name and others the old one.
+ *
+ * Unknown ids are rejected up front rather than skipped. Silently dropping one would report success
+ * for a rename that never happened, and the operator's next reload would show the old name with no
+ * explanation.
+ */
+export async function bulkCampaignPresentation(input: {
+  items: BulkPresentationItem[];
+}): Promise<{ ok: boolean; error?: string; updated?: number }> {
+  const user = await requireAdmin();
+  const items = input.items;
+  if (items.length === 0) return { ok: true, updated: 0 };
+
+  const ids = [...new Set(items.map((i) => i.campaignId))];
+  if (ids.length !== items.length) {
+    return { ok: false, error: "The same campaign appears twice" };
+  }
+
+  const known = await db
+    .select({ id: schema.campaigns.id })
+    .from(schema.campaigns)
+    .where(inArray(schema.campaigns.id, ids));
+  if (known.length !== ids.length) {
+    const found = new Set(known.map((k) => k.id));
+    const missing = ids.filter((id) => !found.has(id));
+    return {
+      ok: false,
+      error: `Unknown campaign${missing.length > 1 ? "s" : ""}: ${missing.slice(0, 3).join(", ")}`,
+    };
+  }
+
+  const now = new Date();
+  const rows = items.map((i) => ({
+    campaignId: i.campaignId,
+    alias: i.alias?.trim() || null,
+    hidden: i.hidden,
+    updatedBy: user.id,
+    updatedAt: now,
+  }));
+
+  await db.transaction(async (tx) => {
+    for (const row of rows) {
+      await tx
+        .insert(schema.portalCampaigns)
+        .values(row)
+        .onConflictDoUpdate({
+          target: schema.portalCampaigns.campaignId,
+          set: {
+            alias: row.alias,
+            hidden: row.hidden,
+            updatedBy: row.updatedBy,
+            updatedAt: row.updatedAt,
+          },
+        });
+    }
+  });
+
+  const renamed = rows.filter((r) => r.alias !== null).length;
+  const hiddenCount = rows.filter((r) => r.hidden).length;
+  await audit(
+    "portal.campaign.presentation.bulk",
+    `${rows.length} campaigns: ${renamed} renamed, ${hiddenCount} hidden`,
+  );
+  return { ok: true, updated: rows.length };
 }
 
 // ── Commission ─────────────────────────────────────────────────────────────────────────────────

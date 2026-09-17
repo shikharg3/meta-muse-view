@@ -5,6 +5,7 @@ import {
   fetchBrands,
   fetchClientProjects,
   fetchCampaignCommission,
+  bulkCampaignPresentation,
   fetchCampaignPresentation,
   fetchPortalUsers,
   removeBrand,
@@ -130,6 +131,30 @@ export const saveCampaignPresentation = defineOp({
   mode: "write",
   input: campaignId.extend({ alias: z.string().nullable(), hidden: z.boolean() }),
   handler: (input) => upsertCampaignPresentation(input),
+});
+
+/**
+ * The bulk renamer's save. One transaction for the whole screen, so a partial failure cannot leave
+ * some campaigns renamed and others not.
+ *
+ * `alias: null` clears an override and falls back to Meta's name; it does not hide the campaign.
+ * The cap is a guard against a runaway client, not a product limit — 627 campaigns exist in total.
+ */
+export const saveCampaignPresentationBulk = defineOp({
+  name: staffName("saveCampaignPresentationBulk"),
+  mode: "write",
+  input: z.object({
+    items: z
+      .array(
+        z.object({
+          campaignId: z.string().min(1),
+          alias: z.string().nullable(),
+          hidden: z.boolean(),
+        }),
+      )
+      .max(1000),
+  }),
+  handler: (input) => bulkCampaignPresentation(input),
 });
 
 // ── Commission
