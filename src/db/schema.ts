@@ -1011,12 +1011,13 @@ export const campaignCommissions = pgTable(
  * Casino", "Betheboss CA"), so demanding an alias for all 627 would be busywork that leaves the
  * portal empty until it is done.
  *
- * The tail is the part that needs attention, and it is real: of 627 campaigns, 99 carry a
+ * The tail is the part that needs attention, and it is real: of 628 campaigns, 99 carry a
  * " - Copy" suffix, 38 are opaque ids like `fbmdpwa4oUnBF0505cab2266_4`, 13 are Meta's own
- * placeholder text ("New Traffic Campaign with recommended settings"), and 4 name a DIFFERENT
- * client — one ships a competitor's tracking URL. `fetchCampaignPresentation()` flags exactly
- * those so an operator can override the name or hide the campaign, instead of the whole feature
- * being gated on naming everything.
+ * placeholder text ("New Traffic Campaign with recommended settings"), and 2 embed a URL — one a
+ * competitor's tracking domain. `fetchCampaignPresentation()` flags exactly those so an operator
+ * can override the name or hide the campaign, instead of the whole feature being gated on naming
+ * everything. None currently name a different client: the ones that look like it are attributed to
+ * the client they name, by the ownership ladder rather than by their ad account.
  *
  * `alias` null (or no row) = use the Meta name. `hidden` = the explicit opt-out, and now the only
  * way to keep a campaign out of the portal.

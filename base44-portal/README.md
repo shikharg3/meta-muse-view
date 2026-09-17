@@ -47,8 +47,10 @@ Enforced in `src/portal/markup.ts` and `src/portal/scope.ts`, not by reviewer di
 - **The commission rate itself.** It exists server-side only.
 - **A campaign name that names somebody else.** The client-facing name defaults to `campaigns.name`,
   which is fine for most of them. `src/portal/name-review.ts` flags the tail that is not — a
-  " - Copy" suffix, an opaque id, Meta's placeholder text, an embedded URL, or a name mentioning a
-  DIFFERENT client (4 campaigns do, one with a competitor's tracking URL). `portal_campaigns.alias`
+  " - Copy" suffix (99 of 628), an opaque id (38), Meta's placeholder text (13), an embedded URL
+  (2, one a competitor's tracking domain), or a name mentioning a DIFFERENT client. None currently
+  do: the ones that look like it sit on shared accounts and are attributed to the client they name,
+  through the ownership ladder rather than through their ad account. `portal_campaigns.alias`
   overrides the name; `hidden` is the only way to withhold a campaign.
 - **Another client's anything.** Shared and recycled ad accounts make account-based attribution
   wrong, so ownership always resolves through `ownedCampaignIds()`.

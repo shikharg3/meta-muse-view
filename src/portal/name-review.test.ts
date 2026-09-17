@@ -20,20 +20,27 @@ describe("clientTokens", () => {
 
 describe("reviewName", () => {
   it("flags a campaign naming a different client, and says who", () => {
-    // Real row: sits on acrpoker.eu's account, names SweatBet.
+    // `SweatBet - PWA` is a real name. It sits on an account acrpoker.eu also claims, so this is
+    // the case the flag exists for — IF acrpoker.eu owned it.
     const r = reviewName("SweatBet - PWA", "acrpoker-eu", clients);
     expect(r.flags).toContain("mentions-other-client");
     expect(r.mentionsClient).toBe("SweatBet");
   });
 
   it("does not flag a campaign naming its OWN client", () => {
+    // And this is what actually happens in production: the ownership ladder attributes that row to
+    // SweatBet by brand name, so nothing fires. Account-based attribution would have said
+    // acrpoker.eu and raised the false alarm above — which is why the owner must come from
+    // `loadCampaignOwnership()`.
     const r = reviewName("SweatBet - PWA", "sweatbet", clients);
     expect(r.flags).not.toContain("mentions-other-client");
     expect(r.mentionsClient).toBeNull();
   });
 
   it("catches the row that ships a competitor's tracking URL", () => {
-    // Real row on OneAgency's account: names Playw3.com AND embeds its URL.
+    // Real row. Its owner resolves to Playw3 by brand name, so `mentions-other-client` does NOT
+    // fire in production — `contains-url` is what catches it, and a tracking domain in a
+    // client-facing name is worth catching regardless of who owns the campaign.
     const r = reviewName("Betheboss CA - https://create.playw3.com/ - Copy", "oneagency", clients);
     expect(r.flags).toEqual(
       expect.arrayContaining(["mentions-other-client", "contains-url", "copy-suffix"]),

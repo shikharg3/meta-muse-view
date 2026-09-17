@@ -3,15 +3,23 @@
  *
  * The portal now defaults a campaign's client-facing name to `campaigns.name`, because most of
  * them were already written for a human to read. That is true of the majority and false of a
- * measurable tail, so rather than gate the whole feature on naming 627 campaigns by hand, the tail
+ * measurable tail, so rather than gate the whole feature on naming 628 campaigns by hand, the tail
  * is flagged and an operator deals with just that.
  *
- * Measured over the live board at the time of writing (627 campaigns):
+ * Measured over the live board at the time of writing (628 campaigns):
  *   99  " - Copy" / " - Copy 3"      duplication artefacts
  *   54  TOF / prospecting / LAL …    agency strategy vocabulary (NOT flagged — see below)
  *   38  opaque ids                   e.g. `fbmdpwa4oUnBF0505cab2266_4`
  *   13  Meta placeholder text        "New Traffic Campaign with recommended settings"
- *    4  another client's name        one of them shipping a competitor's tracking URL
+ *    2  an embedded URL              one of them a competitor's tracking domain
+ *    0  another client's name        see below — a naive check claimed 4
+ *
+ * The cross-client count is worth explaining, because it is the flag that matters and it is easy to
+ * get wrong. Joining account → client through `notion_account_ids` says 4 campaigns name a
+ * different client (`SweatBet - PWA`, `Betheboss CA …`). They do not: those accounts are shared,
+ * and the ownership ladder attributes each campaign by brand name to the client it names. Passing
+ * `ownerClientId` from `loadCampaignOwnership()` therefore reports none, correctly. Any future
+ * cross-client check has to resolve the owner the same way or it will manufacture false alarms.
  *
  * Strategy vocabulary is deliberately NOT flagged. "Prospecting", "broad" and "lookalike" describe
  * the work the client is paying for, and an agency that cannot say "prospecting" to its client has

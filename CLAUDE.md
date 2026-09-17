@@ -154,12 +154,20 @@ Three things must never reach a customer, and each is enforced in code rather th
   survive `markupRows()`, and no frontend performs markup arithmetic.
 - **A campaign name that names somebody else.** The client-facing name DEFAULTS to `campaigns.name`
   — the owner's call, and true of most of them, which were written for a human to read. The tail is
-  not: of 627 campaigns, 99 carry a " - Copy" suffix, 38 are opaque ids, 13 are Meta's placeholder
-  text, and 4 name a DIFFERENT client, one of them shipping a competitor's tracking URL.
+  not: of 628 campaigns, 99 carry a " - Copy" suffix, 38 are opaque ids, 13 are Meta's placeholder
+  text, and 2 embed a URL — one of them a competitor's tracking domain.
   `src/portal/name-review.ts` flags exactly those so an operator overrides the name or sets
   `hidden`; agency strategy vocabulary ("prospecting", "lookalike") is deliberately not flagged,
   because flagging 54 rows nobody would act on teaches people to ignore the flag.
+
+  A naive check said 4 campaigns named a DIFFERENT client. They do not: `SweatBet - PWA` and
+  `Betheboss CA …` sit on shared accounts, and the ownership ladder attributes them by brand name
+  to SweatBet and Playw3 — their own clients. The 4 came from joining account → client through
+  `notion_account_ids`, which is the naive attribution this file warns about two bullets down. The
+  flag resolves the owner with `loadCampaignOwnership()` and correctly reports none, which is also
+  a reminder that any new cross-client check has to go through that ladder or it will lie.
   `portal_campaigns.alias` is the override, and `hidden` is the only way to withhold a campaign.
+
 - **Another client's anything.** Scope resolves through `ownedCampaignIds()` into an explicit
   campaign whitelist (`src/portal/scope.ts`); an empty scope returns no rows, never "no filter".
   Portal ops read `level = 'campaign'` insight rows only — the one grain at which both markup and
