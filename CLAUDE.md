@@ -130,3 +130,13 @@ through a password manager, never through git, chat, or a commit.
   recycled ad accounts make naive account-based attribution wrong; do not reinvent it.
 - **No `any`.** Validate unknown input or use a domain type.
 - Ad-account ids are `act_<digits>` everywhere and are the join key across systems.
+- **Some campaigns are excluded from the warehouse on purpose.** `src/sync/exclusions.ts` holds the
+  ids and the narrow name pattern; ingest refuses them in `structure`, `insights`, `breakdowns` and
+  `activities`, and `purgeExcluded()` sweeps the tables at the end of every cycle. If a campaign
+  visible in Ads Manager is simply absent here — along with its ad sets, ads, insight rows and
+  change history — check that file before hunting a sync bug. An ad account whose entire campaign
+  list is excluded also loses its account-level rows, because Meta computes those itself and they
+  carry no campaign id; the check is re-evaluated every sweep, so reusing such an account restores
+  its totals on the next cycle. Widening the pattern deletes production data: `exclusions.test.ts`
+  pins the near misses (`KPI`, `Backpack`, `kpop`) and `exclusions.db.test.ts` pins what a sweep
+  must leave behind.
