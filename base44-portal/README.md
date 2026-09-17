@@ -55,6 +55,41 @@ Enforced in `src/portal/markup.ts` and `src/portal/scope.ts`, not by reviewer di
 list. Widening the customer-reachable surface therefore has to be a reviewed line in a diff. Staff
 ops that administer the portal must NOT be named `portal*` — that prefix is the allowlist.
 
+## Onboarding a client — the required sequence
+
+**The portal is empty until someone does this, and that is deliberate.** Every gate fails closed,
+so a half-finished setup shows a client nothing rather than showing them something wrong. All of it
+happens in the customer app's own `/admin` section, signed in as a Base44 user whose role is
+`admin`.
+
+1. **Create the brand.** `/admin` → Brands → *Create brand*. Pick the agency client it belongs to,
+   give it the name and website **the client should see**, and set the monthly budget — that figure
+   is what the portal's pacing compares marked-up spend against, so it must be in client-facing
+   money. Leave the default commission blank to fall back to `PORTAL_DEFAULT_COMMISSION` (10%).
+2. **Map its ad accounts.** Same screen. Accounts are read-only — they arrive from the Meta sync and
+   cannot be created by hand. The mapping is what turns accounts into a brand.
+3. **Name every campaign the client should see.** `/admin` → Campaigns. **A campaign with no alias
+   is invisible to the client.** This is the step people forget, and it is the one that cannot be
+   defaulted: `campaigns.name` encodes the account, objective and buying strategy, so falling back
+   to it would leak the internal naming convention. The screen marks unnamed campaigns explicitly.
+4. **Set commission, if it differs.** Campaigns → the commission cell. Each entry is a rate that
+   applies from a date onwards; the period's end is derived from the next entry, so periods cannot
+   overlap or contradict. Editing history re-prices past days, which is the point — a report re-run
+   for an old month must still say what it said.
+5. **Invite the client.** `/admin` → Users → invite. The email **must match their Base44 login
+   address exactly**; an unknown address is refused rather than created. Then set them `approved` —
+   pending grants nothing at all, not even a read.
+6. **Grant access.** Whole brand (every campaign it owns, now and in future) or individual
+   campaigns. A grant pointing at a campaign the brand's client no longer owns is ignored, so a
+   recycled ad account cannot hand a client somebody else's history.
+
+The client then signs in at the portal URL with that address. Until step 5 they see
+"you're signed in — no data linked yet"; until step 3 they see a brand with no campaigns.
+
+To revoke: remove the grant (immediate), or set the user `rejected`, or delete them — deleting
+cascades their grants. Deleting a brand also deletes grants pointing at it, because
+`portal_grants.target_id` deliberately carries no foreign key.
+
 ## No streaming sibling
 
 The internal app has `vps-stream` for the AI assistant. There is deliberately no portal equivalent:
