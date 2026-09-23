@@ -1,4 +1,5 @@
 import type { Ad } from "@/lib/types";
+import type { CreativeSpecs } from "@/lib/creative-links";
 import { EVENT_MEMBERS } from "./agg";
 
 /**
@@ -28,6 +29,34 @@ export function creativeFormat(f: CreativeFacts | undefined): Ad["format"] {
  */
 export function creativeImageUrl(f: CreativeFacts | undefined): string | null {
   return f?.imageUrl || f?.videoImageUrl || f?.linkPicture || f?.thumbnailUrl || null;
+}
+
+const obj = (v: unknown): Record<string, unknown> =>
+  v !== null && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+const head = (v: unknown): Record<string, unknown> => obj(Array.isArray(v) ? v[0] : undefined);
+const filled = (v: unknown): string | null => (typeof v === "string" && v !== "" ? v : null);
+
+/**
+ * Where a creative's specs keep its image, for a creative whose row carries no image URL.
+ *
+ * Meta names an image by hash: a static link ad in `link_data`, a carousel on its first card, a
+ * placement-customised ad in `asset_feed_spec.images`. A hash becomes a URL only through the ad
+ * account's image library. A video-only asset feed has no image to hash — at most a poster URL on
+ * the video, which is returned as it is.
+ */
+export function specImage(specs: CreativeSpecs): { hash: string } | { url: string } | null {
+  const oss = obj(specs.objectStorySpec);
+  const afs = obj(specs.assetFeedSpec);
+  const link = obj(oss.link_data);
+  const hash =
+    filled(link.image_hash) ??
+    filled(head(link.child_attachments).image_hash) ??
+    filled(head(afs.images).hash) ??
+    filled(obj(oss.video_data).image_hash) ??
+    filled(obj(oss.photo_data).image_hash);
+  if (hash) return { hash };
+  const poster = filled(head(afs.videos).thumbnail_url);
+  return poster ? { url: poster } : null;
 }
 
 export interface ResultSpec {
