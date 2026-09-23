@@ -7,6 +7,7 @@ import {
   resultCount,
   isReachSpec,
   unanimousEvent,
+  specImage,
   type CreativeFacts,
 } from "./creative";
 
@@ -134,4 +135,43 @@ test("unanimousEvent needs agreement, and ignores ad sets declaring nothing", ()
   expect(unanimousEvent(["PURCHASE", "LEAD"])).toBeNull();
   expect(unanimousEvent([])).toBeNull();
   expect(unanimousEvent([null, null])).toBeNull();
+});
+
+test("specImage finds the hash each creative shape keeps its image under", () => {
+  // A static link ad — the shape of every image ad that lost its thumbnail.
+  expect(specImage({ objectStorySpec: { link_data: { image_hash: "h_link" } } })).toEqual({
+    hash: "h_link",
+  });
+  // A carousel: its first card stands for it.
+  expect(
+    specImage({
+      objectStorySpec: {
+        link_data: { child_attachments: [{ image_hash: "h_card1" }, { image_hash: "h_card2" }] },
+      },
+    }),
+  ).toEqual({ hash: "h_card1" });
+  // A placement-customised ad, as Meta stores it: the images carry `hash`, not `image_hash`.
+  expect(
+    specImage({
+      objectStorySpec: { page_id: "p", instagram_user_id: "i" },
+      assetFeedSpec: {
+        images: [{ hash: "h_feed", adlabels: [{ id: "1", name: "placement_asset_x" }] }],
+      },
+    }),
+  ).toEqual({ hash: "h_feed" });
+  // A blank hash is not a hash: it must fall through rather than be asked about and marked done.
+  expect(
+    specImage({
+      objectStorySpec: { link_data: { image_hash: "" } },
+      assetFeedSpec: { images: [{ hash: "h_feed" }] },
+    }),
+  ).toEqual({ hash: "h_feed" });
+  // A video-only asset feed has no image to hash — its poster is used as it is, when there is one.
+  expect(
+    specImage({
+      assetFeedSpec: { videos: [{ video_id: "v", thumbnail_url: "https://cdn/poster.jpg" }] },
+    }),
+  ).toEqual({ url: "https://cdn/poster.jpg" });
+  expect(specImage({ assetFeedSpec: { videos: [{ video_id: "v" }] } })).toBeNull();
+  expect(specImage({})).toBeNull();
 });

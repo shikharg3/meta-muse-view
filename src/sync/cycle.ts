@@ -31,7 +31,7 @@ import {
   msSinceLastCycle,
 } from "./state";
 import { runOnce, type Jobs } from "./run";
-import { syncCreativeSpecs } from "./jobs/creative-specs";
+import { syncCreativeImages, syncCreativeSpecs } from "./jobs/creative-specs";
 import { detectSpendDropAlerts, detectAccountAlerts, detectUnassignedSpendAlerts } from "./alerts";
 
 // First sync of an account backfills as much history as Meta retains; later cycles
@@ -462,6 +462,18 @@ export async function runCycle(opts: { full?: boolean; force?: boolean } = {}): 
         );
     } catch (e) {
       console.error("[sync] creative spec sync failed:", e);
+    }
+    // After the specs, because it reads them: a spec names its image by hash, and without a URL an
+    // image ad has no thumbnail. The same shape — a catch-up once, then only creatives never seen.
+    try {
+      const ci = await syncCreativeImages(client);
+      if (ci.resolved || ci.unknown || ci.failed)
+        console.log(
+          `[sync] creative images: ${ci.resolved} resolved, ${ci.unknown} unknown to Meta, ` +
+            `${ci.failed} failed, ${ci.imageless} with no image (of ${ci.missing} missing)`,
+        );
+    } catch (e) {
+      console.error("[sync] creative image sync failed:", e);
     }
     // Daily only: push the deliverable daily budget and trailing spend back onto the Notion board.
     // Runs after the refresh above so the campaign/ad-set/account rows it reads are current.

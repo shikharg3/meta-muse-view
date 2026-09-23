@@ -520,7 +520,9 @@ export async function fetchCampaigns(
             id: schema.adCreatives.id,
             thumbnailUrl: schema.adCreatives.thumbnailUrl,
             objectType: sql<string | null>`${schema.adCreatives.raw}->>'object_type'`,
-            imageUrl: sql<string | null>`${schema.adCreatives.raw}->>'image_url'`,
+            // The column, not `raw`: it is the same value for every pre-pause creative, and the only
+            // place `syncCreativeImages` can put the image it resolves for a hash-only one.
+            imageUrl: schema.adCreatives.imageUrl,
             videoImageUrl: sql<
               string | null
             >`${schema.adCreatives.raw}->'object_story_spec'->'video_data'->>'image_url'`,
@@ -750,7 +752,7 @@ export async function fetchAdSetAds(adSetId: string, w: DateWindow): Promise<Ad[
             id: schema.adCreatives.id,
             thumbnailUrl: schema.adCreatives.thumbnailUrl,
             objectType: sql<string | null>`${schema.adCreatives.raw}->>'object_type'`,
-            imageUrl: sql<string | null>`${schema.adCreatives.raw}->>'image_url'`,
+            imageUrl: schema.adCreatives.imageUrl,
             videoImageUrl: sql<
               string | null
             >`${schema.adCreatives.raw}->'object_story_spec'->'video_data'->>'image_url'`,
