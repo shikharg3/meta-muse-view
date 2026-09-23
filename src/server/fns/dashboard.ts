@@ -50,6 +50,15 @@ import { isCycleRunning } from "@/sync/cycle";
 
 const num = (v: unknown): number => Number(v ?? 0);
 
+/**
+ * An ad's delivery state — Meta's `effective_status`, or its own switch for a row synced before that
+ * was stored. The switch alone reads ACTIVE on an ad Meta disapproved or whose campaign is paused,
+ * which is how 2,360 disapproved ads were listed as active. Every ad listing selects this.
+ */
+const adDeliveryStatus = sql<
+  string | null
+>`coalesce(${schema.ads.effectiveStatus}, ${schema.ads.status})`;
+
 /** One row of summed insight totals for an entity over a window. */
 export interface EntityTotals {
   entityId: string;
@@ -482,7 +491,7 @@ export async function fetchCampaigns(
           .select({
             id: schema.ads.id,
             name: schema.ads.name,
-            status: schema.ads.status,
+            status: adDeliveryStatus,
             adSetId: schema.ads.adSetId,
             accountId: schema.ads.accountId,
             creativeId: schema.ads.creativeId,
@@ -707,7 +716,7 @@ export async function fetchAdSetAds(adSetId: string, w: DateWindow): Promise<Ad[
     .select({
       id: schema.ads.id,
       name: schema.ads.name,
-      status: schema.ads.status,
+      status: adDeliveryStatus,
       accountId: schema.ads.accountId,
       creativeId: schema.ads.creativeId,
     })
@@ -888,7 +897,7 @@ export async function fetchAdEntities(
             name: schema.ads.name,
             adSetId: schema.ads.adSetId,
             accountId: schema.ads.accountId,
-            status: schema.ads.status,
+            status: adDeliveryStatus,
           })
           .from(schema.ads)
           .where(inArray(schema.ads.accountId, acctIds))

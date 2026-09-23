@@ -8,6 +8,23 @@ export type CampaignObjective =
   | "LEAD_GEN"
   | "BRAND_AWARENESS";
 export type CampaignStatus = "ACTIVE" | "PAUSED" | "LEARNING" | "COMPLETED";
+/**
+ * Meta's `effective_status` for an ad: whether it is actually delivering, and if not, why. An ad
+ * left switched on still reads ACTIVE in its own `status` after Meta disapproves it or its
+ * campaign is paused — the one thing an operator looking at an ad needs to know.
+ */
+export type AdStatus =
+  | CampaignStatus
+  | "DISAPPROVED"
+  | "WITH_ISSUES"
+  | "PENDING_REVIEW"
+  | "IN_PROCESS"
+  | "PREAPPROVED"
+  | "PENDING_BILLING_INFO"
+  | "CAMPAIGN_PAUSED"
+  | "ADSET_PAUSED"
+  | "ARCHIVED"
+  | "DELETED";
 
 export interface AdAccount {
   id: string;
@@ -37,7 +54,7 @@ export interface AdAccount {
 export interface Ad {
   id: string;
   name: string;
-  status: CampaignStatus;
+  status: AdStatus;
   spend: number;
   impressions: number;
   ctr: number;
