@@ -452,13 +452,14 @@ export async function runCycle(opts: { full?: boolean; force?: boolean } = {}): 
     } catch (e) {
       console.error("[sync] unassigned spend alert detection failed:", e);
     }
-    // Feeds the board's Destination URL column. Creatives are immutable, so this only ever fetches
-    // ids it has never seen — two fields, by id, for creatives behind ACTIVE ads.
+    // Feeds the board's Destination URL column and every ad's image. Creatives are immutable, so
+    // this only ever fetches ids it has never seen — three fields, by id, for any stored ad's creative.
     try {
       const cs = await syncCreativeSpecs(client);
-      if (cs.fetched || cs.failed)
+      if (cs.fetched || cs.unavailable || cs.failed)
         console.log(
-          `[sync] creative specs: ${cs.fetched} fetched, ${cs.failed} unavailable (of ${cs.missing} missing)`,
+          `[sync] creative specs: ${cs.fetched} fetched, ${cs.unavailable} unavailable, ` +
+            `${cs.failed} failed (of ${cs.missing} missing)`,
         );
     } catch (e) {
       console.error("[sync] creative spec sync failed:", e);
@@ -467,10 +468,11 @@ export async function runCycle(opts: { full?: boolean; force?: boolean } = {}): 
     // image ad has no thumbnail. The same shape — a catch-up once, then only creatives never seen.
     try {
       const ci = await syncCreativeImages(client);
-      if (ci.resolved || ci.unknown || ci.failed)
+      if (ci.resolved || ci.unknown || ci.refused || ci.failed)
         console.log(
           `[sync] creative images: ${ci.resolved} resolved, ${ci.unknown} unknown to Meta, ` +
-            `${ci.failed} failed, ${ci.imageless} with no image (of ${ci.missing} missing)`,
+            `${ci.refused} refused, ${ci.failed} failed, ${ci.imageless} with no image ` +
+            `(of ${ci.missing} missing)`,
         );
     } catch (e) {
       console.error("[sync] creative image sync failed:", e);

@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { MetaClient, MetaAuthError, MetaCircuitOpenError } from "./client";
+import { MetaClient, MetaAuthError, MetaCircuitOpenError, isPermanentRefusal } from "./client";
 import type { MetaApiEvent } from "./types";
 
 function jsonResponse(body: unknown, headers: Record<string, string> = {}) {
@@ -381,4 +381,49 @@ test("a rejected field does not trip the breaker — that is our bug, not Meta b
     const err = await client.getChildren("act_1", "campaigns", ["id"]).catch((e) => e);
     expect(err).not.toBeInstanceOf(MetaCircuitOpenError);
   }
+});
+
+test("batchGetItems keeps every result on its own url, and reads why Meta refused one", async () => {
+  let group = 0;
+  const client = new MetaClient(
+    { appId: "1", appSecret: "s", token: "t", version: "v25.0" },
+    {
+      fetchImpl: (async () =>
+        // The first group of 50 is refused wholesale; the second answers item by item.
+        ++group === 1
+          ? jsonResponse({ error: { code: 4, message: "(#4) Application request limit reached" } })
+          : jsonResponse([
+              { code: 200, body: JSON.stringify({ id: "cr_51" }) },
+              {
+                code: 403,
+                body: JSON.stringify({
+                  error: { code: 200, message: "(#200) Ad account owner has NOT grant ads_read" },
+                }),
+              },
+            ])) as unknown as typeof fetch,
+      sleep: async () => {},
+    },
+  );
+
+  const urls = Array.from({ length: 52 }, (_, i) => `cr_${i}?fields=id`);
+  const items = await client.batchGetItems(urls);
+  expect(items).toHaveLength(52);
+  // A refused group must not let the next group's answers slide onto its urls.
+  expect(items.slice(0, 50).every((item) => !item.ok)).toBe(true);
+  expect(items[50]).toEqual({ ok: true, body: { id: "cr_51" } });
+  expect(items[51]).toMatchObject({ ok: false, code: 200 });
+  group = 0;
+  expect((await client.batchGet(urls))[50]).toEqual({ id: "cr_51" });
+
+  const refusal = (code: number | null, subcode: number | null = null) =>
+    ({ ok: false, code, subcode, message: "" }) as const;
+  // Asking again cannot change these: no permission, a closed account, an object that is gone.
+  expect(isPermanentRefusal(refusal(10))).toBe(true);
+  expect(isPermanentRefusal(refusal(200))).toBe(true);
+  expect(isPermanentRefusal(refusal(100, 33))).toBe(true);
+  // These can: a malformed request of ours, throttling, Meta being unwell, no error at all.
+  expect(isPermanentRefusal(refusal(100))).toBe(false);
+  expect(isPermanentRefusal(refusal(4))).toBe(false);
+  expect(isPermanentRefusal(refusal(2))).toBe(false);
+  expect(isPermanentRefusal(refusal(null))).toBe(false);
 });

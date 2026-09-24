@@ -1,52 +1,85 @@
-import { eq, inArray, isNull, sql } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { db, schema } from "@/db/client";
-import type { MetaClient } from "@/meta/client";
+import { isPermanentRefusal, type BatchRefusal, type MetaClient } from "@/meta/client";
 import { specImage } from "@/server/creative";
 
 /**
- * Fetch the link specs for creatives behind live ads, so an ad's landing page is knowable.
+ * Fetch the specs of every creative an ad uses, so its landing page and its image are knowable.
  *
  * Full creative tracking was switched off deliberately (e578ebb): paging the `adcreatives` edge with
  * an 82-field set and 1080px thumbnails over 25k creatives was the heaviest structure call we made.
- * This does NOT bring that back. It asks for two fields, by id, only for creatives referenced by an
- * ACTIVE ad and not already stored — which is what the Destination URL column needs and nothing more.
+ * This does NOT bring that back. It asks for three fields, by id, only for creatives not already
+ * stored. It once asked only for creatives behind ACTIVE ads, which left a disapproved or paused ad
+ * with no creative to show — and a disapproved ad is exactly the one an operator opens to look at.
  *
  * Cheap by construction, because a Meta creative is immutable: editing an ad mints a NEW creative id
- * rather than changing one, so a creative fetched once never needs fetching again. After the initial
- * catch-up this job costs one query and zero API calls on a normal cycle.
+ * rather than changing one, so a creative fetched once never needs fetching again. A creative Meta
+ * refuses for good (a closed account, no permission, gone) is recorded as `raw.unavailable` and not
+ * asked about again, so after the catch-up a normal cycle makes zero API calls.
  */
 
-/** Only what a click destination can be derived from (see `clickDestinations`). */
+/** Only what a click destination and an image can be derived from (`clickDestinations`, `specImage`). */
 const SPEC_FIELDS = ["id", "object_story_spec", "asset_feed_spec"] as const;
 
 export interface CreativeSpecSync {
-  /** Creative ids referenced by an ACTIVE ad with no specs stored. */
+  /** Creative ids some stored ad uses, with no specs stored and no recorded refusal. */
   missing: number;
   fetched: number;
-  /** Ids Meta would not return (deleted creative, or no permission). */
+  /** Refused for good — recorded on the row, never asked again. */
+  unavailable: number;
+  /** Refused for now (throttled, Meta unwell); asked again next cycle. */
   failed: number;
 }
 
+/** Record why Meta will never return this creative, keeping whatever an older row already holds. */
+async function markUnavailable(id: string, refusal: BatchRefusal): Promise<void> {
+  const unavailable = {
+    code: refusal.code,
+    subcode: refusal.subcode,
+    message: refusal.message.slice(0, 200),
+    at: new Date().toISOString(),
+  };
+  await db
+    .insert(schema.adCreatives)
+    .values({ id, raw: { id, unavailable }, syncedAt: new Date() })
+    .onConflictDoUpdate({
+      target: schema.adCreatives.id,
+      set: {
+        raw: sql`coalesce(${schema.adCreatives.raw}, '{}'::jsonb) || ${JSON.stringify({ unavailable })}::jsonb`,
+        syncedAt: new Date(),
+      },
+    });
+}
+
 export async function syncCreativeSpecs(client: MetaClient): Promise<CreativeSpecSync> {
-  // An ACTIVE ad whose creative is absent, or present but with neither spec — the pre-pause rows kept
+  // Any ad whose creative is absent, or present but with neither spec — the pre-pause rows kept
   // thumbnails only for some creatives, so presence of the row is not presence of the specs.
   const rows = await db
     .selectDistinct({ id: schema.ads.creativeId })
     .from(schema.ads)
     .leftJoin(schema.adCreatives, eq(schema.adCreatives.id, schema.ads.creativeId))
     .where(
-      sql`${schema.ads.effectiveStatus} = 'ACTIVE' AND ${schema.ads.creativeId} IS NOT NULL
+      sql`${schema.ads.creativeId} IS NOT NULL
           AND (${schema.adCreatives.id} IS NULL
-               OR (${schema.adCreatives.objectStorySpec} IS NULL AND ${schema.adCreatives.assetFeedSpec} IS NULL))`,
+               OR (${schema.adCreatives.objectStorySpec} IS NULL AND ${schema.adCreatives.assetFeedSpec} IS NULL
+                   AND NOT coalesce(${schema.adCreatives.raw} ? 'unavailable', false)))`,
     );
   const ids = rows.map((r) => r.id).filter((id): id is string => id !== null);
-  const out: CreativeSpecSync = { missing: ids.length, fetched: 0, failed: 0 };
+  const out: CreativeSpecSync = { missing: ids.length, fetched: 0, unavailable: 0, failed: 0 };
   if (ids.length === 0) return out;
 
   const fields = SPEC_FIELDS.join(",");
-  const bodies = await client.batchGet(ids.map((id) => `${id}?fields=${fields}`));
-  for (const [i, body] of bodies.entries()) {
-    if (!body || typeof body.id !== "string") {
+  const items = await client.batchGetItems(ids.map((id) => `${id}?fields=${fields}`));
+  for (const [i, item] of items.entries()) {
+    if (!item.ok) {
+      if (isPermanentRefusal(item)) {
+        await markUnavailable(ids[i], item);
+        out.unavailable += 1;
+      } else out.failed += 1;
+      continue;
+    }
+    const body = item.body;
+    if (typeof body.id !== "string") {
       out.failed += 1;
       continue;
     }
@@ -76,11 +109,13 @@ export async function syncCreativeSpecs(client: MetaClient): Promise<CreativeSpe
 const HASHES_PER_REQUEST = 50;
 
 export interface CreativeImageSync {
-  /** Creatives behind ACTIVE ads with no image URL, not asked about before. */
+  /** Creatives some stored ad uses, with no image URL, not asked about before. */
   missing: number;
   resolved: number;
   /** Hashes the account's image library no longer holds — recorded, so never asked again. */
   unknown: number;
+  /** Accounts Meta refuses for good (closed, no permission) — recorded, so never asked again. */
+  refused: number;
   /** Creatives whose account lookup failed this cycle; asked again next cycle. */
   failed: number;
   /** Creatives whose specs name no image at all (a video-only asset feed without a poster). */
@@ -88,7 +123,8 @@ export interface CreativeImageSync {
 }
 
 /**
- * Give an image URL to creatives behind live ads whose specs name their image only by hash.
+ * Give an image URL to creatives whose specs name their image only by hash — any ad's, since a
+ * disapproved or paused ad is one an operator opens precisely to see what it showed.
  *
  * `syncCreativeSpecs` stores specs and nothing else, and a spec points at its image by hash — so
  * since creative tracking paused (e578ebb) every image ad created after it rendered with no
@@ -98,8 +134,9 @@ export interface CreativeImageSync {
  * a creative is fetched once and never again.
  *
  * The URL lands in `image_url`, the column the pre-pause sync kept each creative's image in, and
- * `image_hash` doubles as the attempted marker: a hash Meta no longer knows is stored with no URL
- * and not asked about again. After the catch-up a normal cycle makes no API calls.
+ * `image_hash` doubles as the attempted marker: a hash Meta no longer knows, or one in an account
+ * Meta refuses for good, is stored with no URL and not asked about again. After the catch-up a
+ * normal cycle makes no API calls.
  */
 export async function syncCreativeImages(client: MetaClient): Promise<CreativeImageSync> {
   // Exactly the creatives `creativeImageUrl` has nothing for — the same four sources, read the same way.
@@ -113,8 +150,7 @@ export async function syncCreativeImages(client: MetaClient): Promise<CreativeIm
     .from(schema.ads)
     .innerJoin(schema.adCreatives, eq(schema.adCreatives.id, schema.ads.creativeId))
     .where(
-      sql`${schema.ads.effectiveStatus} = 'ACTIVE'
-          AND ${schema.adCreatives.imageUrl} IS NULL AND ${schema.adCreatives.imageHash} IS NULL
+      sql`${schema.adCreatives.imageUrl} IS NULL AND ${schema.adCreatives.imageHash} IS NULL
           AND ${schema.adCreatives.thumbnailUrl} IS NULL
           AND ${schema.adCreatives.raw}->'object_story_spec'->'video_data'->>'image_url' IS NULL
           AND ${schema.adCreatives.raw}->'object_story_spec'->'link_data'->>'picture' IS NULL`,
@@ -124,6 +160,7 @@ export async function syncCreativeImages(client: MetaClient): Promise<CreativeIm
     missing: creatives.size,
     resolved: 0,
     unknown: 0,
+    refused: 0,
     failed: 0,
     imageless: 0,
   };
@@ -157,7 +194,7 @@ export async function syncCreativeImages(client: MetaClient): Promise<CreativeIm
   }
   if (requests.length === 0) return out;
 
-  const bodies = await client.batchGet(
+  const items = await client.batchGetItems(
     requests.map(
       ({ accountId, hashes }) =>
         `${accountId}/adimages?hashes=${encodeURIComponent(JSON.stringify([...hashes.keys()]))}` +
@@ -165,17 +202,18 @@ export async function syncCreativeImages(client: MetaClient): Promise<CreativeIm
     ),
   );
   for (const [i, { hashes }] of requests.entries()) {
-    const body = bodies[i];
-    const data: unknown[] | null = body && Array.isArray(body.data) ? body.data : null;
-    if (!data) {
+    const item = items[i];
+    const data: unknown[] | null = item.ok && Array.isArray(item.body.data) ? item.body.data : null;
+    const refused = !item.ok && isPermanentRefusal(item);
+    if (!data && !refused) {
       // Nothing is marked, so the next cycle asks again.
       for (const ids of hashes.values()) out.failed += ids.length;
       continue;
     }
     const permalinks = new Map<string, string>();
-    for (const item of data) {
-      if (item === null || typeof item !== "object") continue;
-      const { hash, permalink_url: url } = item as Record<string, unknown>;
+    for (const entry of data ?? []) {
+      if (entry === null || typeof entry !== "object") continue;
+      const { hash, permalink_url: url } = entry as Record<string, unknown>;
       if (typeof hash === "string" && typeof url === "string" && url) permalinks.set(hash, url);
     }
     for (const [hash, ids] of hashes) {
@@ -185,22 +223,9 @@ export async function syncCreativeImages(client: MetaClient): Promise<CreativeIm
         .set({ imageHash: hash, imageUrl: url })
         .where(inArray(schema.adCreatives.id, ids));
       if (url) out.resolved += ids.length;
+      else if (refused) out.refused += ids.length;
       else out.unknown += ids.length;
     }
   }
   return out;
-}
-
-/** Creatives on ACTIVE ads still missing their specs — for reporting the coverage gap. */
-export async function creativeSpecGap(): Promise<number> {
-  const [r] = await db
-    .select({ n: sql<number>`count(DISTINCT ${schema.ads.creativeId})` })
-    .from(schema.ads)
-    .leftJoin(schema.adCreatives, eq(schema.adCreatives.id, schema.ads.creativeId))
-    .where(
-      sql`${schema.ads.effectiveStatus} = 'ACTIVE' AND ${schema.ads.creativeId} IS NOT NULL
-          AND (${schema.adCreatives.id} IS NULL
-               OR (${schema.adCreatives.objectStorySpec} IS NULL AND ${schema.adCreatives.assetFeedSpec} IS NULL))`,
-    );
-  return Number(r?.n ?? 0);
 }

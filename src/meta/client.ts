@@ -44,6 +44,57 @@ export interface MetaClientDeps {
   onEvent?: (e: MetaApiEvent) => void;
 }
 
+/** Why Meta refused one sub-request of a batch; `code` is null when no Graph error came back. */
+export interface BatchRefusal {
+  ok: false;
+  code: number | null;
+  subcode: number | null;
+  message: string;
+}
+
+/** One sub-request of a batch, in the position it was asked for. */
+export type BatchItem = { ok: true; body: Record<string, unknown> } | BatchRefusal;
+
+/**
+ * A refusal that asking again cannot change: this app may never read the object (#10, and the
+ * #200–#299 permission family — e.g. a closed ad account), or it does not exist (#100 subcode 33,
+ * Meta's "does not exist, cannot be loaded due to missing permissions"). Throttling, a transient
+ * Meta fault or a malformed request of ours can all succeed later, so none of those count.
+ */
+export function isPermanentRefusal(r: BatchRefusal): boolean {
+  const { code, subcode } = r;
+  return (
+    code === 10 || (code !== null && code >= 200 && code <= 299) || (code === 100 && subcode === 33)
+  );
+}
+
+/** Read one batch entry. Its `body` is a JSON string, an error envelope when `code` is not 200. */
+function batchItem(raw: unknown): BatchItem {
+  const entry = raw !== null && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  let body: unknown = null;
+  try {
+    body = typeof entry.body === "string" ? JSON.parse(entry.body) : null;
+  } catch {
+    // A body that is not JSON carries no error to read; it is reported as an unexplained refusal.
+  }
+  const parsed =
+    body !== null && typeof body === "object" ? (body as Record<string, unknown>) : null;
+  if (entry.code === 200 && parsed && !("error" in parsed)) return { ok: true, body: parsed };
+  const error =
+    parsed?.error !== null && typeof parsed?.error === "object"
+      ? (parsed.error as Record<string, unknown>)
+      : {};
+  return {
+    ok: false,
+    code: typeof error.code === "number" ? error.code : null,
+    subcode: typeof error.error_subcode === "number" ? error.error_subcode : null,
+    message:
+      typeof error.message === "string"
+        ? error.message
+        : `batch item answered ${String(entry.code)}`,
+  };
+}
+
 const TRANSIENT_RETRIES = 3; // #1/#2/5xx fail fast; real rate limits get the full maxRetries
 /** Consecutive Meta-side failures that trip the breaker. Any success resets the count. */
 const CIRCUIT_THRESHOLD = 25;
@@ -457,9 +508,13 @@ export class MetaClient implements InsightsClient {
     );
   }
 
-  /** Batched GET of relative urls (Graph caps each batch at 50); null per failed item. */
-  async batchGet(relativeUrls: string[]): Promise<(Record<string, unknown> | null)[]> {
-    const out: (Record<string, unknown> | null)[] = [];
+  /**
+   * Batched GET of relative urls (Graph caps each batch at 50), one result per url in the order
+   * asked. A group Meta answers with anything but a batch array is reported item by item, so a
+   * failed group can never shift the next group's results onto the wrong urls.
+   */
+  async batchGetItems(relativeUrls: string[]): Promise<BatchItem[]> {
+    const out: BatchItem[] = [];
     for (let i = 0; i < relativeUrls.length; i += 50) {
       const group = relativeUrls.slice(i, i + 50);
       const form = new URLSearchParams({
@@ -471,11 +526,21 @@ export class MetaClient implements InsightsClient {
       const res = await this.gate(() =>
         this.fetchImpl(`${BASE}/${this.creds.version}`, { method: "POST", body: form }),
       );
-      const arr = (await res.json()) as ({ code?: number; body?: string } | null)[];
-      for (const item of Array.isArray(arr) ? arr : [])
-        out.push(item && item.code === 200 && item.body ? JSON.parse(item.body) : null);
+      const arr: unknown = await res.json().catch(() => null);
+      const items = Array.isArray(arr) ? arr : [];
+      for (const [j] of group.entries())
+        out.push(
+          j < items.length
+            ? batchItem(items[j])
+            : { ok: false, code: null, subcode: null, message: `batch answered ${res.status}` },
+        );
     }
     return out;
+  }
+
+  /** `batchGetItems`, with every refusal reduced to null. */
+  async batchGet(relativeUrls: string[]): Promise<(Record<string, unknown> | null)[]> {
+    return (await this.batchGetItems(relativeUrls)).map((item) => (item.ok ? item.body : null));
   }
 
   async getAccounts(_businessId: string): Promise<GraphNode[]> {
