@@ -33,11 +33,23 @@ import { creativeFormat, creativeImageUrl, type CreativeFacts } from "@/server/c
  * whitelisted campaigns, so an ad outside the scope is unreachable rather than filtered out later.
  */
 
+/**
+ * The advertiser identity a card's header shows: the owning brand's configured page name and
+ * photo, never the Facebook page an ad actually ran under (the agency rotates those) and never the
+ * landing domain. A brand with no page name set shows its client-facing brand name.
+ */
+export interface CreativePage {
+  name: string;
+  avatarUrl: string | null;
+}
+
 /** A creative as the client sees it. Carries no rate, no raw spend and no internal Meta names. */
 export interface PortalCreative {
   /** The ad id — the unit a card represents, since two ads can share one creative. */
   id: string;
   campaignId: string;
+  /** The owning brand's page; null only if the campaign's brand could not be resolved. */
+  page: CreativePage | null;
   name: string;
   format: Ad["format"];
   /** Best full-size asset: the image, or a video's poster frame. */
@@ -174,6 +186,7 @@ export function shapePortalCreatives(
   perf: AdDayRow[],
   commissions: CommissionTable,
   defaultFor: (campaignId: string) => number,
+  pageOf: (campaignId: string) => CreativePage | null,
 ): PortalCreative[] {
   const campaignOfAd = new Map(ads.map((a) => [a.id, a.campaignId]));
 
@@ -242,6 +255,7 @@ export function shapePortalCreatives(
     return {
       id: ad.id,
       campaignId: ad.campaignId,
+      page: pageOf(ad.campaignId),
       // Never `ads.name`: the agency's ad names encode the account and objective codes the portal
       // exists to hide. The client-facing label is the creative's own headline, then the creative's
       // own label, and only then a neutral placeholder built from the ad id that is already in the
@@ -351,10 +365,19 @@ export async function fetchPortalCreatives(input: PortalCreativesInput): Promise
       ),
     );
 
+  // Owning brand per campaign, from the scope that already decided what the caller may see — so a
+  // card can only ever carry the page of a brand in that scope.
+  const brandById = new Map(scope.brands.map((b) => [b.id, b]));
+  const pageOf = (campaignId: string): CreativePage | null => {
+    const brand = brandById.get(scope.brandOf.get(campaignId) ?? "");
+    return brand ? { name: brand.pageName ?? brand.name, avatarUrl: brand.pageAvatarUrl } : null;
+  };
+
   return shapePortalCreatives(
     ads,
     perf,
     await loadCommissions(campaignIds),
     defaultCommissionLookup(scope, PORTAL_DEFAULT_COMMISSION),
+    pageOf,
   );
 }

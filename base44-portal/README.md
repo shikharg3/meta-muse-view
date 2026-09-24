@@ -76,7 +76,10 @@ a working default.
    wins next month is included by itself. Give the brand the name and website **the client should
    see**, and set the monthly budget in client-facing money, since that is what the portal's pacing
    compares marked-up spend against. Leave the default commission blank to fall back to
-   `PORTAL_DEFAULT_COMMISSION` (10%).
+   `PORTAL_DEFAULT_COMMISSION` (10%). Then open the brand and set its **Ad page** — the page name
+   and profile photo every creative preview in its portal shows as the advertiser, whichever
+   Facebook page each ad really ran under. Blank falls back to the brand name and its initials; the
+   photo is uploaded to Base44's public storage and must be an https URL.
 2. **Check the campaign names.** `/admin/campaigns`. Names default to Meta's own, so a client can
    already see everything — you do not have to name anything for the portal to work. What you
    should do once is filter to **"Needs a look"** and deal with the flagged handful: a name carrying

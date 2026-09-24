@@ -888,6 +888,15 @@ export const brands = pgTable(
       .references(() => clients.id, { onDelete: "restrict" }),
     name: text("name").notNull(), // client-facing brand name, never an internal account name
     website: text("website"),
+    // The advertiser identity the portal's ad previews show: one fixed page name and profile photo
+    // for the whole brand, rather than whichever Facebook page — or landing domain — each ad ran
+    // under. A null name falls back to `name`; a null photo draws the name's initials. The photo is
+    // a public https URL (the admin console uploads it to Base44 storage). Applied as additive DDL
+    // on `meta`, not `db:push`:
+    //   ALTER TABLE brands ADD COLUMN IF NOT EXISTS page_name text;
+    //   ALTER TABLE brands ADD COLUMN IF NOT EXISTS page_avatar_url text;
+    pageName: text("page_name"),
+    pageAvatarUrl: text("page_avatar_url"),
     // Contracted monthly budget in client-facing money (markup already included), which is what
     // the portal's pacing widget compares marked-up spend against. Null = no pacing shown.
     monthlyBudget: doublePrecision("monthly_budget"),

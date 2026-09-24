@@ -43,6 +43,10 @@ export interface ScopedBrand {
   clientId: string;
   name: string;
   website: string | null;
+  /** The ad previews' page name; null = use `name`. */
+  pageName: string | null;
+  /** The ad previews' profile photo, a public https URL; null = initials. */
+  pageAvatarUrl: string | null;
   monthlyBudget: number | null;
   /** Brand-level markup fallback for campaigns with no rate history. */
   defaultCommission: number | null;
@@ -238,6 +242,8 @@ async function brandScope(
       clientId: b.clientId,
       name: b.name,
       website: b.website,
+      pageName: b.pageName,
+      pageAvatarUrl: b.pageAvatarUrl,
       monthlyBudget: b.monthlyBudget,
       defaultCommission: b.defaultCommission,
       accountIds: usable,

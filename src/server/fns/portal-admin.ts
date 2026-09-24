@@ -122,6 +122,10 @@ export interface BrandAdminView {
   clientName: string;
   name: string;
   website: string | null;
+  /** The page name ad previews show for this brand; null = the brand name. */
+  pageName: string | null;
+  /** The page's profile photo, a public https URL; null = initials. */
+  pageAvatarUrl: string | null;
   monthlyBudget: number | null;
   defaultCommission: number | null;
   /** Resolved on read from the project selection — not a stored mapping. */
@@ -235,6 +239,8 @@ export async function fetchBrands(): Promise<BrandAdminView[]> {
         clientName: client?.name ?? b.clientId,
         name: b.name,
         website: b.website,
+        pageName: b.pageName,
+        pageAvatarUrl: b.pageAvatarUrl,
         monthlyBudget: b.monthlyBudget,
         defaultCommission: b.defaultCommission,
         accountIds,
@@ -275,6 +281,53 @@ export interface UpsertBrandInput {
    * JSON carries the first two and drops the third, so the wire format expresses all three.
    */
   projectIds?: string[] | null;
+  /**
+   * The ad-preview identity: a page name and a profile photo URL. Like `projectIds`, absent means
+   * "leave it alone" — a caller that predates these fields must not wipe them — while `null` or a
+   * blank string clears them.
+   */
+  pageName?: string | null;
+  pageAvatarUrl?: string | null;
+}
+
+/** Facebook's own limit on a page name, so a preview never shows a name Meta would refuse. */
+const PAGE_NAME_MAX = 75;
+
+type PageColumns = { pageName?: string | null; pageAvatarUrl?: string | null };
+
+/**
+ * Validate a brand's ad-preview identity and project it onto the columns a save should touch.
+ *
+ * Only keys the caller SENT appear in `fields` — that is what stops an absent key from writing
+ * null over a stored page name. The photo must be https: the portal is served over TLS and draws it
+ * in an `<img>`, so an http URL would be blocked as mixed content and show up, silently, as a
+ * broken avatar on a client's screen.
+ */
+export function pageFields(
+  input: Pick<UpsertBrandInput, "pageName" | "pageAvatarUrl">,
+): { fields: PageColumns } | { error: string } {
+  const fields: PageColumns = {};
+  if (input.pageName !== undefined) {
+    const pageName = input.pageName?.trim() || null;
+    if (pageName && pageName.length > PAGE_NAME_MAX) {
+      return { error: `Page name must be ${PAGE_NAME_MAX} characters or fewer` };
+    }
+    fields.pageName = pageName;
+  }
+  if (input.pageAvatarUrl !== undefined) {
+    const url = input.pageAvatarUrl?.trim() || null;
+    if (url) {
+      let https = false;
+      try {
+        https = new URL(url).protocol === "https:";
+      } catch {
+        // Not a URL at all — refused below with the same sentence.
+      }
+      if (!https) return { error: "Profile photo must be an https:// image URL" };
+    }
+    fields.pageAvatarUrl = url;
+  }
+  return { fields };
 }
 
 /**
@@ -296,6 +349,8 @@ export async function upsertBrand(
   if (input.defaultCommission != null && !(input.defaultCommission >= 0)) {
     return { ok: false, error: "Default commission cannot be negative" };
   }
+  const page = pageFields(input);
+  if ("error" in page) return { ok: false, error: page.error };
 
   const [client] = await db
     .select({ id: schema.clients.id })
@@ -309,6 +364,7 @@ export async function upsertBrand(
     website: input.website?.trim() || null,
     monthlyBudget: input.monthlyBudget ?? null,
     defaultCommission: input.defaultCommission ?? null,
+    ...page.fields,
   };
   // Distinguished from `null` on purpose: `null` means "follow the client" and is a real setting,
   // while an absent key on an update means "do not touch the selection I already have".

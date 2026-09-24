@@ -94,6 +94,12 @@ export const saveBrand = defineOp({
      * rather than defaulting.
      */
     projectIds: z.array(z.string().min(1)).nullable().optional(),
+    /**
+     * The ad previews' page name and profile photo URL. Omitted = leave as stored, `null` = clear.
+     * Length and https are checked by the delegate, which answers with a sentence for the form.
+     */
+    pageName: z.string().nullable().optional(),
+    pageAvatarUrl: z.string().nullable().optional(),
   }),
   handler: (input) => upsertBrand(input),
 });
