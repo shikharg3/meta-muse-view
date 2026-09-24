@@ -625,8 +625,11 @@ export async function fetchCampaigns(
           status: displayStatus(ad.accountId, ad.status),
           spend: ak.spend,
           impressions: ak.impressions,
+          clicks: ak.clicks,
           ctr: ak.ctr,
           cpc: ak.cpc,
+          cpm: ak.cpm,
+          reach: ak.reach,
           roas: ak.roas,
           conversions: ak.conversions,
           results: isReachSpec(rs)
@@ -747,14 +750,23 @@ export async function fetchAdSetAds(adSetId: string, w: DateWindow): Promise<Ad[
         ),
       )
       .groupBy(schema.insightsDaily.entityId),
-    db.execute(sql`
-      select entity_id, elem->>'action_type' as type, sum((elem->>'value')::double precision) as val
-      from insights_daily
-      cross join lateral jsonb_array_elements(actions) elem
-      where level = 'ad' and date >= ${w.since} and date <= ${w.until}
-        and entity_id in (select jsonb_array_elements_text(${JSON.stringify(adIds)}::jsonb))
-      group by 1, 2
-    `),
+    // The raw daily rows rather than per-type sums: `canonicalEvents` de-duplicates Meta's aliases
+    // for one conversion across exactly these rows, and the result count reads the same sums.
+    db
+      .select({
+        entityId: schema.insightsDaily.entityId,
+        actions: schema.insightsDaily.actions,
+        actionValues: schema.insightsDaily.actionValues,
+      })
+      .from(schema.insightsDaily)
+      .where(
+        and(
+          eq(schema.insightsDaily.level, "ad"),
+          inArray(schema.insightsDaily.entityId, adIds),
+          gte(schema.insightsDaily.date, w.since),
+          lte(schema.insightsDaily.date, w.until),
+        ),
+      ),
     creativeIds.length
       ? db
           .select({
@@ -781,8 +793,15 @@ export async function fetchAdSetAds(adSetId: string, w: DateWindow): Promise<Ad[
 
   const adT = new Map(totals.map((t) => [t.entityId, t]));
   const actionByKey = new Map<string, number>();
-  for (const r of actions as unknown as { entity_id: string; type: string; val: number }[]) {
-    actionByKey.set(`${r.entity_id}:${r.type}`, Number(r.val) || 0);
+  const rowsByAd = new Map<string, { actions: unknown; actionValues: unknown }[]>();
+  for (const r of actions) {
+    const adRowsOf = rowsByAd.get(r.entityId);
+    if (adRowsOf) adRowsOf.push(r);
+    else rowsByAd.set(r.entityId, [r]);
+    for (const el of (r.actions as { action_type: string; value: string }[] | null) ?? []) {
+      const key = `${r.entityId}:${el.action_type}`;
+      actionByKey.set(key, (actionByKey.get(key) ?? 0) + (Number(el.value) || 0));
+    }
   }
   const creativeById = new Map(creatives.map((c) => [c.id, c]));
   const disabled = new Set(
@@ -807,14 +826,18 @@ export async function fetchAdSetAds(adSetId: string, w: DateWindow): Promise<Ad[
       status: (disabled.has(ad.accountId) ? "PAUSED" : (ad.status ?? "ACTIVE")) as Ad["status"],
       spend: ak.spend,
       impressions: ak.impressions,
+      clicks: ak.clicks,
       ctr: ak.ctr,
       cpc: ak.cpc,
+      cpm: ak.cpm,
+      reach: ak.reach,
       roas: ak.roas,
       conversions: ak.conversions,
       results: isReachSpec(rs)
         ? ak.reach
         : resultCount(rs, (type) => actionByKey.get(`${ad.id}:${type}`)),
       resultLabel: rs.label,
+      events: canonicalEvents(rowsByAd.get(ad.id) ?? []),
       format: creativeFormat(creative),
       thumbHue: hueFromId(ad.id),
       thumbnailUrl: creativeImageUrl(creative),
