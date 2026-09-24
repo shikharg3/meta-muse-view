@@ -46,6 +46,14 @@ const schema = z.object({
         .map((x) => x.trim().toLowerCase())
         .filter(Boolean),
     ),
+  // The Base44 creative mirror, asked after each sync to copy newly visible creatives into Base44's
+  // own storage (`src/sync/jobs/creative-mirror.ts`). Both or neither: unset skips the step. The key
+  // is shared with the `creatives` function's CREATIVE_MIRROR_KEY secret and gates only that call.
+  CREATIVE_MIRROR_URL: z.string().url().optional(),
+  CREATIVE_MIRROR_KEY: z
+    .string()
+    .min(32, "CREATIVE_MIRROR_KEY must be at least 32 chars")
+    .optional(),
 });
 
 export type Env = z.infer<typeof schema>;

@@ -32,6 +32,8 @@ import {
 } from "./state";
 import { runOnce, type Jobs } from "./run";
 import { syncCreativeImages, syncCreativeSpecs } from "./jobs/creative-specs";
+import { triggerCreativeMirror } from "./jobs/creative-mirror";
+import { env } from "@/lib/env";
 import { detectSpendDropAlerts, detectAccountAlerts, detectUnassignedSpendAlerts } from "./alerts";
 
 // First sync of an account backfills as much history as Meta retains; later cycles
@@ -476,6 +478,22 @@ export async function runCycle(opts: { full?: boolean; force?: boolean } = {}): 
         );
     } catch (e) {
       console.error("[sync] creative image sync failed:", e);
+    }
+    // After the images, because it copies them: a creative only has something to mirror once the
+    // step above has given it a URL. The mirror holds its own daily cap, so this can run every cycle.
+    try {
+      const m = await triggerCreativeMirror({
+        url: env().CREATIVE_MIRROR_URL,
+        key: env().CREATIVE_MIRROR_KEY,
+      });
+      if (m && (m.uploaded || m.reused || m.unreachable || m.failed || m.capReached))
+        console.log(
+          `[sync] creative mirror: ${m.uploaded} uploaded, ${m.reused} reused, ` +
+            `${m.unreachable} unreachable, ${m.failed} failed — ${m.uploadsToday}/${m.cap} uploads today` +
+            `${m.capReached ? " (cap reached)" : ""}`,
+        );
+    } catch (e) {
+      console.error("[sync] creative mirror failed:", e);
     }
     // Daily only: push the deliverable daily budget and trailing spend back onto the Notion board.
     // Runs after the refresh above so the campaign/ad-set/account rows it reads are current.
