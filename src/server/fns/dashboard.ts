@@ -47,6 +47,7 @@ import type {
   TrendPoint,
 } from "@/lib/types";
 import { isCycleRunning } from "@/sync/cycle";
+import { requireAdmin } from "./auth";
 
 const num = (v: unknown): number => Number(v ?? 0);
 
@@ -892,6 +893,96 @@ export async function fetchAdSetAds(adSetId: string, w: DateWindow): Promise<Ad[
       thumbnailUrl: creativeImageUrl(creative),
     };
   });
+}
+
+export interface MirrorCandidate {
+  creativeId: string;
+  /** The ad the creative is filed under in the mirror: its busiest one over the last 30 days. */
+  adId: string;
+  adName: string;
+  adSetId: string;
+  format: Ad["format"];
+  /** Exactly the URL `creativeImageUrl` gives the drill-down, so the mirror keys on what rows show. */
+  imageUrl: string;
+  /**
+   * Meta's fingerprint of that file, when it is known to be the file shown. The same bytes carry the
+   * same hash in every ad account while the URL differs per account, so this is how the mirror
+   * recognises an image it already holds before downloading it a second time.
+   */
+  imageHash: string | null;
+}
+
+/**
+ * Every creative with a displayable image, one row each, for the Base44 creative mirror to copy —
+ * ordered by the creative's spend over the last 30 days, so a capped run spends its uploads on the
+ * creatives that matter first. Admin-only: it lists every ad name in the book.
+ */
+export async function fetchMirrorCandidates(input: {
+  limit: number;
+  offset: number;
+}): Promise<MirrorCandidate[]> {
+  await requireAdmin();
+  // The image and its hash are picked with `creativeImageUrl`'s precedence: the creative's own image,
+  // then the video poster, then the link picture, then the thumbnail. Only the first two name the
+  // file they point at by hash.
+  const rows = (await db.execute(sql`
+    with img as (
+      select c.id,
+        coalesce(nullif(c.image_url, ''),
+                 nullif(c.raw->'object_story_spec'->'video_data'->>'image_url', ''),
+                 nullif(c.raw->'object_story_spec'->'link_data'->>'picture', ''),
+                 nullif(c.thumbnail_url, '')) as url,
+        case
+          when nullif(c.image_url, '') is not null then c.image_hash
+          when nullif(c.raw->'object_story_spec'->'video_data'->>'image_url', '') is not null
+            then c.raw->'object_story_spec'->'video_data'->>'image_hash'
+        end as hash,
+        c.raw->>'object_type' as object_type,
+        coalesce(jsonb_array_length(c.raw->'object_story_spec'->'link_data'->'child_attachments'), 0) as children
+      from ad_creatives c
+    ), spend as (
+      select entity_id, sum(spend) as s from insights_daily
+      where level = 'ad' and date >= current_date - 30
+      group by 1
+    ), ranked as (
+      select i.*, a.id as ad_id, a.name as ad_name, a.ad_set_id,
+        sum(coalesce(sp.s, 0)) over (partition by i.id) as creative_spend,
+        row_number() over (partition by i.id order by coalesce(sp.s, 0) desc, a.created_time desc nulls last, a.id) as rn
+      from img i
+      join ads a on a.creative_id = i.id
+      left join spend sp on sp.entity_id = a.id
+      where i.url is not null
+    )
+    select id, ad_id, ad_name, ad_set_id, url, hash, object_type, children
+    from ranked where rn = 1
+    order by creative_spend desc, id
+    limit ${input.limit} offset ${input.offset}
+  `)) as unknown as {
+    id: string;
+    ad_id: string;
+    ad_name: string;
+    ad_set_id: string;
+    url: string;
+    hash: string | null;
+    object_type: string | null;
+    children: number;
+  }[];
+  return rows.map((r) => ({
+    creativeId: r.id,
+    adId: r.ad_id,
+    adName: r.ad_name,
+    adSetId: r.ad_set_id,
+    format: creativeFormat({
+      objectType: r.object_type,
+      childAttachments: Number(r.children),
+      imageUrl: null,
+      videoImageUrl: null,
+      linkPicture: null,
+      thumbnailUrl: null,
+    }),
+    imageUrl: r.url,
+    imageHash: r.hash || null,
+  }));
 }
 
 export interface AdEntityRow {

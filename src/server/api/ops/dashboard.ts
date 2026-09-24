@@ -6,6 +6,7 @@ import {
   fetchAccountOptions,
   fetchAccounts,
   fetchAdSetAds,
+  fetchMirrorCandidates,
   fetchBreakdowns,
   fetchBusinessSummary,
   fetchCampaignOptions,
@@ -126,4 +127,18 @@ export const getAdSetAds = defineOp({
   mode: "read",
   input: rangeSpec.extend({ adSetId: z.string().min(1) }),
   handler: (input) => fetchAdSetAds(input.adSetId, resolveWindow(input)),
+});
+
+/**
+ * Admin-only (the delegate checks): the creative mirror's work list, busiest creative first. Pages
+ * are large because the ranking is recomputed per call — one 10k page costs about what one 1k does.
+ */
+export const listMirrorCandidates = defineOp({
+  name: "listMirrorCandidates",
+  mode: "read",
+  input: z.object({
+    limit: z.number().int().min(1).max(10000).default(5000),
+    offset: z.number().int().min(0).default(0),
+  }),
+  handler: (input) => fetchMirrorCandidates(input),
 });
