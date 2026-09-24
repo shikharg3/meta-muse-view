@@ -63,19 +63,21 @@ ops that administer the portal must NOT be named `portal*` — that prefix is th
 
 **The portal shows a client nothing until someone does this**, and every gate fails closed, so a
 half-finished setup shows them nothing rather than something wrong. All of it happens in the
-customer app's own `/admin` section, signed in as a Base44 user whose role is `admin`.
+customer app's own admin console at `/admin`, signed in as a Base44 user whose role is `admin`. Its
+Home page lists these steps with a link to each, and flags anything a half-finished setup left
+behind under _Needs attention_.
 
 In practice it is two steps: create a brand, and grant the client access. Everything in between has
 a working default.
 
-1. **Create the brand.** `/admin` → Brands → _Create brand_. Pick the agency client; its Notion
+1. **Create the brand.** `/admin/brands` → _Create brand_. Pick the agency client; its Notion
    projects appear **already selected**, and the ad accounts follow from them — there is nothing to
    map by hand. Leaving every project selected stores "follow this client", so an engagement it
    wins next month is included by itself. Give the brand the name and website **the client should
    see**, and set the monthly budget in client-facing money, since that is what the portal's pacing
    compares marked-up spend against. Leave the default commission blank to fall back to
    `PORTAL_DEFAULT_COMMISSION` (10%).
-2. **Check the campaign names.** `/admin` → Campaigns. Names default to Meta's own, so a client can
+2. **Check the campaign names.** `/admin/campaigns`. Names default to Meta's own, so a client can
    already see everything — you do not have to name anything for the portal to work. What you
    should do once is filter to **"Needs a look"** and deal with the flagged handful: a name carrying
    a " - Copy" suffix, an opaque id, Meta's placeholder text, or — the one that matters — a name
@@ -85,7 +87,7 @@ a working default.
    applies from a date onwards; the period's end is derived from the next entry, so periods cannot
    overlap or contradict. Editing history re-prices past days, which is the point — a report re-run
    for an old month must still say what it said.
-4. **Invite the client.** `/admin` → Users → invite. The email **must match their Base44 login
+4. **Invite the client.** `/admin/users` → _Invite user_. The email **must match their Base44 login
    address exactly**; an unknown address is refused rather than created. Then set them `approved` —
    pending grants nothing at all, not even a read.
 5. **Grant access.** Whole brand (every campaign it owns, now and in future) or individual
@@ -112,6 +114,26 @@ To revoke: remove the grant (immediate), or set the user `rejected`, or delete t
 cascades their grants. Deleting a brand also deletes grants pointing at it, because
 `portal_grants.target_id` deliberately carries no foreign key.
 
+## Viewing the portal as a client
+
+`/admin` → _View as client_ in the header, or the eye button on a Portal users row, opens the real
+portal as that login — the same brands, campaigns, client-facing names and marked-up figures —
+with a banner and an Exit. A pending or rejected login previews as the screen that login gets.
+
+- **It is a staff op, not a portal-transport field.** Every portal call is routed through
+  `viewPortalAs` (`src/server/api/ops/portal-admin.ts`) on the `staff` function, so it needs the
+  staff token, the Base44 `admin` role and `requireAdmin()` — the client token cannot address it.
+  Letting the portal transport accept "act as this address" would make identity a request field
+  on the one surface a customer can reach.
+- **It dispatches only `portal*` ops**, and runs them the way the portal transport does: same actor
+  resolution, same approval floor, staff context explicitly empty. `src/server/api/view-as.test.ts`
+  pins its op set to exactly the client-reachable one.
+- **The client's `last_seen_at` is left alone**, because the admin console reports it as client
+  activity. One `portal.view_as` audit entry is written per preview (on `portalBootstrap`).
+- **The preview lives in the admin's browser tab** (`sessionStorage`). Entering and leaving reload
+  the page, so no cached figure crosses between the admin's own view and the client's; opening
+  the admin console or signing out ends it.
+
 ## No streaming sibling
 
 The internal app has `vps-stream` for the AI assistant. There is deliberately no portal equivalent:
@@ -135,6 +157,8 @@ cat base44-portal/client/portal.js \
 | ----------------------------------------- | ---------------------------------- |
 | `base44-portal/functions/portal/entry.ts` | `base44/functions/portal/entry.ts` |
 | `base44-portal/client/portal.js`          | `src/api/portal.js`                |
+| `base44-portal/client/viewAs.js`          | `src/lib/viewAs.js`                |
+| `base44-portal/client/staff.js`           | `src/api/staff.js`                 |
 
 Secrets are already set on the app (`PORTAL_API_URL`, `PORTAL_API_TOKEN`). To rotate: change
 `/opt/meta-next/.env`, `systemctl restart meta-web-next`, then re-set the Base44 secret.

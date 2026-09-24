@@ -18,8 +18,12 @@ import {
   upsertCampaignCommission,
   upsertCampaignPresentation,
 } from "@/server/fns/portal-admin";
-import { defineOp } from "../registry";
+import { runPortalOpAs } from "@/server/fns/portal-view-as";
+import { defineOp, isOp, type Op } from "../registry";
 import { idOnly, nullableText, ymd } from "../schemas";
+import * as portalOps from "./portal";
+import * as portalCreativeOps from "./portal-creative";
+import * as portalReportOps from "./portal-report";
 
 /**
  * Staff ops for the portal's commercial layer: brands, commission, and who may see what.
@@ -227,4 +231,41 @@ export const revokePortalAccess = defineOp({
   mode: "write",
   input: idOnly,
   handler: (input) => removePortalGrant(input),
+});
+
+// ── Viewing the portal as a client
+
+/**
+ * The ops a client can call, by name — the only ones an admin can run as a client.
+ *
+ * Collected from the portal op modules directly rather than from the op table, because the table
+ * imports this module and reading it back would close the cycle `index → portal-admin → index`.
+ * `view-as.test.ts` asserts this equals the set the portal token reaches, so a `portal*` op added
+ * in a new module fails the build here instead of being missing from the preview.
+ */
+export const VIEW_AS_OPS: ReadonlyMap<string, Op> = new Map(
+  [portalOps, portalCreativeOps, portalReportOps]
+    .flatMap((m) => Object.values(m as Record<string, unknown>))
+    .filter(isOp)
+    .filter((o) => o.name.startsWith(CLIENT_OP_PREFIX))
+    .map((o) => [o.name, o] as const),
+);
+
+/**
+ * Run a client-facing op exactly as the portal user `email` sees it — the admin console's "view as
+ * client". Admin-only, audited once per preview, and it leaves the client's "last seen" alone; see
+ * the delegate for what is identical to the real portal transport and what is not.
+ *
+ * Answers `{ ok, data | error }` inside `data`, the shape the portal transport sends, so a refusal
+ * (`unknown_actor`, `not_approved`) renders as the same screen the client would get.
+ */
+export const viewPortalAs = defineOp({
+  name: staffName("viewPortalAs"),
+  mode: "read",
+  input: z.object({
+    email: z.string().email(),
+    op: z.string().min(1),
+    data: z.unknown().optional(),
+  }),
+  handler: (input) => runPortalOpAs(input.email, VIEW_AS_OPS.get(input.op) ?? null, input.data),
 });

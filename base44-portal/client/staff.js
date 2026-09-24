@@ -59,3 +59,11 @@ export async function callStaff(op, data) {
 export function isNotAdmin(err) {
   return err instanceof StaffError && err.info.code === "forbidden";
 }
+
+/**
+ * True when the agency API knows this address but has not approved it. The VPS creates a pending
+ * staff row the first time a new address calls it, so this is what a brand-new admin sees.
+ */
+export function isNotApproved(err) {
+  return err instanceof StaffError && err.info.code === "not_approved";
+}

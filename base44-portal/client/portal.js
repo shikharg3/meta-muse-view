@@ -1,4 +1,5 @@
 import { base44 } from "@/api/base44Client";
+import { clearViewAs, getViewAs } from "@/lib/viewAs";
 
 /**
  * The frontend half of the client portal's bridge, and the only module in the portal app that
@@ -11,6 +12,10 @@ import { base44 } from "@/api/base44Client";
  *
  * `functions.fetch` rather than `functions.invoke`: invoke returns the raw axios response and
  * throws on any non-2xx, which would bury the error envelope the backend deliberately sends.
+ *
+ * The one exception to "only the portal function": while an agency admin is previewing the portal
+ * as a client (`@/lib/viewAs`), the same ops go through the staff function's `viewPortalAs`
+ * instead. See `callPortalAs`.
  */
 
 /** Thrown when a call could not be completed — not signed in, no access, bad input, upstream down. */
@@ -38,6 +43,9 @@ function readError(raw, op, status) {
 
 /** Call a portal op. Resolves to the op's `data`, or throws `PortalError`. */
 export async function callPortal(op, data) {
+  const viewAs = getViewAs();
+  if (viewAs) return callPortalAs(viewAs.email, op, data);
+
   const res = await base44.functions.fetch("/portal", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -50,6 +58,44 @@ export async function callPortal(op, data) {
     throw new PortalError(op, readError(body.error, op, res.status));
   }
   throw new PortalError(op, readError(null, op, res.status));
+}
+
+/** Staff-side refusals: the caller is not (or no longer) an approved agency admin. */
+const STAFF_REFUSALS = ["forbidden", "unauthorized", "not_approved"];
+
+/**
+ * The same call, answered as the previewed client by the staff function's `viewPortalAs` — which
+ * requires the Base44 `admin` role and a MetaConsole admin, and runs the op exactly as the portal
+ * transport would for that address. Its answer carries the portal envelope, so a pending login's
+ * `not_approved` still becomes the portal's own "no data linked yet" screen.
+ *
+ * `@/api/staff` is imported lazily, the rule `Reports.jsx` follows too: the staff client stays out
+ * of the portal's static module graph and is only reached while an admin preview is on.
+ *
+ * A staff refusal ends the preview rather than surfacing as the client's state: it is about the
+ * caller, not the client, and after a reload the caller sees their own portal.
+ */
+async function callPortalAs(email, op, data) {
+  const { callStaff, StaffError } = await import("@/api/staff");
+  let answer;
+  try {
+    answer = await callStaff("viewPortalAs", { email, op, data });
+  } catch (e) {
+    if (e instanceof StaffError && STAFF_REFUSALS.includes(e.info.code)) {
+      clearViewAs();
+      throw new PortalError(op, {
+        code: "view_as_refused",
+        message: `Viewing as a client needs an approved agency admin login. ${e.info.message} Reload to see your own portal.`,
+      });
+    }
+    if (e instanceof StaffError) throw new PortalError(op, e.info);
+    throw e;
+  }
+  if (answer && typeof answer === "object" && "ok" in answer) {
+    if (answer.ok === true) return answer.data;
+    throw new PortalError(op, readError(answer.error, op, 200));
+  }
+  throw new PortalError(op, readError(null, op, 200));
 }
 
 /**
