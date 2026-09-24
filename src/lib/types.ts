@@ -1,3 +1,5 @@
+import type { ClientEvent } from "@/server/agg";
+
 export type AccountStatus = "ACTIVE" | "PAUSED" | "DISABLED" | "PENDING";
 export type CampaignObjective =
   | "CONVERSIONS"
@@ -57,13 +59,23 @@ export interface Ad {
   status: AdStatus;
   spend: number;
   impressions: number;
+  clicks: number;
   ctr: number;
   cpc: number;
+  cpm: number;
+  /** Busiest single day of reach in the window, as every other level reports it — not unique reach. */
+  reach: number;
   roas: number;
   conversions: number;
   /** Objective-dependent "Results" count (e.g. purchases, leads, link clicks). */
   results: number;
   resultLabel: string;
+  /**
+   * Every conversion and engagement the ad drove in the window (Leads, Registrations, Purchases…),
+   * de-duplicated the way reports and the assistant count them. Only the ad-set drill-down
+   * (`getAdSetAds`) carries it; the campaign list omits it to stay light.
+   */
+  events?: ClientEvent[];
   format: "Image" | "Video" | "Carousel" | "Collection";
   thumbHue: number;
   thumbnailUrl?: string | null;
