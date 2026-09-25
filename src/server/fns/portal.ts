@@ -15,7 +15,9 @@ import {
 import {
   canSeeCampaign,
   defaultCommissionLookup,
-  narrowToBrands,
+  narrowToPortalBrands,
+  portalBrandOf,
+  portalBrands,
   portalScope,
   type PortalScope,
 } from "@/portal/scope";
@@ -71,6 +73,7 @@ export interface ScopedDay extends RawDayRow {
 /** What a client is told about a campaign's delivery. Meta's own status words never reach them. */
 export type PortalCampaignStatus = "running" | "paused" | "finished" | "scheduled";
 
+/** One of the customer's brands: a Notion board row they may see campaigns under (`portalBrands`). */
 export interface PortalBrandCard {
   id: string;
   name: string;
@@ -111,6 +114,7 @@ export interface PortalCampaignRow extends Kpis {
   id: string;
   /** `scope.aliasOf` — the operator-written client-facing name. */
   name: string;
+  /** Its brand's `PortalBrandCard.id` (`portalBrandOf`). */
   brandId: string;
   status: PortalCampaignStatus;
   registrations: number;
@@ -129,6 +133,7 @@ export interface PortalAdSetRow {
 export interface PortalCampaignDetail {
   id: string;
   name: string;
+  /** Its brand's `PortalBrandCard.id` (`portalBrandOf`). */
   brandId: string;
   status: PortalCampaignStatus;
   kpis: Kpis;
@@ -188,7 +193,7 @@ export interface PortalSegment {
 /** The calling client's scope, narrowed to the brands the request asked for. */
 async function scopeFor(brandIds: string[] | undefined): Promise<PortalScope> {
   const actor = currentPortalActor();
-  return narrowToBrands(await portalScope(actor), brandIds);
+  return narrowToPortalBrands(await portalScope(actor), brandIds);
 }
 
 /**
@@ -470,13 +475,13 @@ async function campaignFacts(
  * What the portal shell needs before it can render anything: who is signed in, which brands they
  * may switch between, and how fresh the figures are.
  *
- * `ScopedBrand` also carries the client id, the ad account ids and the brand's commission default —
- * none of which a client may ever see — so the brands are projected field by field rather than
- * spread.
+ * The brands are the board rows their campaigns count under (`portalBrands`), each projected to an
+ * id and a name — `ScopedBrand` and `ScopedProject` also carry ad accounts, commission and the
+ * owner, none of which a client may ever see.
  */
 export async function fetchPortalBootstrap(): Promise<PortalBootstrap> {
   const scope = await scopeFor(undefined);
-  const brands: PortalBrandCard[] = scope.brands.map((b) => ({ id: b.id, name: b.name }));
+  const brands: PortalBrandCard[] = portalBrands(scope);
 
   const freshness: PortalFreshness = { syncedAt: null, completeThrough: null };
   if (scope.campaignIds.length > 0) {
@@ -584,7 +589,7 @@ export async function fetchPortalCampaigns(
   const rows: PortalCampaignRow[] = [];
   for (const id of scope.campaignIds) {
     const alias = scope.aliasOf.get(id);
-    const brandId = scope.brandOf.get(id);
+    const brandId = portalBrandOf(scope, id);
     // Both are set for every id the scope returns; skipping rather than substituting a fallback
     // keeps an internal name from ever standing in for a missing alias.
     if (alias === undefined || brandId === undefined) continue;
@@ -683,7 +688,7 @@ export async function fetchPortalCampaign(
     throw new ForbiddenError("You don't have access to this campaign.");
   }
   const alias = scope.aliasOf.get(id) ?? "";
-  const brandId = scope.brandOf.get(id) ?? "";
+  const brandId = portalBrandOf(scope, id) ?? "";
 
   const only = [id];
   const [{ days, marked }, facts] = await Promise.all([

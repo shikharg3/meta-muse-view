@@ -1,6 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import {
   defaultCommissionLookup,
+  narrowToPortalBrands,
+  portalBrands,
   visibleUnderGrants,
   type GrantNarrowing,
   type PortalScope,
@@ -122,5 +124,42 @@ describe("defaultCommissionLookup", () => {
 
   it("falls back to the default when neither project nor brand sets a rate", () => {
     expect(rateOf("c_unset")).toBe(10);
+  });
+});
+
+describe("portal brands", () => {
+  // One client with two board rows, plus a campaign on an account no row lists.
+  const scope = scopeOf(
+    [{ ...brand("b1", 15), name: "Acme" }],
+    {
+      c_sept: { brand: "b1", project: "p_sept" },
+      c_aug: { brand: "b1", project: "p_aug" },
+      c_manual: { brand: "b1" },
+    },
+    [project("p_sept", "b1", null), project("p_aug", "b1", null)],
+  );
+
+  it("lists each board row, and the client only for campaigns no row lists", () => {
+    expect(portalBrands(scope).sort((a, b) => a.id.localeCompare(b.id))).toEqual([
+      { id: "b1", name: "Acme" },
+      { id: "p_aug", name: "p_aug" },
+      { id: "p_sept", name: "p_sept" },
+    ]);
+  });
+
+  it("narrows to one brand's campaigns and keeps billing them at their client's default", () => {
+    // Dropping the client from the narrowed scope would silently re-price them at the fallback.
+    const narrowed = narrowToPortalBrands(scope, ["p_aug"]);
+    expect(narrowed.campaignIds).toEqual(["c_aug"]);
+    expect(defaultCommissionLookup(narrowed, 10)("c_aug")).toBe(15);
+  });
+
+  it("treats the client's own id as its row-less campaigns only, not the whole client", () => {
+    // Otherwise picking it beside a board row would count that row's campaigns twice.
+    expect(narrowToPortalBrands(scope, ["b1"]).campaignIds).toEqual(["c_manual"]);
+  });
+
+  it("shows everything for a selection naming nothing in scope", () => {
+    expect(narrowToPortalBrands(scope, ["stale-id"]).campaignIds).toEqual(scope.campaignIds);
   });
 });

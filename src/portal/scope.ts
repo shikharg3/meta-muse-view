@@ -409,27 +409,70 @@ async function brandScope(
 }
 
 /**
- * Narrow a resolved scope to the brands the caller asked for.
+ * The portal's "brand" for a campaign — what a customer picks under "All your brands".
  *
- * The request's brand ids are treated as a FILTER over what the user already has, never as a
- * lookup: an id the user was not granted contributes nothing instead of widening the scope. An
- * empty or absent selection means "everything in scope", which is what the portal's "All your
- * brands" default sends.
+ * A customer's brands are the Notion board rows the admin console also calls brands: a campaign's
+ * portal brand is the row it counts under (`projectOf`, page id). A campaign on an account that no
+ * covered row lists (a manual addition) falls back to its `brands` row, so EVERY visible campaign
+ * has exactly one portal brand and the brands' figures always add up to "All your brands".
  */
-export function narrowToBrands(scope: PortalScope, brandIds: string[] | undefined): PortalScope {
+export function portalBrandOf(
+  scope: Pick<PortalScope, "projectOf" | "brandOf">,
+  campaignId: string,
+): string | undefined {
+  return scope.projectOf.get(campaignId) ?? scope.brandOf.get(campaignId);
+}
+
+/**
+ * The brands a customer can switch between: one per portal brand holding a visible campaign,
+ * named by its board row's title (or, for the fallback, by the client's name), sorted by name.
+ * A row covered by two of the customer's clients appears once — it is keyed by page id.
+ */
+export function portalBrands(scope: PortalScope): { id: string; name: string }[] {
+  const clientName = new Map(scope.brands.map((b) => [b.id, b.name]));
+  const named = new Map<string, string>();
+  for (const id of scope.campaignIds) {
+    const key = portalBrandOf(scope, id);
+    if (key === undefined || named.has(key)) continue;
+    const project = scope.projects.get(key);
+    const name = project
+      ? project.title.trim() || clientName.get(project.brandId)
+      : clientName.get(key);
+    if (name) named.set(key, name);
+  }
+  return [...named]
+    .map(([id, name]) => ({ id, name }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/**
+ * Narrow a resolved scope to the portal brands (`portalBrandOf`) the caller asked for.
+ *
+ * The request's ids are treated as a FILTER over what the user already has, never as a lookup: an
+ * id the user was not granted contributes nothing instead of widening the scope. An empty or absent
+ * selection — or one naming nothing in scope, such as a saved selection from before brands were
+ * board rows — means "everything in scope", which is what "All your brands" sends.
+ *
+ * The clients (`brands`) of the kept campaigns stay in the narrowed scope, because commission and
+ * the ad page still inherit from them.
+ */
+export function narrowToPortalBrands(
+  scope: PortalScope,
+  brandIds: string[] | undefined,
+): PortalScope {
   if (!brandIds || brandIds.length === 0) return scope;
-  const wanted = new Set(brandIds.filter((id) => scope.brands.some((b) => b.id === id)));
+  const inScope = new Set(scope.campaignIds.map((id) => portalBrandOf(scope, id)));
+  const wanted = new Set(brandIds.filter((id) => inScope.has(id)));
   if (wanted.size === 0) return scope;
 
   const campaignIds = scope.campaignIds.filter((id) => {
-    const brandId = scope.brandOf.get(id);
-    return brandId !== undefined && wanted.has(brandId);
+    const key = portalBrandOf(scope, id);
+    return key !== undefined && wanted.has(key);
   });
-  const kept = new Set(campaignIds);
   const brandOf = new Map<string, string>();
   const aliasOf = new Map<string, string>();
   const projectOf = new Map<string, string>();
-  for (const id of kept) {
+  for (const id of campaignIds) {
     const brandId = scope.brandOf.get(id);
     if (brandId !== undefined) brandOf.set(id, brandId);
     const alias = scope.aliasOf.get(id);
@@ -437,10 +480,11 @@ export function narrowToBrands(scope: PortalScope, brandIds: string[] | undefine
     const pageId = scope.projectOf.get(id);
     if (pageId !== undefined) projectOf.set(id, pageId);
   }
+  const clientIds = new Set(brandOf.values());
   const pageIds = new Set(projectOf.values());
   return {
     actor: scope.actor,
-    brands: scope.brands.filter((b) => wanted.has(b.id)),
+    brands: scope.brands.filter((b) => clientIds.has(b.id)),
     campaignIds,
     aliasOf,
     brandOf,

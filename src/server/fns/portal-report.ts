@@ -11,7 +11,9 @@ import {
 } from "@/portal/markup";
 import {
   defaultCommissionLookup,
-  narrowToBrands,
+  narrowToPortalBrands,
+  portalBrandOf,
+  portalBrands,
   portalScope,
   type PortalScope,
 } from "@/portal/scope";
@@ -97,13 +99,14 @@ async function buildRows(
     wanted.size === 0 ? scope.campaignIds : scope.campaignIds.filter((id) => wanted.has(id));
   if (campaignIds.length === 0) return { rows: [], range };
 
-  // A campaign groups under itself; a whole-brand report groups under its brand. Either way the
-  // group is resolved through the scope, which is also what supplies the label.
+  // A campaign groups under itself; a whole-brand report groups under its portal brand (the board
+  // row it counts under, `portalBrandOf`). Either way the group is resolved through the scope,
+  // which is also what supplies the label.
   const groupOf =
     req.breakdown === "campaign"
       ? (campaignId: string): string | undefined =>
           scope.aliasOf.has(campaignId) ? campaignId : undefined
-      : (campaignId: string): string | undefined => scope.brandOf.get(campaignId);
+      : (campaignId: string): string | undefined => portalBrandOf(scope, campaignId);
 
   const labelOf = new Map<string, string>();
   if (req.breakdown === "campaign") {
@@ -112,7 +115,7 @@ async function buildRows(
       if (alias !== undefined) labelOf.set(id, alias);
     }
   } else {
-    for (const b of scope.brands) labelOf.set(b.id, b.name);
+    for (const b of portalBrands(scope)) labelOf.set(b.id, b.name);
   }
 
   const periodOf = (date: string): string | null =>
@@ -221,6 +224,6 @@ export async function fetchPortalReport(
   w: DateWindow,
   req: PortalReportRequest,
 ): Promise<PortalReport> {
-  const scope = narrowToBrands(await portalScope(currentPortalActor()), req.brandIds);
+  const scope = narrowToPortalBrands(await portalScope(currentPortalActor()), req.brandIds);
   return buildRows(scope, w, req);
 }

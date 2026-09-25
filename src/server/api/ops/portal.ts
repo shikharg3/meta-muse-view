@@ -26,7 +26,10 @@ import { rangeSpec } from "../schemas";
  * anything.
  */
 
-/** Brand selection is a filter over the caller's own scope; absent or empty means "all of them". */
+/**
+ * Brand selection is a filter over the caller's own scope; absent or empty means "all of them".
+ * The ids are `portalBootstrap`'s brands — Notion board rows (`portalBrandOf`), not `brands` rows.
+ */
 const brandFilter = { brandIds: z.array(z.string()).optional() };
 
 export const portalBootstrap = defineOp({

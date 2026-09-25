@@ -14,7 +14,7 @@ import {
 } from "@/portal/markup";
 import {
   defaultCommissionLookup,
-  narrowToBrands,
+  narrowToPortalBrands,
   portalScope,
   type PortalScope,
 } from "@/portal/scope";
@@ -302,7 +302,7 @@ const storySpecSql = sql<unknown>`coalesce(${schema.adCreatives.objectStorySpec}
 const feedSpecSql = sql<unknown>`coalesce(${schema.adCreatives.assetFeedSpec}, ${schema.adCreatives.raw} -> 'asset_feed_spec')`;
 
 export async function fetchPortalCreatives(input: PortalCreativesInput): Promise<PortalCreative[]> {
-  const scope = narrowToBrands(await portalScope(currentPortalActor()), input.brandIds);
+  const scope = narrowToPortalBrands(await portalScope(currentPortalActor()), input.brandIds);
 
   // The requested campaigns are a FILTER over the whitelist, never a lookup: an id the caller was
   // not granted matches nothing instead of widening the query.
