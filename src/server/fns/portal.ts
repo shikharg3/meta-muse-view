@@ -36,7 +36,7 @@ import { canDeliver } from "@/sync/jobs/notion-budget";
  *    cheaper to aggregate — and unusable here. An account is shared and recycled between clients,
  *    so an account row can be split neither by ownership nor by commission rate.
  * 2. **Markup before aggregation.** Spend reaches a response only through `markupRows()` →
- *    `totalSpend()`, so every derived cost figure (CPC, CPM, ROAS, pacing) is computed from the
+ *    `totalSpend()`, so every derived cost figure (CPC, CPM, ROAS) is computed from the
  *    client-facing number and cannot disagree with the headline.
  * 3. **Nothing internal is serialised.** No raw spend, no commission rate, no `campaigns.name`, no
  *    account or client id. Campaign names come from `scope.aliasOf`, which only holds aliases an
@@ -74,8 +74,6 @@ export type PortalCampaignStatus = "running" | "paused" | "finished" | "schedule
 export interface PortalBrandCard {
   id: string;
   name: string;
-  website: string | null;
-  monthlyBudget: number | null;
 }
 
 export interface PortalFreshness {
@@ -103,19 +101,9 @@ export interface PortalSeriesPoint {
   deposits: number;
 }
 
-export interface PortalPacing {
-  /** Contracted monthly budget of the scoped brands, in client-facing money. 0 = none recorded. */
-  budget: number;
-  /** Marked-up spend so far this calendar month, independent of the selected range. */
-  spent: number;
-  dayOfMonth: number;
-  daysInMonth: number;
-}
-
 export interface PortalOverview {
   kpis: Kpis;
   deltas: KpiDeltas;
-  pacing: PortalPacing;
   series: PortalSeriesPoint[];
 }
 
@@ -476,29 +464,6 @@ async function campaignFacts(
   return out;
 }
 
-// ── pacing ────────────────────────────────────────────────────────────────────────────────────
-
-/**
- * Month-to-date pacing against the contracted budget.
- *
- * Deliberately independent of the selected range: "am I on track this month" is not a question
- * about a trailing 7-day window. The month is the UTC calendar month — insight dates are stamped in
- * each ad account's own timezone, and a brand spanning accounts in different timezones has no single
- * month boundary, so one boundary for everyone is the only consistent choice.
- */
-async function pacingFor(scope: PortalScope, now: Date): Promise<PortalPacing> {
-  const year = now.getUTCFullYear();
-  const month = now.getUTCMonth();
-  const monthStart = new Date(Date.UTC(year, month, 1)).toISOString().slice(0, 10);
-  const daysInMonth = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
-
-  const { marked } = await readWindow(scope, monthStart, now.toISOString().slice(0, 10));
-  let budget = 0;
-  for (const b of scope.brands) budget += b.monthlyBudget ?? 0;
-
-  return { budget, spent: totalSpend(marked), dayOfMonth: now.getUTCDate(), daysInMonth };
-}
-
 // ── ops data ──────────────────────────────────────────────────────────────────────────────────
 
 /**
@@ -511,12 +476,7 @@ async function pacingFor(scope: PortalScope, now: Date): Promise<PortalPacing> {
  */
 export async function fetchPortalBootstrap(): Promise<PortalBootstrap> {
   const scope = await scopeFor(undefined);
-  const brands: PortalBrandCard[] = scope.brands.map((b) => ({
-    id: b.id,
-    name: b.name,
-    website: b.website,
-    monthlyBudget: b.monthlyBudget,
-  }));
+  const brands: PortalBrandCard[] = scope.brands.map((b) => ({ id: b.id, name: b.name }));
 
   const freshness: PortalFreshness = { syncedAt: null, completeThrough: null };
   if (scope.campaignIds.length > 0) {
@@ -546,11 +506,10 @@ export async function fetchPortalBootstrap(): Promise<PortalBootstrap> {
   };
 }
 
-/** Headline KPIs, their period-over-period movement, month-to-date pacing and the daily series. */
+/** Headline KPIs, their period-over-period movement and the daily series. */
 export async function fetchPortalOverview(
   w: DateWindow,
   brandIds: string[] | undefined,
-  now = new Date(),
 ): Promise<PortalOverview> {
   const scope = await scopeFor(brandIds);
   // One read covers both windows: the previous period is [prevSince, since), the same convention
@@ -568,7 +527,6 @@ export async function fetchPortalOverview(
   return {
     kpis,
     deltas: deltasOf(kpis, deriveKpis(totals(previous))),
-    pacing: await pacingFor(scope, now),
     series: seriesOf(current, events),
   };
 }

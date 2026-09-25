@@ -15,6 +15,7 @@ import {
   replaceBrandAccounts,
   updatePortalUserStatus,
   upsertBrand,
+  upsertProjectSettings,
   upsertCampaignCommission,
   upsertCampaignPresentation,
 } from "@/server/fns/portal-admin";
@@ -83,9 +84,9 @@ export const saveBrand = defineOp({
     // Absent, null or empty means create — the edit form sends `""` for a new row.
     id: z.string().nullable().optional(),
     clientId: z.string().min(1),
-    name: z.string(),
-    website: nullableText,
-    monthlyBudget: money,
+    /** Omitted on create = the client's own name; omitted on update = unchanged. */
+    name: z.string().nullable().optional(),
+    /** Omitted on create = the default rate; omitted on update = unchanged; null = the default. */
     defaultCommission: money,
     /**
      * `null` = follow the client (the default for a new brand, and what makes a future engagement
@@ -109,6 +110,23 @@ export const deleteBrand = defineOp({
   mode: "write",
   input: idOnly,
   handler: (input) => removeBrand(input),
+});
+
+/**
+ * One project's own ad page and commission — what the admin console calls a brand's settings —
+ * overriding the brand ("client") defaults for the campaigns that count under it. Each field is
+ * three-valued: omitted = unchanged, null = inherit again, a value = override.
+ */
+export const saveProjectSettings = defineOp({
+  name: staffName("saveProjectSettings"),
+  mode: "write",
+  input: z.object({
+    pageId: z.string().min(1),
+    pageName: z.string().nullable().optional(),
+    pageAvatarUrl: z.string().nullable().optional(),
+    commission: money,
+  }),
+  handler: (input) => upsertProjectSettings(input),
 });
 
 /**
@@ -224,8 +242,10 @@ export const grantPortalAccess = defineOp({
   mode: "write",
   input: z.object({
     portalUserId: z.string().min(1),
-    scope: z.enum(["brand", "campaign"]),
+    scope: z.enum(["brand", "project", "campaign"]),
     targetId: z.string().min(1),
+    /** The brand a `project` grant is held through; ignored for the other scopes. */
+    parentId: z.string().min(1).nullable().optional(),
   }),
   handler: (input) => addPortalGrant(input),
 });

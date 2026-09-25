@@ -38,6 +38,24 @@ So portal identity is its own table, nothing is auto-created, and an unknown ema
 Authorisation is `portal_grants` → `brands` → `brand_accounts` → `ownedCampaignIds()`, resolved in
 `src/portal/scope.ts` into an explicit campaign **whitelist**. An empty scope returns no rows.
 
+## Vocabulary: the console's words are not the schema's
+
+| admin console says | schema / code                                                     | what it is                                    |
+| ------------------ | ----------------------------------------------------------------- | --------------------------------------------- |
+| **Owner**          | `clients` row                                                     | the agency's customer on the Notion board     |
+| **Client**         | `brands` row                                                      | one portal: what a login is granted, as a set |
+| **Brand**          | a Notion board row ("project") in `clients.raw`, keyed by page id | one engagement, with its own ad accounts      |
+
+Grant scopes keep the code names: `brand` = a whole Client, `project` = one Brand held **through**
+a Client (`parent_id` = the `brands` id — the same board row covered by two Clients is two grants),
+`campaign` = one campaign.
+
+A campaign counts under exactly one Brand of a Client: the **newest** board row (board order is
+newest first) whose accounts include its account — boards reuse one account for each month's
+engagement (`projectOfAccount`, `src/portal/brand-accounts.ts`). That Brand's settings apply to it,
+and a Brand grant opens exactly those campaigns. An older row sharing the account shows a "shared
+with a newer brand" marker on the Client page, because its settings do not reach them.
+
 ## What a customer must never receive
 
 Enforced in `src/portal/markup.ts` and `src/portal/scope.ts`, not by reviewer discipline:
@@ -67,35 +85,45 @@ customer app's own admin console at `/admin`, signed in as a Base44 user whose r
 Home page lists these steps with a link to each, and flags anything a half-finished setup left
 behind under _Needs attention_.
 
-In practice it is two steps: create a brand, and grant the client access. Everything in between has
+In practice it is two steps: add a client, and grant the login access. Everything in between has
 a working default.
 
-1. **Create the brand.** `/admin/brands` → _Create brand_. Pick the agency client; its Notion
-   projects appear **already selected**, and the ad accounts follow from them — there is nothing to
-   map by hand. Leaving every project selected stores "follow this client", so an engagement it
-   wins next month is included by itself. Give the brand the name and website **the client should
-   see**, and set the monthly budget in client-facing money, since that is what the portal's pacing
-   compares marked-up spend against. Leave the default commission blank to fall back to
-   `PORTAL_DEFAULT_COMMISSION` (10%). Then open the brand and set its **Ad page** — the page name
-   and profile photo every creative preview in its portal shows as the advertiser, whichever
-   Facebook page each ad really ran under. Blank falls back to the brand name and its initials; the
-   photo is uploaded to Base44's public storage and must be an https URL.
+1. **Add the client.** `/admin/brands` → _Add client_. Pick the owner; its Notion brands appear
+   **already selected**, and the ad accounts follow from them — there is nothing to map by hand.
+   Leaving every brand selected stores "follow this owner", so a row added to the board next month
+   is included by itself. Nothing is typed in: the name is the owner's and the default commission
+   is stored as `PORTAL_DEFAULT_COMMISSION` (10%). There is no website or monthly budget any more
+   (the columns are retired, and the portal's pacing stat with them).
+   Then, on the client's page, set its **Client defaults** — commission and **Ad page** (the page
+   name and profile photo every creative preview shows as the advertiser, whichever Facebook page
+   each ad really ran under; blank falls back to the client name and initials; the photo is
+   uploaded to Base44's public storage and must be https). Each **Brand** below can override the
+   ad page and/or commission field by field (`portal_project_settings`, keyed by Notion page id);
+   anything it leaves blank inherits the client's value.
 2. **Check the campaign names.** `/admin/campaigns`. Names default to Meta's own, so a client can
    already see everything — you do not have to name anything for the portal to work. What you
    should do once is filter to **"Needs a look"** and deal with the flagged handful: a name carrying
    a " - Copy" suffix, an opaque id, Meta's placeholder text, or — the one that matters — a name
    mentioning another client. Edit those in place and save the screen in one go, or set `hidden` on
    anything the client should not see at all.
-3. **Set commission, if it differs.** Campaigns → the commission cell. Each entry is a rate that
-   applies from a date onwards; the period's end is derived from the next entry, so periods cannot
-   overlap or contradict. Editing history re-prices past days, which is the point — a report re-run
-   for an old month must still say what it said.
-4. **Invite the client.** `/admin/users` → _Invite user_. The email **must match their Base44 login
-   address exactly**; an unknown address is refused rather than created. Then set them `approved` —
+3. **Set commission, if it differs.** A campaign's rate resolves as: its own dated history
+   (Campaigns → the commission cell), else its Brand's commission, else the Client default, else
+   10%. Each history entry applies from a date onwards; the period's end is derived from the next
+   entry, so periods cannot overlap. Editing history re-prices past days, which is the point — a
+   report re-run for an old month must still say what it said.
+4. **Invite the login.** `/admin/users` → _Invite user_. This records the address in
+   `portal_users` and then asks Base44 to email the person: with no password, Base44's own invite
+   email (`users.inviteUser`); with a password the admin types, `auth.register` creates the account
+   and Base44 emails a one-time code the person enters once at first sign-in (the login screen has
+   a "Have a verification code?" step). Base44 has no way to set an already-verified password. The
+   Mail button on a row re-sends the invite. The email **must match their Base44 login address
+   exactly**; an unknown address is refused rather than created. Then set them `approved` —
    pending grants nothing at all, not even a read.
-5. **Grant access.** Whole brand (every campaign it owns, now and in future) or individual
-   campaigns. A grant pointing at a campaign the brand's client no longer owns is ignored, so a
-   recycled ad account cannot hand a client somebody else's history.
+5. **Grant access.** A row's _Manage access_ lists every Client, its Brands and their campaigns: a
+   whole Client (every campaign it owns, now and in future), one Brand, or single campaigns. A
+   grant pointing at a campaign the Client's owner no longer owns is ignored, and so is a Brand
+   grant whose Client no longer covers that board row, so a recycled ad account cannot hand a
+   login somebody else's history.
 
 The client then signs in at the portal URL with that address. Until step 4 they see "you're signed
 in — no data linked yet".
@@ -114,8 +142,9 @@ asking a report about specific campaigns still returns their zeroes, because tha
 Campaign detail pages stay reachable either way, so an old link never 403s.
 
 To revoke: remove the grant (immediate), or set the user `rejected`, or delete them — deleting
-cascades their grants. Deleting a brand also deletes grants pointing at it, because
-`portal_grants.target_id` deliberately carries no foreign key.
+cascades their grants. Deleting a client also deletes the grants pointing at it and the Brand
+grants held through it, because `portal_grants.target_id` / `parent_id` deliberately carry no
+foreign key.
 
 ## Viewing the portal as a client
 

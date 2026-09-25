@@ -1,8 +1,7 @@
 import { eq, inArray } from "drizzle-orm";
 import { db, schema } from "@/db/client";
-import { inPortalContext } from "@/portal/context";
 import { ownedCampaignIds } from "@/server/fns/campaign-attribution";
-import { brandAccountIds } from "@/portal/brand-accounts";
+import { brandAccountIds, coveredProjects, projectOfAccount } from "@/portal/brand-accounts";
 
 /**
  * Who is asking, and exactly what they may see.
@@ -42,15 +41,26 @@ export interface ScopedBrand {
   id: string;
   clientId: string;
   name: string;
-  website: string | null;
-  /** The ad previews' page name; null = use `name`. */
+  /** The ad previews' default page name for the brand's projects; null = use `name`. */
   pageName: string | null;
-  /** The ad previews' profile photo, a public https URL; null = initials. */
+  /** The ad previews' default profile photo, a public https URL; null = initials. */
   pageAvatarUrl: string | null;
-  monthlyBudget: number | null;
-  /** Brand-level markup fallback for campaigns with no rate history. */
+  /** Markup for campaigns whose project and own rate history set none. */
   defaultCommission: number | null;
   accountIds: string[];
+}
+
+/**
+ * One Notion board row a visible campaign counts under, with its per-project overrides. A null
+ * field inherits the brand's value; see `portal_project_settings`.
+ */
+export interface ScopedProject {
+  pageId: string;
+  title: string;
+  brandId: string;
+  pageName: string | null;
+  pageAvatarUrl: string | null;
+  commission: number | null;
 }
 
 export interface PortalScope {
@@ -62,6 +72,13 @@ export interface PortalScope {
   aliasOf: Map<string, string>;
   /** Owning brand per visible campaign, for grouping and labelling. */
   brandOf: Map<string, string>;
+  /**
+   * The project each visible campaign counts under (`projectOfAccount`). Absent for a campaign on
+   * an account no covered project lists — it inherits the brand's settings.
+   */
+  projectOf: Map<string, string>;
+  /** The projects `projectOf` points at, by page id. */
+  projects: Map<string, ScopedProject>;
 }
 
 const EMPTY_SCOPE = (actor: PortalActor): PortalScope => ({
@@ -70,6 +87,8 @@ const EMPTY_SCOPE = (actor: PortalActor): PortalScope => ({
   campaignIds: [],
   aliasOf: new Map(),
   brandOf: new Map(),
+  projectOf: new Map(),
+  projects: new Map(),
 });
 
 /**
@@ -113,28 +132,43 @@ export async function touchPortalActor(id: string): Promise<void> {
  * Everything `actor` may see.
  *
  * Grants are read first, then the brands they point at are loaded and each brand's campaigns are
- * resolved through its client's ownership. A campaign grant is intersected with the same ownership
- * result rather than trusted directly: a grant left behind after an account was recycled would
- * otherwise hand a client a campaign that now belongs to somebody else.
+ * resolved through its client's ownership. A campaign or project grant is intersected with the
+ * same ownership result rather than trusted directly: a grant left behind after an account was
+ * recycled would otherwise hand a client a campaign that now belongs to somebody else.
+ *
+ * Only a `brand` grant opens a whole brand. A brand reached through a project or campaign grant
+ * is resolved so those campaigns can be found, and nothing more — the sets are kept apart so that
+ * reaching a brand can never be mistaken for being granted it.
  */
 export async function portalScope(actor: PortalActor): Promise<PortalScope> {
   if (actor.status !== "approved") return EMPTY_SCOPE(actor);
 
   const grants = await db
-    .select({ scope: schema.portalGrants.scope, targetId: schema.portalGrants.targetId })
+    .select({
+      scope: schema.portalGrants.scope,
+      targetId: schema.portalGrants.targetId,
+      parentId: schema.portalGrants.parentId,
+    })
     .from(schema.portalGrants)
     .where(eq(schema.portalGrants.portalUserId, actor.id));
   if (grants.length === 0) return EMPTY_SCOPE(actor);
 
-  const grantedBrandIds = new Set<string>();
-  const grantedCampaignIds = new Set<string>();
+  const wholeBrands = new Set<string>();
+  const campaigns = new Set<string>();
+  const projects = new Map<string, Set<string>>();
   for (const g of grants) {
-    if (g.scope === "brand") grantedBrandIds.add(g.targetId);
-    else if (g.scope === "campaign") grantedCampaignIds.add(g.targetId);
+    if (g.scope === "brand") wholeBrands.add(g.targetId);
+    else if (g.scope === "campaign") campaigns.add(g.targetId);
+    else if (g.scope === "project" && g.parentId) {
+      const set = projects.get(g.parentId);
+      if (set) set.add(g.targetId);
+      else projects.set(g.parentId, new Set([g.targetId]));
+    }
   }
 
+  const toResolve = new Set<string>([...wholeBrands, ...projects.keys()]);
   // A campaign grant implies its brand, which is only discoverable through the campaign's account.
-  if (grantedCampaignIds.size > 0) {
+  if (campaigns.size > 0) {
     const rows = await db
       .select({ brandId: schema.brandAccounts.brandId })
       .from(schema.campaigns)
@@ -142,41 +176,59 @@ export async function portalScope(actor: PortalActor): Promise<PortalScope> {
         schema.brandAccounts,
         eq(schema.brandAccounts.accountId, schema.campaigns.accountId),
       )
-      .where(inArray(schema.campaigns.id, [...grantedCampaignIds]));
-    for (const r of rows) grantedBrandIds.add(r.brandId);
+      .where(inArray(schema.campaigns.id, [...campaigns]));
+    for (const r of rows) toResolve.add(r.brandId);
   }
-  if (grantedBrandIds.size === 0) return EMPTY_SCOPE(actor);
+  if (toResolve.size === 0) return EMPTY_SCOPE(actor);
 
-  return brandScope(actor, [...grantedBrandIds], {
-    wholeBrands: grantedBrandIds,
-    campaigns: grantedCampaignIds,
-  });
+  return brandScope(actor, [...toResolve], { wholeBrands, projects, campaigns });
 }
 
 /** How much of a brand a caller may see, when the brand itself was not granted outright. */
-interface GrantNarrowing {
+export interface GrantNarrowing {
   /** Brands granted outright — every campaign the brand owns is visible. */
   wholeBrands: ReadonlySet<string>;
+  /** Project grants: brand id → the Notion page ids granted within it. */
+  projects: ReadonlyMap<string, ReadonlySet<string>>;
   /** Campaigns granted individually, for a brand reached only through such a grant. */
   campaigns: ReadonlySet<string>;
 }
 
 /**
- * brands → accounts → owned campaigns → client-facing aliases.
+ * Which of one brand's campaigns a caller may see.
  *
- * Split out of `portalScope` so a STAFF caller can run the identical resolution over arbitrary
- * brands: an admin holds no `portal_grants`, so `portalScope` would hand the agency's own view of
- * a client report an empty scope. The grant layer is the only difference between the two callers,
- * and it is a parameter rather than a second copy of this function because a copy is what would
- * eventually disagree with this one about ownership or the alias gate.
+ * Everything, for a brand granted outright; for any other brand, only campaigns granted
+ * individually or counting under a project granted WITHIN THIS BRAND — a project grant held
+ * through another brand opens nothing here. `projectId` is the campaign's project from
+ * `projectOfAccount`, absent when no covered project lists its account, and such a campaign is
+ * never reachable through a project grant.
+ */
+export function visibleUnderGrants(
+  brandId: string,
+  campaigns: readonly { id: string; projectId: string | undefined }[],
+  narrowing: GrantNarrowing,
+): string[] {
+  if (narrowing.wholeBrands.has(brandId)) return campaigns.map((c) => c.id);
+  const granted = narrowing.projects.get(brandId);
+  return campaigns
+    .filter(
+      (c) =>
+        narrowing.campaigns.has(c.id) ||
+        (c.projectId !== undefined && granted !== undefined && granted.has(c.projectId)),
+    )
+    .map((c) => c.id);
+}
+
+/**
+ * brands → accounts → owned campaigns → client-facing aliases, cut down to what the grants open.
  *
- * `narrowing === null` means "no grant layer at all", which is legitimate exactly once: for a
- * caller `requireAdmin()` has already cleared.
+ * Split out of `portalScope` so the grant bookkeeping and the resolution read separately; the
+ * ownership check and the alias gate live here, once.
  */
 async function brandScope(
   actor: PortalActor,
   brandIds: string[],
-  narrowing: GrantNarrowing | null,
+  narrowing: GrantNarrowing,
 ): Promise<PortalScope> {
   if (brandIds.length === 0) return EMPTY_SCOPE(actor);
 
@@ -226,7 +278,8 @@ async function brandScope(
   // campaigns are already being read per brand and re-querying them for the name would double the
   // round trips on the portal's hottest path.
   const metaName = new Map<string, string>();
-
+  const projectOf = new Map<string, string>();
+  const projectMeta = new Map<string, { title: string; brandId: string }>();
   for (const b of brandRows) {
     const clientRow = clientById.get(b.clientId);
     if (!clientRow) continue;
@@ -241,13 +294,14 @@ async function brandScope(
       id: b.id,
       clientId: b.clientId,
       name: b.name,
-      website: b.website,
       pageName: b.pageName,
       pageAvatarUrl: b.pageAvatarUrl,
-      monthlyBudget: b.monthlyBudget,
       defaultCommission: b.defaultCommission,
       accountIds: usable,
     };
+    const covered = coveredProjects(b.projectIds, clientRow.raw);
+    const projectOfAcct = projectOfAccount(covered, usable);
+    const titleOf = new Map(covered.map((p) => [p.pageId, p.title]));
 
     // null = "no ownership restriction needed", i.e. every campaign on these accounts is this
     // client's. Otherwise it is the explicit whitelist.
@@ -255,24 +309,28 @@ async function brandScope(
     const ownedSet = owned === null ? null : new Set(owned);
 
     const onAccounts = await db
-      .select({ id: schema.campaigns.id, name: schema.campaigns.name })
+      .select({
+        id: schema.campaigns.id,
+        name: schema.campaigns.name,
+        accountId: schema.campaigns.accountId,
+      })
       .from(schema.campaigns)
       .where(inArray(schema.campaigns.accountId, usable));
     for (const c of onAccounts) metaName.set(c.id, c.name);
 
-    const brandCampaignIds = onAccounts
-      .map((c) => c.id)
-      .filter((id) => ownedSet === null || ownedSet.has(id));
+    const ownedCampaigns = onAccounts
+      .filter((c) => ownedSet === null || ownedSet.has(c.id))
+      .map((c) => ({ id: c.id, projectId: projectOfAcct.get(c.accountId) }));
+    const wanted = new Set(visibleUnderGrants(b.id, ownedCampaigns, narrowing));
+    if (wanted.size === 0) continue;
 
-    const wanted =
-      narrowing === null || narrowing.wholeBrands.has(b.id)
-        ? brandCampaignIds
-        : brandCampaignIds.filter((id) => narrowing.campaigns.has(id));
-    if (wanted.length === 0) continue;
-
-    for (const id of wanted) {
-      visible.add(id);
-      brandOf.set(id, b.id);
+    for (const c of ownedCampaigns) {
+      if (!wanted.has(c.id)) continue;
+      visible.add(c.id);
+      brandOf.set(c.id, b.id);
+      if (c.projectId === undefined) continue;
+      projectOf.set(c.id, c.projectId);
+      projectMeta.set(c.projectId, { title: titleOf.get(c.projectId) ?? "", brandId: b.id });
     }
     brands.push(brand);
   }
@@ -311,7 +369,33 @@ async function brandScope(
 
   const campaignIds = [...visible].filter((id) => aliasOf.has(id));
   for (const id of [...brandOf.keys()]) if (!aliasOf.has(id)) brandOf.delete(id);
+  for (const id of [...projectOf.keys()]) if (!aliasOf.has(id)) projectOf.delete(id);
   const keptBrands = new Set(brandOf.values());
+
+  // Per-project overrides, one query for every project a visible campaign counts under.
+  const pageIds = [...new Set(projectOf.values())];
+  const settingsRows =
+    pageIds.length === 0
+      ? []
+      : await db
+          .select()
+          .from(schema.portalProjectSettings)
+          .where(inArray(schema.portalProjectSettings.pageId, pageIds));
+  const settingsOf = new Map(settingsRows.map((s) => [s.pageId, s]));
+  const projects = new Map<string, ScopedProject>();
+  for (const pageId of pageIds) {
+    const meta = projectMeta.get(pageId);
+    if (!meta) continue;
+    const s = settingsOf.get(pageId);
+    projects.set(pageId, {
+      pageId,
+      title: meta.title,
+      brandId: meta.brandId,
+      pageName: s?.pageName ?? null,
+      pageAvatarUrl: s?.pageAvatarUrl ?? null,
+      commission: s?.commission ?? null,
+    });
+  }
 
   return {
     actor,
@@ -319,44 +403,9 @@ async function brandScope(
     campaignIds,
     aliasOf,
     brandOf,
+    projectOf,
+    projects,
   };
-}
-
-/**
- * Every visible campaign of the requested brands, with no grant layer — for STAFF callers only.
- *
- * The agency's own copy of a client-facing report has to resolve brands the caller was never
- * granted, because a member of staff is granted nothing: `portal_grants` is the customer's table.
- * So this is the one entry point that takes brand ids as a LOOKUP rather than a filter, and the
- * only safe caller is an op that has already called `requireAdmin()`.
- *
- * An empty selection means every brand the agency has, which is the agency-wide report. The alias
- * gate still applies: the point of the staff copy is to see exactly what the customer sees.
- *
- * `actor` never reaches a response from here — it exists because a scope is defined relative to
- * somebody — so staff callers pass a synthetic one built from their own identity.
- *
- * It refuses outright on the portal transport. That check is not defence in depth: this function
- * is exported from the same module every `portal*` op imports for `portalScope` and
- * `narrowToBrands`, so the single most likely way it gets misused is a future portal op reaching
- * for it by autocomplete and silently returning every brand the agency has. A doc comment does not
- * survive that; a throw does.
- */
-export async function agencyBrandScope(
-  actor: PortalActor,
-  brandIds: string[] | undefined,
-): Promise<PortalScope> {
-  if (inPortalContext()) {
-    throw new Error(
-      "agencyBrandScope() was called on the portal transport — it bypasses portal_grants and is " +
-        "admin-only. A portal op must use portalScope() + narrowToBrands().",
-    );
-  }
-  const ids =
-    brandIds && brandIds.length > 0
-      ? brandIds
-      : (await db.select({ id: schema.brands.id }).from(schema.brands)).map((b) => b.id);
-  return brandScope(actor, ids, null);
 }
 
 /**
@@ -379,22 +428,32 @@ export function narrowToBrands(scope: PortalScope, brandIds: string[] | undefine
   const kept = new Set(campaignIds);
   const brandOf = new Map<string, string>();
   const aliasOf = new Map<string, string>();
+  const projectOf = new Map<string, string>();
   for (const id of kept) {
     const brandId = scope.brandOf.get(id);
     if (brandId !== undefined) brandOf.set(id, brandId);
     const alias = scope.aliasOf.get(id);
     if (alias !== undefined) aliasOf.set(id, alias);
+    const pageId = scope.projectOf.get(id);
+    if (pageId !== undefined) projectOf.set(id, pageId);
   }
+  const pageIds = new Set(projectOf.values());
   return {
     actor: scope.actor,
     brands: scope.brands.filter((b) => wanted.has(b.id)),
     campaignIds,
     aliasOf,
     brandOf,
+    projectOf,
+    projects: new Map([...scope.projects].filter(([pageId]) => pageIds.has(pageId))),
   };
 }
 
-/** Brand-level markup fallback per campaign, for `markupRows`. */
+/**
+ * The markup a campaign falls back to when it has no rate history of its own, for `markupRows`:
+ * its project's commission, else its brand's default, else `fallback`. Inheritance runs one way —
+ * a project only ever overrides its brand, never the other way round.
+ */
 export function defaultCommissionLookup(
   scope: PortalScope,
   fallback: number,
@@ -402,6 +461,10 @@ export function defaultCommissionLookup(
   const byBrand = new Map<string, number>();
   for (const b of scope.brands) byBrand.set(b.id, b.defaultCommission ?? fallback);
   return (campaignId) => {
+    const pageId = scope.projectOf.get(campaignId);
+    const projectRate =
+      pageId === undefined ? null : (scope.projects.get(pageId)?.commission ?? null);
+    if (projectRate !== null) return projectRate;
     const brandId = scope.brandOf.get(campaignId);
     const rate = brandId === undefined ? undefined : byBrand.get(brandId);
     return rate ?? fallback;

@@ -81,6 +81,42 @@ export function projectSelection(value: unknown): string[] | null {
   return value === null || value === undefined ? null : asStrings(value);
 }
 
+/** The projects a brand covers: every one of the client's when it follows the client, else its selection. */
+export function coveredProjects(projectIds: unknown, raw: unknown): ClientProject[] {
+  const selection = projectSelection(projectIds);
+  const all = clientProjects(raw);
+  if (selection === null) return all;
+  const wanted = new Set(selection);
+  return all.filter((p) => wanted.has(p.pageId));
+}
+
+/**
+ * Which project each account counts under, for per-project settings and per-project access.
+ *
+ * Boards reuse ad accounts across rows — one owner adds a row per monthly engagement on the same
+ * accounts — so an account can sit on several projects while a campaign belongs to exactly one
+ * account. The rule is: the NEWEST project listing the account wins, and newest is board order.
+ * The sync stores rows in the order Notion returns them, newest-created first (every multi-row
+ * board observed on 2026-09-25 reads that way: "betonline.ag (September/October)" before
+ * "(August/September)" …), so the first row listing an account is its current engagement.
+ *
+ * Only `accountIds` count — the brand's resolved accounts — so an account an operator removed, or
+ * one outside a brand's narrowing, is attributed to nothing. An account the brand reaches without
+ * any project listing it (a manual addition) has no entry, and its campaigns simply inherit the
+ * brand's own settings.
+ */
+export function projectOfAccount(
+  projects: readonly ClientProject[],
+  accountIds: Iterable<string>,
+): Map<string, string> {
+  const usable = new Set(accountIds);
+  const owner = new Map<string, string>();
+  for (const p of projects) {
+    for (const a of p.accountIds) if (usable.has(a) && !owner.has(a)) owner.set(a, p.pageId);
+  }
+  return owner;
+}
+
 /**
  * The accounts a brand covers.
  *

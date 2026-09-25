@@ -1,9 +1,16 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, inArray, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { db, schema } from "@/db/client";
 import { addDays } from "@/lib/range";
 import { LIVE_STATUSES } from "@/notion/parse";
-import { brandAccountIds, clientProjects, projectSelection } from "@/portal/brand-accounts";
+import {
+  brandAccountIds,
+  clientProjects,
+  coveredProjects,
+  projectOfAccount,
+  projectSelection,
+} from "@/portal/brand-accounts";
+import { PORTAL_DEFAULT_COMMISSION } from "@/portal/markup";
 import { clientTokens, reviewName, type NameFlag } from "@/portal/name-review";
 import { effectiveAccountIds } from "@/sync/jobs/clients";
 import { audit, requireAdmin } from "./auth";
@@ -116,29 +123,52 @@ export async function fetchClientProjects(clientId: string): Promise<ClientProje
 
 // ── Brands ─────────────────────────────────────────────────────────────────────────────────────
 
+/**
+ * One Notion project a brand covers, with its per-project overrides — the admin console calls a
+ * project a "brand" and a brand a "client".
+ */
+export interface BrandProjectView {
+  pageId: string;
+  title: string;
+  status: string | null;
+  live: boolean;
+  /**
+   * Campaigns that count under this project for this brand: those on its accounts, owned by the
+   * brand's client, whose account no NEWER project of the brand also lists (`projectOfAccount`).
+   */
+  campaignIds: string[];
+  /** Accounts this project lists that count under a newer project instead, so its settings lose. */
+  sharedAccountIds: string[];
+  /** Overrides; null inherits the brand's own value. */
+  pageName: string | null;
+  pageAvatarUrl: string | null;
+  commission: number | null;
+}
+
 export interface BrandAdminView {
   id: string;
   clientId: string;
   clientName: string;
   name: string;
-  website: string | null;
-  /** The page name ad previews show for this brand; null = the brand name. */
+  /** The default page name ad previews show for this brand's projects; null = the brand name. */
   pageName: string | null;
-  /** The page's profile photo, a public https URL; null = initials. */
+  /** The default profile photo, a public https URL; null = initials. */
   pageAvatarUrl: string | null;
-  monthlyBudget: number | null;
-  defaultCommission: number | null;
+  /** Never null: a row created before the default was stored reads as `PORTAL_DEFAULT_COMMISSION`. */
+  defaultCommission: number;
   /** Resolved on read from the project selection — not a stored mapping. */
   accountIds: string[];
   /** `null` = follows the client, including engagements it has not won yet. */
   projectIds: string[] | null;
+  /** The projects this brand covers, in board order (newest first). */
+  projects: BrandProjectView[];
   /** Projects on the client's Notion board in total. */
   projectCount: number;
   /** How many of those this brand covers. Equal to `projectCount` when it follows the client. */
   selectedProjectCount: number;
   /** Campaigns this brand's client owns on those accounts. */
   campaignCount: number;
-  /** How many of those a client can actually see — i.e. how much of the brand has been curated. */
+  /** How many of those a client can see: every one not hidden (names default to Meta's own). */
   visibleCampaignCount: number;
   createdAt: string;
 }
@@ -146,9 +176,10 @@ export interface BrandAdminView {
 /**
  * Every brand, with the accounts its project selection resolves to and the counts that explain it.
  *
- * Accounts are DERIVED here, exactly as `portalScope()` derives them, rather than read back from a
- * stored mapping — that is the point of `brands.project_ids`, and computing it a second way here
- * would let the admin screen and the portal disagree about what a client can see.
+ * Accounts and project attribution are DERIVED here, exactly as `portalScope()` derives them,
+ * rather than read back from a stored mapping — that is the point of `brands.project_ids`, and
+ * computing it a second way here would let the admin screen and the portal disagree about what a
+ * client can see or what rate a campaign is marked up at.
  *
  * The campaign counts go through `ownedCampaignIds()` per brand rather than a cheap
  * `accounts ⋈ campaigns` join: a recycled account is claimed by two clients, and the join would
@@ -157,7 +188,7 @@ export interface BrandAdminView {
  */
 export async function fetchBrands(): Promise<BrandAdminView[]> {
   await requireAdmin();
-  const [brandRows, clientRows, overrideRows, presentationRows] = await Promise.all([
+  const [brandRows, clientRows, overrideRows, hiddenRows, settingsRows] = await Promise.all([
     db.select().from(schema.brands),
     db
       .select({
@@ -171,16 +202,16 @@ export async function fetchBrands(): Promise<BrandAdminView[]> {
       .from(schema.clients),
     db.select().from(schema.brandAccounts),
     db
-      .select({
-        campaignId: schema.portalCampaigns.campaignId,
-        alias: schema.portalCampaigns.alias,
-        hidden: schema.portalCampaigns.hidden,
-      })
-      .from(schema.portalCampaigns),
+      .select({ campaignId: schema.portalCampaigns.campaignId })
+      .from(schema.portalCampaigns)
+      .where(eq(schema.portalCampaigns.hidden, true)),
+    db.select().from(schema.portalProjectSettings),
   ]);
   if (brandRows.length === 0) return [];
 
   const clientById = new Map(clientRows.map((c) => [c.id, c]));
+  const settingsOf = new Map(settingsRows.map((s) => [s.pageId, s]));
+  const hidden = new Set(hiddenRows.map((r) => r.campaignId));
 
   const overridesByBrand = new Map<string, string[]>();
   for (const m of overrideRows) {
@@ -217,41 +248,51 @@ export async function fetchBrands(): Promise<BrandAdminView[]> {
     else campaignsByAccount.set(c.accountId, [c.id]);
   }
 
-  const visible = new Set(
-    presentationRows.filter((p) => p.alias && !p.hidden).map((p) => p.campaignId),
-  );
-
   const views = await Promise.all(
     resolved.map(async ({ brand: b, client, accountIds }): Promise<BrandAdminView> => {
       const owned = accountIds.length === 0 ? [] : await ownedCampaignIds(b.clientId, accountIds);
       const ownedSet = owned === null ? null : new Set(owned);
-      const ids = accountIds
-        .flatMap((a) => campaignsByAccount.get(a) ?? [])
-        .filter((id) => ownedSet === null || ownedSet.has(id));
+      const isOwned = (id: string) => ownedSet === null || ownedSet.has(id);
+      const ids = accountIds.flatMap((a) => campaignsByAccount.get(a) ?? []).filter(isOwned);
 
-      const projects = clientProjects(client?.raw);
+      const all = clientProjects(client?.raw);
       const selection = projectSelection(b.projectIds);
-      const selectedIds = new Set(selection ?? []);
+      const covered = coveredProjects(b.projectIds, client?.raw);
+      const projectOfAcct = projectOfAccount(covered, accountIds);
+      const usable = new Set(accountIds);
+
+      const projects = covered.map((p): BrandProjectView => {
+        const listed = [...new Set(p.accountIds.filter((a) => usable.has(a)))];
+        const mine = listed.filter((a) => projectOfAcct.get(a) === p.pageId);
+        const s = settingsOf.get(p.pageId);
+        return {
+          pageId: p.pageId,
+          title: p.title,
+          status: p.status,
+          live: p.status !== null && LIVE_STATUSES.includes(p.status),
+          campaignIds: mine.flatMap((a) => campaignsByAccount.get(a) ?? []).filter(isOwned),
+          sharedAccountIds: listed.filter((a) => projectOfAcct.get(a) !== p.pageId).sort(),
+          pageName: s?.pageName ?? null,
+          pageAvatarUrl: s?.pageAvatarUrl ?? null,
+          commission: s?.commission ?? null,
+        };
+      });
 
       return {
         id: b.id,
         clientId: b.clientId,
         clientName: client?.name ?? b.clientId,
         name: b.name,
-        website: b.website,
         pageName: b.pageName,
         pageAvatarUrl: b.pageAvatarUrl,
-        monthlyBudget: b.monthlyBudget,
-        defaultCommission: b.defaultCommission,
+        defaultCommission: b.defaultCommission ?? PORTAL_DEFAULT_COMMISSION,
         accountIds,
         projectIds: selection,
-        projectCount: projects.length,
-        selectedProjectCount:
-          selection === null
-            ? projects.length
-            : projects.filter((p) => selectedIds.has(p.pageId)).length,
+        projects,
+        projectCount: all.length,
+        selectedProjectCount: covered.length,
         campaignCount: ids.length,
-        visibleCampaignCount: ids.filter((id) => visible.has(id)).length,
+        visibleCampaignCount: ids.filter((id) => !hidden.has(id)).length,
         createdAt: b.createdAt.toISOString(),
       };
     }),
@@ -266,9 +307,16 @@ export interface UpsertBrandInput {
   /** Absent, null or empty means create — the edit form sends `""` for a new row. */
   id?: string | null;
   clientId: string;
-  name: string;
-  website?: string | null;
-  monthlyBudget?: number | null;
+  /**
+   * Client-facing name. No longer typed in by an operator: absent on create means the client's
+   * own name (`clients.name`), absent on update means unchanged.
+   */
+  name?: string | null;
+  /**
+   * Markup for campaigns whose project and own history set none. Absent on create means
+   * `PORTAL_DEFAULT_COMMISSION`, stored so the screen shows the real number; absent on update means
+   * unchanged; `null` resets it to the default.
+   */
   defaultCommission?: number | null;
   /**
    * Which of the client's Notion projects this brand covers.
@@ -334,71 +382,130 @@ export function pageFields(
  * Create or update a brand.
  *
  * `client_id` is `ON DELETE RESTRICT`, so an unknown id would surface as a raw constraint violation;
- * it is checked first to answer with a sentence instead. Both money fields reject negatives because
- * a negative default commission would quietly *discount* the client below cost.
+ * it is checked first to answer with a sentence instead. A negative default commission is refused
+ * because it would quietly *discount* the client below cost.
  */
 export async function upsertBrand(
   input: UpsertBrandInput,
 ): Promise<{ ok: boolean; error?: string; id?: string }> {
   await requireAdmin();
-  const name = input.name.trim();
-  if (!name) return { ok: false, error: "Name is required" };
-  if (input.monthlyBudget != null && !(input.monthlyBudget >= 0)) {
-    return { ok: false, error: "Monthly budget cannot be negative" };
-  }
-  if (input.defaultCommission != null && !(input.defaultCommission >= 0)) {
+  const typedName = input.name?.trim() || null;
+  if (
+    input.defaultCommission != null &&
+    !(Number.isFinite(input.defaultCommission) && input.defaultCommission >= 0)
+  ) {
     return { ok: false, error: "Default commission cannot be negative" };
   }
   const page = pageFields(input);
   if ("error" in page) return { ok: false, error: page.error };
 
   const [client] = await db
-    .select({ id: schema.clients.id })
+    .select({ id: schema.clients.id, name: schema.clients.name })
     .from(schema.clients)
     .where(eq(schema.clients.id, input.clientId));
   if (!client) return { ok: false, error: `Unknown client "${input.clientId}"` };
 
-  const fields = {
-    clientId: input.clientId,
-    name,
-    website: input.website?.trim() || null,
-    monthlyBudget: input.monthlyBudget ?? null,
-    defaultCommission: input.defaultCommission ?? null,
-    ...page.fields,
-  };
   // Distinguished from `null` on purpose: `null` means "follow the client" and is a real setting,
   // while an absent key on an update means "do not touch the selection I already have".
   const selection = input.projectIds === undefined ? undefined : (input.projectIds ?? null);
 
   if (input.id) {
     const [existing] = await db
-      .select({ id: schema.brands.id })
+      .select({ id: schema.brands.id, name: schema.brands.name })
       .from(schema.brands)
       .where(eq(schema.brands.id, input.id));
     if (!existing) return { ok: false, error: "Brand not found" };
 
-    await db
-      .update(schema.brands)
-      .set(selection === undefined ? fields : { ...fields, projectIds: selection })
-      .where(eq(schema.brands.id, input.id));
-    await audit("portal.brand.update", `${name} (${input.id})`);
+    const fields: Partial<typeof schema.brands.$inferInsert> = {
+      clientId: input.clientId,
+      ...page.fields,
+    };
+    if (typedName) fields.name = typedName;
+    if (input.defaultCommission !== undefined) {
+      fields.defaultCommission = input.defaultCommission ?? PORTAL_DEFAULT_COMMISSION;
+    }
+    if (selection !== undefined) fields.projectIds = selection;
+    await db.update(schema.brands).set(fields).where(eq(schema.brands.id, input.id));
+    await audit("portal.brand.update", `${typedName ?? existing.name} (${input.id})`);
     return { ok: true, id: input.id };
   }
 
   const id = randomUUID();
-  await db.insert(schema.brands).values({ ...fields, id, projectIds: selection ?? null });
+  const name = typedName ?? client.name;
+  await db.insert(schema.brands).values({
+    id,
+    clientId: input.clientId,
+    name,
+    defaultCommission: input.defaultCommission ?? PORTAL_DEFAULT_COMMISSION,
+    projectIds: selection ?? null,
+    ...page.fields,
+  });
   await audit("portal.brand.create", `${name} (${id})`);
   return { ok: true, id };
 }
 
+export interface SaveProjectSettingsInput {
+  /** The Notion page id of the project (a board row). */
+  pageId: string;
+  /** Absent = unchanged, null or blank = inherit the brand's value again. */
+  pageName?: string | null;
+  pageAvatarUrl?: string | null;
+  commission?: number | null;
+}
+
 /**
- * Delete a brand, its account mapping and every grant that pointed at it.
+ * Set a project's own ad page and/or commission, overriding the brand's defaults for the campaigns
+ * that count under it (see `projectOfAccount`).
  *
- * `brand_accounts` cascades, but `portal_grants.target_id` deliberately carries no FK (it is
- * polymorphic over brands and campaigns), so nothing in the database cleans those up. A leftover
- * grant is not merely untidy: it keeps naming a target the access list can no longer resolve, and
- * it becomes live access again the moment that id exists once more — a restored row or a re-imported
- * export is enough.
+ * Only keys the caller sent are touched, as for brands. The project must be a row on some client's
+ * board — found through `clients.raw` — which is also where the row's client id comes from, so a
+ * settings row can never be filed under the wrong client. A row whose every override is cleared is
+ * kept rather than deleted: it is inert (all nulls inherit) and deleting would race a concurrent save.
+ */
+export async function upsertProjectSettings(
+  input: SaveProjectSettingsInput,
+): Promise<{ ok: boolean; error?: string }> {
+  await requireAdmin();
+  const page = pageFields(input);
+  if ("error" in page) return { ok: false, error: page.error };
+  if (input.commission != null && !(Number.isFinite(input.commission) && input.commission >= 0)) {
+    return { ok: false, error: "Commission cannot be negative" };
+  }
+
+  const clientRows = await db
+    .select({ id: schema.clients.id, raw: schema.clients.raw })
+    .from(schema.clients)
+    .where(sql`${schema.clients.raw} @> ${JSON.stringify([{ pageId: input.pageId }])}::jsonb`);
+  const owner = clientRows.find((c) =>
+    clientProjects(c.raw).some((p) => p.pageId === input.pageId),
+  );
+  if (!owner) return { ok: false, error: "That brand is not on any client's Notion board" };
+  const title =
+    clientProjects(owner.raw).find((p) => p.pageId === input.pageId)?.title ?? input.pageId;
+
+  const fields: Partial<typeof schema.portalProjectSettings.$inferInsert> = { ...page.fields };
+  if (input.commission !== undefined) fields.commission = input.commission;
+
+  await db
+    .insert(schema.portalProjectSettings)
+    .values({ pageId: input.pageId, clientId: owner.id, ...fields })
+    .onConflictDoUpdate({
+      target: schema.portalProjectSettings.pageId,
+      set: { ...fields, clientId: owner.id, updatedAt: new Date() },
+    });
+  await audit("portal.project.update", `${title} (${input.pageId})`);
+  return { ok: true };
+}
+
+/**
+ * Delete a brand, its account mapping and every grant that pointed at it — whole-brand grants and
+ * the project grants held through it.
+ *
+ * `brand_accounts` cascades, but `portal_grants.target_id` and `parent_id` deliberately carry no FK
+ * (they are polymorphic), so nothing in the database cleans those up. A leftover grant is not
+ * merely untidy: it keeps naming a target the access list can no longer resolve, and it becomes
+ * live access again the moment that id exists once more — a restored row or a re-imported export
+ * is enough.
  */
 export async function removeBrand(input: { id: string }): Promise<{ ok: boolean; error?: string }> {
   await requireAdmin();
@@ -410,7 +517,12 @@ export async function removeBrand(input: { id: string }): Promise<{ ok: boolean;
 
   const removed = await db
     .delete(schema.portalGrants)
-    .where(and(eq(schema.portalGrants.scope, "brand"), eq(schema.portalGrants.targetId, input.id)))
+    .where(
+      or(
+        and(eq(schema.portalGrants.scope, "brand"), eq(schema.portalGrants.targetId, input.id)),
+        and(eq(schema.portalGrants.scope, "project"), eq(schema.portalGrants.parentId, input.id)),
+      ),
+    )
     .returning({ id: schema.portalGrants.id });
   await db.delete(schema.brands).where(eq(schema.brands.id, input.id));
 
@@ -817,14 +929,20 @@ export async function removeCampaignCommission(input: {
 
 // ── Portal users and access ────────────────────────────────────────────────────────────────────
 
-export type PortalGrantScope = "brand" | "campaign";
+export type PortalGrantScope = "brand" | "project" | "campaign";
 export type PortalUserStatus = "pending" | "approved" | "rejected";
 
 export interface PortalGrantView {
   id: string;
   scope: PortalGrantScope;
+  /** A brand id, a Notion page id (project) or a campaign id. */
   targetId: string;
-  /** Brand name, or a campaign's client-facing alias. Null when the target no longer exists. */
+  /** For a project grant, the brand it is held through; null otherwise. */
+  parentId: string | null;
+  /**
+   * Brand name, project title, or a campaign's client-facing name. Null when the target no longer
+   * exists — including a project its brand no longer covers.
+   */
   targetName: string | null;
   createdAt: string;
 }
@@ -853,37 +971,88 @@ export async function fetchPortalUsers(): Promise<PortalUserView[]> {
   const [userRows, grantRows, brandRows, staffRows] = await Promise.all([
     db.select().from(schema.portalUsers),
     db.select().from(schema.portalGrants),
-    db.select({ id: schema.brands.id, name: schema.brands.name }).from(schema.brands),
+    db
+      .select({
+        id: schema.brands.id,
+        name: schema.brands.name,
+        clientId: schema.brands.clientId,
+        projectIds: schema.brands.projectIds,
+      })
+      .from(schema.brands),
     db.select({ id: schema.users.id, email: schema.users.email }).from(schema.users),
   ]);
 
   const campaignTargets = [
     ...new Set(grantRows.filter((g) => g.scope === "campaign").map((g) => g.targetId)),
   ];
-  const aliasRows =
+  const [aliasRows, campaignRows] =
     campaignTargets.length === 0
+      ? [[], []]
+      : await Promise.all([
+          db
+            .select({
+              campaignId: schema.portalCampaigns.campaignId,
+              alias: schema.portalCampaigns.alias,
+            })
+            .from(schema.portalCampaigns)
+            .where(inArray(schema.portalCampaigns.campaignId, campaignTargets)),
+          db
+            .select({ id: schema.campaigns.id, name: schema.campaigns.name })
+            .from(schema.campaigns)
+            .where(inArray(schema.campaigns.id, campaignTargets)),
+        ]);
+
+  // A project grant is named by its row title, read from the owning client's board through the
+  // brand it is held by — and only while that brand still covers it, so a grant the scope would
+  // ignore reads as dangling here too.
+  const parentIds = new Set(
+    grantRows.filter((g) => g.scope === "project" && g.parentId).map((g) => g.parentId),
+  );
+  const brandById = new Map(brandRows.map((b) => [b.id, b]));
+  const ownerIds = [
+    ...new Set(
+      [...parentIds]
+        .map((id) => brandById.get(id ?? "")?.clientId)
+        .filter((id): id is string => Boolean(id)),
+    ),
+  ];
+  const ownerRows =
+    ownerIds.length === 0
       ? []
       : await db
-          .select({
-            campaignId: schema.portalCampaigns.campaignId,
-            alias: schema.portalCampaigns.alias,
-          })
-          .from(schema.portalCampaigns)
-          .where(inArray(schema.portalCampaigns.campaignId, campaignTargets));
+          .select({ id: schema.clients.id, raw: schema.clients.raw })
+          .from(schema.clients)
+          .where(inArray(schema.clients.id, ownerIds));
+  const rawOf = new Map(ownerRows.map((c) => [c.id, c.raw]));
+  const projectTitle = (brandId: string | null, pageId: string): string | null => {
+    const brand = brandById.get(brandId ?? "");
+    if (!brand) return null;
+    const p = coveredProjects(brand.projectIds, rawOf.get(brand.clientId)).find(
+      (x) => x.pageId === pageId,
+    );
+    return p ? p.title || pageId : null;
+  };
 
-  const brandName = new Map(brandRows.map((b) => [b.id, b.name]));
-  const aliasName = new Map(aliasRows.filter((a) => a.alias).map((a) => [a.campaignId, a.alias]));
+  const campaignName = new Map(campaignRows.map((c) => [c.id, c.name]));
+  for (const a of aliasRows) if (a.alias) campaignName.set(a.campaignId, a.alias);
   const staffEmail = new Map(staffRows.map((u) => [u.id, u.email]));
 
   const grantsByUser = new Map<string, PortalGrantView[]>();
   for (const g of grantRows) {
-    const scope: PortalGrantScope = g.scope === "campaign" ? "campaign" : "brand";
+    const scope: PortalGrantScope =
+      g.scope === "campaign" ? "campaign" : g.scope === "project" ? "project" : "brand";
+    const targetName =
+      scope === "brand"
+        ? brandById.get(g.targetId)?.name
+        : scope === "project"
+          ? projectTitle(g.parentId, g.targetId)
+          : campaignName.get(g.targetId);
     const view: PortalGrantView = {
       id: g.id,
       scope,
       targetId: g.targetId,
-      targetName:
-        (scope === "brand" ? brandName.get(g.targetId) : aliasName.get(g.targetId)) ?? null,
+      parentId: scope === "project" ? g.parentId : null,
+      targetName: targetName ?? null,
       createdAt: g.createdAt.toISOString(),
     };
     const list = grantsByUser.get(g.portalUserId);
@@ -979,17 +1148,19 @@ export async function removePortalUser(input: {
 }
 
 /**
- * Give a portal user a brand or a single campaign.
+ * Give a portal user a brand, one project within a brand, or a single campaign.
  *
  * Idempotent: `portal_grants_unique` already forbids a duplicate, so re-granting is a no-op rather
  * than an error the operator has to read. The target is checked because `target_id` has no FK and a
  * grant for something that does not exist is silently ignored when the scope resolves — the operator
- * would be told access was given and the client would still see nothing.
+ * would be told access was given and the client would still see nothing. For a project that means
+ * the brand (`parentId`) must exist and currently cover the project.
  */
 export async function addPortalGrant(input: {
   portalUserId: string;
   scope: PortalGrantScope;
   targetId: string;
+  parentId?: string | null;
 }): Promise<{ ok: boolean; error?: string }> {
   const admin = await requireAdmin();
   const [user] = await db
@@ -1004,6 +1175,21 @@ export async function addPortalGrant(input: {
       .from(schema.brands)
       .where(eq(schema.brands.id, input.targetId));
     if (!brand) return { ok: false, error: "Brand not found" };
+  } else if (input.scope === "project") {
+    if (!input.parentId)
+      return { ok: false, error: "A brand grant needs the client it belongs to" };
+    const [brand] = await db
+      .select({
+        projectIds: schema.brands.projectIds,
+        raw: schema.clients.raw,
+      })
+      .from(schema.brands)
+      .innerJoin(schema.clients, eq(schema.clients.id, schema.brands.clientId))
+      .where(eq(schema.brands.id, input.parentId));
+    if (!brand) return { ok: false, error: "Client not found" };
+    if (!coveredProjects(brand.projectIds, brand.raw).some((p) => p.pageId === input.targetId)) {
+      return { ok: false, error: "That brand is not one this client covers" };
+    }
   } else {
     const [campaign] = await db
       .select({ id: schema.campaigns.id })
@@ -1019,6 +1205,7 @@ export async function addPortalGrant(input: {
       portalUserId: input.portalUserId,
       scope: input.scope,
       targetId: input.targetId,
+      parentId: input.scope === "project" ? (input.parentId ?? null) : null,
       grantedBy: admin.id,
     })
     .onConflictDoNothing();

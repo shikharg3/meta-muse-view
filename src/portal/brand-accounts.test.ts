@@ -1,5 +1,11 @@
 import { describe, expect, it } from "bun:test";
-import { brandAccountIds, clientProjects, projectSelection } from "@/portal/brand-accounts";
+import {
+  brandAccountIds,
+  clientProjects,
+  coveredProjects,
+  projectOfAccount,
+  projectSelection,
+} from "@/portal/brand-accounts";
 
 /**
  * A brand's account list decides which client sees which spend, so the property worth pinning is
@@ -82,5 +88,30 @@ describe("brandAccountIds", () => {
   it("yields nothing when the client has no effective accounts at all", () => {
     const stripped = { ...client, notionAccountIds: [], manualAddIds: [] };
     expect(brandAccountIds(null, stripped)).toEqual([]);
+  });
+});
+
+describe("projectOfAccount", () => {
+  // One owner, one ad account reused month to month: board order is newest first.
+  const board = [
+    { pageId: "p_sept", title: "acme (September)", status: "Live", accountIds: ["act_1"] },
+    { pageId: "p_aug", title: "acme (August)", status: "Finished", accountIds: ["act_1", "act_2"] },
+  ];
+
+  it("files a shared account under the newest project listing it", () => {
+    const owner = projectOfAccount(clientProjects(board), ["act_1", "act_2"]);
+    expect(Object.fromEntries(owner)).toEqual({ act_1: "p_sept", act_2: "p_aug" });
+  });
+
+  it("keeps board order whatever order the selection was saved in", () => {
+    // A selection is a set, not a ranking: saving it as [older, newer] must not hand the shared
+    // account — and with it the campaigns' commission and ad page — to the older engagement.
+    const covered = coveredProjects(["p_aug", "p_sept"], board);
+    expect(projectOfAccount(covered, ["act_1"]).get("act_1")).toBe("p_sept");
+  });
+
+  it("attributes nothing for an account the brand does not resolve to", () => {
+    // act_2 was removed from the client (or narrowed away), so no project may claim it.
+    expect(projectOfAccount(clientProjects(board), ["act_1"]).has("act_2")).toBe(false);
   });
 });

@@ -12,7 +12,12 @@ import {
   type CommissionTable,
   type RawDayRow,
 } from "@/portal/markup";
-import { defaultCommissionLookup, narrowToBrands, portalScope } from "@/portal/scope";
+import {
+  defaultCommissionLookup,
+  narrowToBrands,
+  portalScope,
+  type PortalScope,
+} from "@/portal/scope";
 import { deriveKpis } from "@/server/agg";
 import { creativeFormat, creativeImageUrl, type CreativeFacts } from "@/server/creative";
 
@@ -365,19 +370,34 @@ export async function fetchPortalCreatives(input: PortalCreativesInput): Promise
       ),
     );
 
-  // Owning brand per campaign, from the scope that already decided what the caller may see — so a
-  // card can only ever carry the page of a brand in that scope.
-  const brandById = new Map(scope.brands.map((b) => [b.id, b]));
-  const pageOf = (campaignId: string): CreativePage | null => {
-    const brand = brandById.get(scope.brandOf.get(campaignId) ?? "");
-    return brand ? { name: brand.pageName ?? brand.name, avatarUrl: brand.pageAvatarUrl } : null;
-  };
-
   return shapePortalCreatives(
     ads,
     perf,
     await loadCommissions(campaignIds),
     defaultCommissionLookup(scope, PORTAL_DEFAULT_COMMISSION),
-    pageOf,
+    creativePageResolver(scope),
   );
+}
+
+/**
+ * The page a campaign's ads show as the advertiser, field by field: the project's override, else
+ * the brand's default ad page, else the brand's own name (and no photo, so the card draws initials).
+ *
+ * Resolved from the scope that already decided what the caller may see, so a card can only ever
+ * carry the page of a brand — and a project — in that scope. Field-wise on purpose: a project that
+ * sets only its own name keeps the brand's photo rather than losing it.
+ */
+export function creativePageResolver(
+  scope: Pick<PortalScope, "brands" | "brandOf" | "projectOf" | "projects">,
+): (campaignId: string) => CreativePage | null {
+  const brandById = new Map(scope.brands.map((b) => [b.id, b]));
+  return (campaignId) => {
+    const brand = brandById.get(scope.brandOf.get(campaignId) ?? "");
+    if (!brand) return null;
+    const project = scope.projects.get(scope.projectOf.get(campaignId) ?? "");
+    return {
+      name: project?.pageName ?? brand.pageName ?? brand.name,
+      avatarUrl: project?.pageAvatarUrl ?? brand.pageAvatarUrl,
+    };
+  };
 }

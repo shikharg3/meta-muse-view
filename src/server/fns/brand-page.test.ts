@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { pageFields } from "@/server/fns/portal-admin";
 import {
+  creativePageResolver,
   shapePortalCreatives,
   type AdCreativeRow,
   type CreativePage,
@@ -77,5 +78,63 @@ describe("shapePortalCreatives page identity", () => {
     );
     const pageOf = Object.fromEntries(cards.map((c) => [c.id, c.page]));
     expect(pageOf).toEqual({ ad_1: pages.c_one, ad_2: pages.c_two });
+  });
+});
+
+describe("creativePageResolver", () => {
+  const brand = {
+    id: "b1",
+    clientId: "owner",
+    name: "Acme",
+    pageName: "Acme Casino",
+    pageAvatarUrl: "https://media.example/acme.png",
+    defaultCommission: null,
+    accountIds: [],
+  };
+  const project = (pageId: string, pageName: string | null, pageAvatarUrl: string | null) => ({
+    pageId,
+    title: pageId,
+    brandId: "b1",
+    pageName,
+    pageAvatarUrl,
+    commission: null,
+  });
+  const pageOf = creativePageResolver({
+    brands: [brand, { ...brand, id: "b_bare", pageName: null, pageAvatarUrl: null }],
+    brandOf: new Map([
+      ["c_named", "b1"],
+      ["c_inherit", "b1"],
+      ["c_bare", "b_bare"],
+    ]),
+    projectOf: new Map([
+      ["c_named", "p_named"],
+      ["c_inherit", "p_inherit"],
+    ]),
+    projects: new Map([
+      ["p_named", project("p_named", "Acme Sports", null)],
+      ["p_inherit", project("p_inherit", null, null)],
+    ]),
+  });
+
+  it("overrides field by field, so a project that renames its page keeps the client's photo", () => {
+    expect(pageOf("c_named")).toEqual({
+      name: "Acme Sports",
+      avatarUrl: "https://media.example/acme.png",
+    });
+  });
+
+  it("inherits the client's ad page when the project sets nothing", () => {
+    expect(pageOf("c_inherit")).toEqual({
+      name: "Acme Casino",
+      avatarUrl: "https://media.example/acme.png",
+    });
+  });
+
+  it("falls back to the client's own name, and no photo, when nothing is set", () => {
+    expect(pageOf("c_bare")).toEqual({ name: "Acme", avatarUrl: null });
+  });
+
+  it("returns nothing for a campaign outside the scope", () => {
+    expect(pageOf("c_elsewhere")).toBeNull();
   });
 });

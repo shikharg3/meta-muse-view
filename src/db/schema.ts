@@ -886,22 +886,26 @@ export const brands = pgTable(
     clientId: text("client_id")
       .notNull()
       .references(() => clients.id, { onDelete: "restrict" }),
-    name: text("name").notNull(), // client-facing brand name, never an internal account name
+    // Client-facing name. Defaults to the owner's (`clients.name`) on create and is no longer typed
+    // in by an operator.
+    name: text("name").notNull(),
+    // RETIRED: no code reads or writes it since website entry was removed; kept, not dropped,
+    // because dropping a column is destructive and the stored values are harmless.
     website: text("website"),
-    // The advertiser identity the portal's ad previews show: one fixed page name and profile photo
-    // for the whole brand, rather than whichever Facebook page — or landing domain — each ad ran
-    // under. A null name falls back to `name`; a null photo draws the name's initials. The photo is
-    // a public https URL (the admin console uploads it to Base44 storage). Applied as additive DDL
-    // on `meta`, not `db:push`:
+    // The DEFAULT advertiser identity the portal's ad previews show for every project this brand
+    // covers; a project can override either field in `portal_project_settings`. A null name falls
+    // back to `name`; a null photo draws the name's initials. The photo is a public https URL (the
+    // admin console uploads it to Base44 storage). Applied as additive DDL on `meta`:
     //   ALTER TABLE brands ADD COLUMN IF NOT EXISTS page_name text;
     //   ALTER TABLE brands ADD COLUMN IF NOT EXISTS page_avatar_url text;
     pageName: text("page_name"),
     pageAvatarUrl: text("page_avatar_url"),
-    // Contracted monthly budget in client-facing money (markup already included), which is what
-    // the portal's pacing widget compares marked-up spend against. Null = no pacing shown.
+    // RETIRED with the portal's pacing widget: no code reads or writes it. Kept for the same reason
+    // as `website`.
     monthlyBudget: doublePrecision("monthly_budget"),
-    // Markup applied to this brand's campaigns unless a campaign has its own rate history.
-    // Null falls back to `PORTAL_DEFAULT_COMMISSION`.
+    // Markup applied to this brand's campaigns unless their project or the campaign itself has its
+    // own rate. Set to `PORTAL_DEFAULT_COMMISSION` on create; a null left by an older row is read
+    // as that default too.
     defaultCommission: doublePrecision("default_commission"),
     // Which Notion board rows ("projects"/engagements) this brand covers, as page ids.
     // NULL means follow the client: every project it has now and every one it gains later, which
@@ -962,11 +966,19 @@ export const portalUsers = pgTable("portal_users", {
 });
 
 /**
- * What one portal user may see: whole brands, or single campaigns.
+ * What one portal user may see: whole brands, single Notion projects within a brand, or single
+ * campaigns.
  *
- * Polymorphic (`scope` + `target_id`) rather than two nullable FK columns, because Postgres treats
+ * Polymorphic (`scope` + `target_id`) rather than nullable FK columns, because Postgres treats
  * NULLs as distinct and a `unique(user, brand_id)` constraint therefore would not stop duplicate
- * campaign grants. One uniqueness rule covers both kinds.
+ * campaign grants. One uniqueness rule covers every kind.
+ *
+ * A `project` grant is a Notion board row (`target_id` = its page id) seen through ONE brand
+ * (`parent_id` = `brands.id`): the brand is what the portal navigates by, and the row is only
+ * meaningful through that brand's owner, ownership ladder and settings. `parent_id` is null for
+ * the other scopes. Applied as additive DDL on `meta`:
+ *   ALTER TABLE portal_grants ADD COLUMN IF NOT EXISTS parent_id text;
+ *   CREATE INDEX IF NOT EXISTS portal_grants_parent_idx ON portal_grants (parent_id);
  *
  * `target_id` carries no FK for the same reason `campaign_client_overrides` carries none: a grant
  * pointing at something that no longer exists is simply ignored when the scope is resolved, which
@@ -979,15 +991,50 @@ export const portalGrants = pgTable(
     portalUserId: text("portal_user_id")
       .notNull()
       .references(() => portalUsers.id, { onDelete: "cascade" }),
-    scope: text("scope").notNull(), // "brand" | "campaign"
-    targetId: text("target_id").notNull(), // brands.id or campaigns.id
+    scope: text("scope").notNull(), // "brand" | "project" | "campaign"
+    targetId: text("target_id").notNull(), // brands.id, a Notion page id, or campaigns.id
+    parentId: text("parent_id"), // brands.id for a "project" grant; null otherwise
     grantedBy: text("granted_by").references(() => users.id, { onDelete: "set null" }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     uniqueIndex("portal_grants_unique").on(t.portalUserId, t.scope, t.targetId),
     index("portal_grants_target_idx").on(t.scope, t.targetId),
+    index("portal_grants_parent_idx").on(t.parentId),
   ],
+);
+
+/**
+ * Per-project overrides of a brand's portal settings — the admin console calls a Notion board row
+ * a "brand" and a `brands` row a "client".
+ *
+ * Sparse: a project with no row, or a null column, inherits the brand's value (`brands.page_name`,
+ * `page_avatar_url`, `default_commission`). That inheritance is the point — an owner that adds a
+ * board row every month gets the right ad page and rate on the new one with nothing set, while an
+ * owner whose rows are genuinely different brands (Slots.lv, Lucky Rebel) can give each its own.
+ *
+ * Keyed by the Notion page id, which is globally unique; `client_id` records whose board it is on
+ * and cascades with the owner. Applied as additive DDL on `meta`:
+ *   CREATE TABLE IF NOT EXISTS portal_project_settings (
+ *     page_id text PRIMARY KEY,
+ *     client_id text NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+ *     page_name text, page_avatar_url text, commission double precision,
+ *     updated_at timestamptz NOT NULL DEFAULT now());
+ *   CREATE INDEX IF NOT EXISTS portal_project_settings_client_idx ON portal_project_settings (client_id);
+ */
+export const portalProjectSettings = pgTable(
+  "portal_project_settings",
+  {
+    pageId: text("page_id").primaryKey(),
+    clientId: text("client_id")
+      .notNull()
+      .references(() => clients.id, { onDelete: "cascade" }),
+    pageName: text("page_name"),
+    pageAvatarUrl: text("page_avatar_url"),
+    commission: doublePrecision("commission"), // percent uplift; null = the brand's default
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("portal_project_settings_client_idx").on(t.clientId)],
 );
 
 /**
