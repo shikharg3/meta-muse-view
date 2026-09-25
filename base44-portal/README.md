@@ -56,6 +56,12 @@ engagement (`projectOfAccount`, `src/portal/brand-accounts.ts`). That Brand's se
 and a Brand grant opens exactly those campaigns. An older row sharing the account shows a "shared
 with a newer brand" marker on the Client page, because its settings do not reach them.
 
+The customer portal uses the same meaning: its "All your brands" picker, the `brandIds` filter on
+every `portal*` op, a campaign row's `brandId` and the report's per-brand totals are all Brands
+(board rows, by page id — `portalBrandOf` in `src/portal/scope.ts`), named by the row's title. A
+campaign on an account no covered row lists falls back to its Client, so the Brands always add up
+to the whole.
+
 ## What a customer must never receive
 
 Enforced in `src/portal/markup.ts` and `src/portal/scope.ts`, not by reviewer discipline:
