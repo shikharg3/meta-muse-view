@@ -1190,6 +1190,24 @@ export async function addPortalGrant(input: {
     if (!coveredProjects(brand.projectIds, brand.raw).some((p) => p.pageId === input.targetId)) {
       return { ok: false, error: "That brand is not one this client covers" };
     }
+    // `portal_grants_unique` is (user, scope, target), so the same board row held through a second
+    // client would be swallowed by `onConflictDoNothing` below and reported as granted. Say so.
+    const [held] = await db
+      .select({ parentId: schema.portalGrants.parentId })
+      .from(schema.portalGrants)
+      .where(
+        and(
+          eq(schema.portalGrants.portalUserId, input.portalUserId),
+          eq(schema.portalGrants.scope, "project"),
+          eq(schema.portalGrants.targetId, input.targetId),
+        ),
+      );
+    if (held && held.parentId !== input.parentId) {
+      return {
+        ok: false,
+        error: "This person already has that brand through another client. Revoke that first.",
+      };
+    }
   } else {
     const [campaign] = await db
       .select({ id: schema.campaigns.id })

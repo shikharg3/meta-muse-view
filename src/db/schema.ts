@@ -976,7 +976,8 @@ export const portalUsers = pgTable("portal_users", {
  * A `project` grant is a Notion board row (`target_id` = its page id) seen through ONE brand
  * (`parent_id` = `brands.id`): the brand is what the portal navigates by, and the row is only
  * meaningful through that brand's owner, ownership ladder and settings. `parent_id` is null for
- * the other scopes. Applied as additive DDL on `meta`:
+ * the other scopes. `portal_grants_unique` does not include it, so a user holds a given board row
+ * through at most one brand — `addPortalGrant` refuses a second. Applied as additive DDL on `meta`:
  *   ALTER TABLE portal_grants ADD COLUMN IF NOT EXISTS parent_id text;
  *   CREATE INDEX IF NOT EXISTS portal_grants_parent_idx ON portal_grants (parent_id);
  *
