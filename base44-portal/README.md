@@ -40,27 +40,35 @@ Authorisation is `portal_grants` → `brands` → `brand_accounts` → `ownedCam
 
 ## Vocabulary: the console's words are not the schema's
 
-| admin console says | schema / code                                                     | what it is                                    |
-| ------------------ | ----------------------------------------------------------------- | --------------------------------------------- |
-| **Owner**          | `clients` row                                                     | the agency's customer on the Notion board     |
-| **Client**         | `brands` row                                                      | one portal: what a login is granted, as a set |
-| **Brand**          | a Notion board row ("project") in `clients.raw`, keyed by page id | one engagement, with its own ad accounts      |
+| admin console says | schema / code                                                | what it is                                    |
+| ------------------ | ------------------------------------------------------------ | --------------------------------------------- |
+| **Owner**          | `clients` row                                                | the agency's customer on the Notion board     |
+| **Client**         | `brands` row                                                 | one portal: what a login is granted, as a set |
+| **Brand**          | a group of an owner's Notion board rows (`projectGroups`)    | one brand, across all its engagements         |
+| **Engagement**     | one board row ("project") in `clients.raw`, keyed by page id | one month/campaign run, with its ad accounts  |
 
-Grant scopes keep the code names: `brand` = a whole Client, `project` = one Brand held **through**
-a Client (`parent_id` = the `brands` id — the same board row covered by two Clients is two grants),
-`campaign` = one campaign.
+Board rows group into Brands by title automatically: the first word, without a URL scheme or domain
+ending (`autoGroupKey` in `src/portal/brand-accounts.ts`) — so `betonline.ag (August/September)`
+and `betonline.ag (June 2026)` are Brand "betonline.ag", and `Watt2Trade Renewal May 2026` joins
+`watt2trade.com`. On the Client page an admin can rename a Brand, move a row into another Brand or a
+new one, or send it back to automatic (`portal_project_settings.group_key`). A Brand's own name, ad
+page and commission live in `portal_group_settings`, keyed by owner + group key, so next month's row
+joins the Brand and gets its settings with nothing re-set.
 
-A campaign counts under exactly one Brand of a Client: the **newest** board row (board order is
+Grant scopes keep the code names: `brand` = a whole Client, `group` = one Brand held **through** a
+Client (`target_id` = `<owner>:<group key>`, `parent_id` = the `brands` id), `campaign` = one
+campaign.
+
+A campaign counts under exactly one board row of a Client: the **newest** row (board order is
 newest first) whose accounts include its account — boards reuse one account for each month's
-engagement (`projectOfAccount`, `src/portal/brand-accounts.ts`). That Brand's settings apply to it,
-and a Brand grant opens exactly those campaigns. An older row sharing the account shows a "shared
-with a newer brand" marker on the Client page, because its settings do not reach them.
+engagement (`projectOfAccount`). Its Brand is that row's group; that Brand's settings apply, and a
+Brand grant opens it. A Brand whose rows share an account with a newer row of ANOTHER Brand shows a
+"shared with a newer brand" marker, because its settings do not reach those campaigns.
 
 The customer portal uses the same meaning: its "All your brands" picker, the `brandIds` filter on
 every `portal*` op, a campaign row's `brandId` and the report's per-brand totals are all Brands
-(board rows, by page id — `portalBrandOf` in `src/portal/scope.ts`), named by the row's title. A
-campaign on an account no covered row lists falls back to its Client, so the Brands always add up
-to the whole.
+(groups, by `<owner>:<group key>` — `portalBrandOf` in `src/portal/scope.ts`). A campaign on an
+account no covered row lists falls back to its Client, so the Brands always add up to the whole.
 
 ## What a customer must never receive
 
@@ -104,8 +112,9 @@ a working default.
    name and profile photo every creative preview shows as the advertiser, whichever Facebook page
    each ad really ran under; blank falls back to the client name and initials; the photo is
    uploaded to Base44's public storage and must be https). Each **Brand** below can override the
-   ad page and/or commission field by field (`portal_project_settings`, keyed by Notion page id);
-   anything it leaves blank inherits the client's value.
+   ad page and/or commission field by field (`portal_group_settings`); anything it leaves blank
+   inherits the client's value. Check the grouping there too — rename a Brand, or move a row the
+   title rule put in the wrong one.
 2. **Check the campaign names.** `/admin/campaigns`. Names default to Meta's own, so a client can
    already see everything — you do not have to name anything for the portal to work. What you
    should do once is filter to **"Needs a look"** and deal with the flagged handful: a name carrying
@@ -128,7 +137,7 @@ a working default.
 5. **Grant access.** A row's _Manage access_ lists every Client, its Brands and their campaigns: a
    whole Client (every campaign it owns, now and in future), one Brand, or single campaigns. A
    grant pointing at a campaign the Client's owner no longer owns is ignored, and so is a Brand
-   grant whose Client no longer covers that board row, so a recycled ad account cannot hand a
+   grant whose Client no longer covers any of its rows, so a recycled ad account cannot hand a
    login somebody else's history.
 
 The client then signs in at the portal URL with that address. Until step 4 they see "you're signed

@@ -966,18 +966,18 @@ export const portalUsers = pgTable("portal_users", {
 });
 
 /**
- * What one portal user may see: whole brands, single Notion projects within a brand, or single
- * campaigns.
+ * What one portal user may see: whole brands (the console's "clients"), one Brand (a group of
+ * board rows) within a brand, or single campaigns.
  *
  * Polymorphic (`scope` + `target_id`) rather than nullable FK columns, because Postgres treats
  * NULLs as distinct and a `unique(user, brand_id)` constraint therefore would not stop duplicate
  * campaign grants. One uniqueness rule covers every kind.
  *
- * A `project` grant is a Notion board row (`target_id` = its page id) seen through ONE brand
- * (`parent_id` = `brands.id`): the brand is what the portal navigates by, and the row is only
- * meaningful through that brand's owner, ownership ladder and settings. `parent_id` is null for
- * the other scopes. `portal_grants_unique` does not include it, so a user holds a given board row
- * through at most one brand — `addPortalGrant` refuses a second. Applied as additive DDL on `meta`:
+ * A `group` grant is one Brand — a group of an owner's board rows, `target_id` = its global id
+ * `<owner clients.id>:<group key>` — seen through ONE brand (`parent_id` = `brands.id`): the brand
+ * is what decides which rows, accounts and settings apply. `parent_id` is null for the other
+ * scopes. `portal_grants_unique` does not include it, so a user holds a given group through at most
+ * one brand — `addPortalGrant` refuses a second. Applied as additive DDL on `meta`:
  *   ALTER TABLE portal_grants ADD COLUMN IF NOT EXISTS parent_id text;
  *   CREATE INDEX IF NOT EXISTS portal_grants_parent_idx ON portal_grants (parent_id);
  *
@@ -992,9 +992,9 @@ export const portalGrants = pgTable(
     portalUserId: text("portal_user_id")
       .notNull()
       .references(() => portalUsers.id, { onDelete: "cascade" }),
-    scope: text("scope").notNull(), // "brand" | "project" | "campaign"
-    targetId: text("target_id").notNull(), // brands.id, a Notion page id, or campaigns.id
-    parentId: text("parent_id"), // brands.id for a "project" grant; null otherwise
+    scope: text("scope").notNull(), // "brand" | "group" | "campaign"
+    targetId: text("target_id").notNull(), // brands.id, a group id, or campaigns.id
+    parentId: text("parent_id"), // brands.id for a "group" grant; null otherwise
     grantedBy: text("granted_by").references(() => users.id, { onDelete: "set null" }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -1006,22 +1006,20 @@ export const portalGrants = pgTable(
 );
 
 /**
- * Per-project overrides of a brand's portal settings — the admin console calls a Notion board row
- * a "brand" and a `brands` row a "client".
+ * Which Brand one Notion board row belongs to, when an admin moved it — the admin console calls a
+ * board row an "engagement" of a Brand, a `brands` row a "client".
  *
- * Sparse: a project with no row, or a null column, inherits the brand's value (`brands.page_name`,
- * `page_avatar_url`, `default_commission`). That inheritance is the point — an owner that adds a
- * board row every month gets the right ad page and rate on the new one with nothing set, while an
- * owner whose rows are genuinely different brands (Slots.lv, Lucky Rebel) can give each its own.
+ * Board rows group into Brands by title automatically (`autoGroupKey` in
+ * `src/portal/brand-accounts.ts`: `betonline.ag (August/September)` and `betonline.ag (June 2026)`
+ * are one Brand). A row here overrides that for one page: `group_key` is another group's key of the
+ * same owner, or a manually named group (`n:<name>`). No row = automatic.
  *
  * Keyed by the Notion page id, which is globally unique; `client_id` records whose board it is on
- * and cascades with the owner. Applied as additive DDL on `meta`:
- *   CREATE TABLE IF NOT EXISTS portal_project_settings (
- *     page_id text PRIMARY KEY,
- *     client_id text NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
- *     page_name text, page_avatar_url text, commission double precision,
- *     updated_at timestamptz NOT NULL DEFAULT now());
- *   CREATE INDEX IF NOT EXISTS portal_project_settings_client_idx ON portal_project_settings (client_id);
+ * and cascades with the owner. Applied as DDL on `meta` (the table had no rows when its per-row
+ * settings columns moved to `portal_group_settings`):
+ *   ALTER TABLE portal_project_settings DROP COLUMN IF EXISTS page_name,
+ *     DROP COLUMN IF EXISTS page_avatar_url, DROP COLUMN IF EXISTS commission,
+ *     ADD COLUMN IF NOT EXISTS group_key text;
  */
 export const portalProjectSettings = pgTable(
   "portal_project_settings",
@@ -1030,12 +1028,41 @@ export const portalProjectSettings = pgTable(
     clientId: text("client_id")
       .notNull()
       .references(() => clients.id, { onDelete: "cascade" }),
-    pageName: text("page_name"),
-    pageAvatarUrl: text("page_avatar_url"),
-    commission: doublePrecision("commission"), // percent uplift; null = the brand's default
+    groupKey: text("group_key"), // null = the automatic group
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [index("portal_project_settings_client_idx").on(t.clientId)],
+);
+
+/**
+ * A Brand's own settings — a Brand being a group of one owner's board rows (see
+ * `portal_project_settings`). Keyed by the owner and the group key, so they survive the owner
+ * adding next month's row: the new row joins the same group and gets the same ad page and rate.
+ *
+ * Sparse: no row, or a null column, inherits — `name` falls back to the derived name, the page
+ * fields and commission to the `brands` row's (`page_name`, `page_avatar_url`,
+ * `default_commission`). Applied as additive DDL on `meta`:
+ *   CREATE TABLE IF NOT EXISTS portal_group_settings (
+ *     client_id text NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
+ *     group_key text NOT NULL,
+ *     name text, page_name text, page_avatar_url text, commission double precision,
+ *     updated_at timestamptz NOT NULL DEFAULT now(),
+ *     PRIMARY KEY (client_id, group_key));
+ */
+export const portalGroupSettings = pgTable(
+  "portal_group_settings",
+  {
+    clientId: text("client_id")
+      .notNull()
+      .references(() => clients.id, { onDelete: "cascade" }),
+    groupKey: text("group_key").notNull(),
+    name: text("name"),
+    pageName: text("page_name"),
+    pageAvatarUrl: text("page_avatar_url"),
+    commission: doublePrecision("commission"), // percent uplift; null = the client's default
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.clientId, t.groupKey] })],
 );
 
 /**

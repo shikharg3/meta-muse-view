@@ -13,9 +13,10 @@ import {
   removePortalGrant,
   removePortalUser,
   replaceBrandAccounts,
+  setProjectGroup,
   updatePortalUserStatus,
   upsertBrand,
-  upsertProjectSettings,
+  upsertBrandGroup,
   upsertCampaignCommission,
   upsertCampaignPresentation,
 } from "@/server/fns/portal-admin";
@@ -113,20 +114,37 @@ export const deleteBrand = defineOp({
 });
 
 /**
- * One project's own ad page and commission — what the admin console calls a brand's settings —
- * overriding the brand ("client") defaults for the campaigns that count under it. Each field is
- * three-valued: omitted = unchanged, null = inherit again, a value = override.
+ * One Brand's name, ad page and commission — a Brand being a group of an owner's board rows —
+ * overriding the client's defaults for every campaign under any of its rows. Each field is
+ * three-valued: omitted = unchanged, null = automatic / inherit again, a value = override.
  */
-export const saveProjectSettings = defineOp({
-  name: staffName("saveProjectSettings"),
+export const saveBrandGroup = defineOp({
+  name: staffName("saveBrandGroup"),
   mode: "write",
   input: z.object({
-    pageId: z.string().min(1),
+    clientId: z.string().min(1),
+    groupKey: z.string().min(1),
+    name: z.string().nullable().optional(),
     pageName: z.string().nullable().optional(),
     pageAvatarUrl: z.string().nullable().optional(),
     commission: money,
   }),
-  handler: (input) => upsertProjectSettings(input),
+  handler: (input) => upsertBrandGroup(input),
+});
+
+/**
+ * Move one board row into another Brand of its owner (`groupKey`), into a new Brand
+ * (`newGroupName`), or back to the one its title puts it in (`groupKey: null`).
+ */
+export const setProjectGroupOp = defineOp({
+  name: staffName("setProjectGroup"),
+  mode: "write",
+  input: z.object({
+    pageId: z.string().min(1),
+    groupKey: z.string().min(1).nullable().optional(),
+    newGroupName: z.string().optional(),
+  }),
+  handler: (input) => setProjectGroup(input),
 });
 
 /**
@@ -242,9 +260,9 @@ export const grantPortalAccess = defineOp({
   mode: "write",
   input: z.object({
     portalUserId: z.string().min(1),
-    scope: z.enum(["brand", "project", "campaign"]),
+    scope: z.enum(["brand", "group", "campaign"]),
     targetId: z.string().min(1),
-    /** The brand a `project` grant is held through; ignored for the other scopes. */
+    /** The brand a `group` grant is held through; ignored for the other scopes. */
     parentId: z.string().min(1).nullable().optional(),
   }),
   handler: (input) => addPortalGrant(input),

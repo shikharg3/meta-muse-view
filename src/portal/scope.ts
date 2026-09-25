@@ -1,7 +1,14 @@
 import { eq, inArray } from "drizzle-orm";
 import { db, schema } from "@/db/client";
 import { ownedCampaignIds } from "@/server/fns/campaign-attribution";
-import { brandAccountIds, coveredProjects, projectOfAccount } from "@/portal/brand-accounts";
+import {
+  brandAccountIds,
+  clientProjects,
+  coveredProjects,
+  groupId,
+  projectGroups,
+  projectOfAccount,
+} from "@/portal/brand-accounts";
 
 /**
  * Who is asking, and exactly what they may see.
@@ -41,23 +48,27 @@ export interface ScopedBrand {
   id: string;
   clientId: string;
   name: string;
-  /** The ad previews' default page name for the brand's projects; null = use `name`. */
+  /** The ad previews' default page name for the brand's groups; null = use `name`. */
   pageName: string | null;
   /** The ad previews' default profile photo, a public https URL; null = initials. */
   pageAvatarUrl: string | null;
-  /** Markup for campaigns whose project and own rate history set none. */
+  /** Markup for campaigns whose group and own rate history set none. */
   defaultCommission: number | null;
   accountIds: string[];
 }
 
 /**
- * One Notion board row a visible campaign counts under, with its per-project overrides. A null
- * field inherits the brand's value; see `portal_project_settings`.
+ * One Brand — a group of an owner's board rows (`projectGroups`) — that a visible campaign counts
+ * under, with its own settings. A null field inherits the brand's value; see `portal_group_settings`.
  */
-export interface ScopedProject {
-  pageId: string;
-  title: string;
+export interface ScopedGroup {
+  /** Global: `<owner clients.id>:<key>` (`groupId`). */
+  id: string;
+  key: string;
+  clientId: string;
+  /** The `brands` row it was reached through. */
   brandId: string;
+  name: string;
   pageName: string | null;
   pageAvatarUrl: string | null;
   commission: number | null;
@@ -73,12 +84,13 @@ export interface PortalScope {
   /** Owning brand per visible campaign, for grouping and labelling. */
   brandOf: Map<string, string>;
   /**
-   * The project each visible campaign counts under (`projectOfAccount`). Absent for a campaign on
-   * an account no covered project lists — it inherits the brand's settings.
+   * The group each visible campaign counts under: the group of the newest covered board row
+   * listing its account (`projectOfAccount`). Absent for a campaign on an account no covered row
+   * lists — it inherits the brand's settings.
    */
-  projectOf: Map<string, string>;
-  /** The projects `projectOf` points at, by page id. */
-  projects: Map<string, ScopedProject>;
+  groupOf: Map<string, string>;
+  /** The groups `groupOf` points at, by global id. */
+  groups: Map<string, ScopedGroup>;
 }
 
 const EMPTY_SCOPE = (actor: PortalActor): PortalScope => ({
@@ -87,9 +99,56 @@ const EMPTY_SCOPE = (actor: PortalActor): PortalScope => ({
   campaignIds: [],
   aliasOf: new Map(),
   brandOf: new Map(),
-  projectOf: new Map(),
-  projects: new Map(),
+  groupOf: new Map(),
+  groups: new Map(),
 });
+
+/** What grouping an owner's board rows needs from the database, per owner (`clients.id`). */
+export interface GroupInputs {
+  /** Page id → group key, for rows an admin moved. */
+  overrides: Map<string, Map<string, string>>;
+  /** Group key → that group's settings row. */
+  settings: Map<string, Map<string, typeof schema.portalGroupSettings.$inferSelect>>;
+}
+
+/** Load the row moves and group settings of the given owners, in two queries. */
+export async function loadGroupInputs(clientIds: string[]): Promise<GroupInputs> {
+  const inputs: GroupInputs = { overrides: new Map(), settings: new Map() };
+  if (clientIds.length === 0) return inputs;
+  const [moves, settings] = await Promise.all([
+    db
+      .select({
+        pageId: schema.portalProjectSettings.pageId,
+        clientId: schema.portalProjectSettings.clientId,
+        groupKey: schema.portalProjectSettings.groupKey,
+      })
+      .from(schema.portalProjectSettings)
+      .where(inArray(schema.portalProjectSettings.clientId, clientIds)),
+    db
+      .select()
+      .from(schema.portalGroupSettings)
+      .where(inArray(schema.portalGroupSettings.clientId, clientIds)),
+  ]);
+  for (const m of moves) {
+    if (!m.groupKey) continue;
+    let map = inputs.overrides.get(m.clientId);
+    if (!map) inputs.overrides.set(m.clientId, (map = new Map()));
+    map.set(m.pageId, m.groupKey);
+  }
+  for (const s of settings) {
+    let map = inputs.settings.get(s.clientId);
+    if (!map) inputs.settings.set(s.clientId, (map = new Map()));
+    map.set(s.groupKey, s);
+  }
+  return inputs;
+}
+
+/** The admin-set names of one owner's groups, as `projectGroups` takes them. */
+export function groupNames(inputs: GroupInputs, clientId: string): Map<string, string> {
+  const names = new Map<string, string>();
+  for (const [key, s] of inputs.settings.get(clientId) ?? []) if (s.name) names.set(key, s.name);
+  return names;
+}
 
 /**
  * Resolve the email the portal proxy asserted.
@@ -132,11 +191,11 @@ export async function touchPortalActor(id: string): Promise<void> {
  * Everything `actor` may see.
  *
  * Grants are read first, then the brands they point at are loaded and each brand's campaigns are
- * resolved through its client's ownership. A campaign or project grant is intersected with the
+ * resolved through its client's ownership. A campaign or group grant is intersected with the
  * same ownership result rather than trusted directly: a grant left behind after an account was
  * recycled would otherwise hand a client a campaign that now belongs to somebody else.
  *
- * Only a `brand` grant opens a whole brand. A brand reached through a project or campaign grant
+ * Only a `brand` grant opens a whole brand. A brand reached through a group or campaign grant
  * is resolved so those campaigns can be found, and nothing more — the sets are kept apart so that
  * reaching a brand can never be mistaken for being granted it.
  */
@@ -155,18 +214,18 @@ export async function portalScope(actor: PortalActor): Promise<PortalScope> {
 
   const wholeBrands = new Set<string>();
   const campaigns = new Set<string>();
-  const projects = new Map<string, Set<string>>();
+  const groups = new Map<string, Set<string>>();
   for (const g of grants) {
     if (g.scope === "brand") wholeBrands.add(g.targetId);
     else if (g.scope === "campaign") campaigns.add(g.targetId);
-    else if (g.scope === "project" && g.parentId) {
-      const set = projects.get(g.parentId);
+    else if (g.scope === "group" && g.parentId) {
+      const set = groups.get(g.parentId);
       if (set) set.add(g.targetId);
-      else projects.set(g.parentId, new Set([g.targetId]));
+      else groups.set(g.parentId, new Set([g.targetId]));
     }
   }
 
-  const toResolve = new Set<string>([...wholeBrands, ...projects.keys()]);
+  const toResolve = new Set<string>([...wholeBrands, ...groups.keys()]);
   // A campaign grant implies its brand, which is only discoverable through the campaign's account.
   if (campaigns.size > 0) {
     const rows = await db
@@ -181,15 +240,15 @@ export async function portalScope(actor: PortalActor): Promise<PortalScope> {
   }
   if (toResolve.size === 0) return EMPTY_SCOPE(actor);
 
-  return brandScope(actor, [...toResolve], { wholeBrands, projects, campaigns });
+  return brandScope(actor, [...toResolve], { wholeBrands, groups, campaigns });
 }
 
 /** How much of a brand a caller may see, when the brand itself was not granted outright. */
 export interface GrantNarrowing {
   /** Brands granted outright — every campaign the brand owns is visible. */
   wholeBrands: ReadonlySet<string>;
-  /** Project grants: brand id → the Notion page ids granted within it. */
-  projects: ReadonlyMap<string, ReadonlySet<string>>;
+  /** Group grants: brand id → the group ids granted within it. */
+  groups: ReadonlyMap<string, ReadonlySet<string>>;
   /** Campaigns granted individually, for a brand reached only through such a grant. */
   campaigns: ReadonlySet<string>;
 }
@@ -198,23 +257,22 @@ export interface GrantNarrowing {
  * Which of one brand's campaigns a caller may see.
  *
  * Everything, for a brand granted outright; for any other brand, only campaigns granted
- * individually or counting under a project granted WITHIN THIS BRAND — a project grant held
- * through another brand opens nothing here. `projectId` is the campaign's project from
- * `projectOfAccount`, absent when no covered project lists its account, and such a campaign is
- * never reachable through a project grant.
+ * individually or counting under a group granted WITHIN THIS BRAND — a group grant held through
+ * another brand opens nothing here. `groupId` is the campaign's group, absent when no covered row
+ * lists its account, and such a campaign is never reachable through a group grant.
  */
 export function visibleUnderGrants(
   brandId: string,
-  campaigns: readonly { id: string; projectId: string | undefined }[],
+  campaigns: readonly { id: string; groupId: string | undefined }[],
   narrowing: GrantNarrowing,
 ): string[] {
   if (narrowing.wholeBrands.has(brandId)) return campaigns.map((c) => c.id);
-  const granted = narrowing.projects.get(brandId);
+  const granted = narrowing.groups.get(brandId);
   return campaigns
     .filter(
       (c) =>
         narrowing.campaigns.has(c.id) ||
-        (c.projectId !== undefined && granted !== undefined && granted.has(c.projectId)),
+        (c.groupId !== undefined && granted !== undefined && granted.has(c.groupId)),
     )
     .map((c) => c.id);
 }
@@ -259,16 +317,20 @@ async function brandScope(
 
   // One query for every client involved, rather than one per brand inside the loop below: two
   // brands on the same client is the normal case, and this used to re-read the same row each time.
-  const clientRows = await db
-    .select({
-      id: schema.clients.id,
-      notionAccountIds: schema.clients.notionAccountIds,
-      manualAddIds: schema.clients.manualAddIds,
-      manualRemoveIds: schema.clients.manualRemoveIds,
-      raw: schema.clients.raw,
-    })
-    .from(schema.clients)
-    .where(inArray(schema.clients.id, [...new Set(brandRows.map((b) => b.clientId))]));
+  const ownerIds = [...new Set(brandRows.map((b) => b.clientId))];
+  const [clientRows, inputs] = await Promise.all([
+    db
+      .select({
+        id: schema.clients.id,
+        notionAccountIds: schema.clients.notionAccountIds,
+        manualAddIds: schema.clients.manualAddIds,
+        manualRemoveIds: schema.clients.manualRemoveIds,
+        raw: schema.clients.raw,
+      })
+      .from(schema.clients)
+      .where(inArray(schema.clients.id, ownerIds)),
+    loadGroupInputs(ownerIds),
+  ]);
   const clientById = new Map(clientRows.map((c) => [c.id, c]));
 
   const brands: ScopedBrand[] = [];
@@ -278,8 +340,11 @@ async function brandScope(
   // campaigns are already being read per brand and re-querying them for the name would double the
   // round trips on the portal's hottest path.
   const metaName = new Map<string, string>();
-  const projectOf = new Map<string, string>();
-  const projectMeta = new Map<string, { title: string; brandId: string }>();
+  const groupOf = new Map<string, string>();
+  const groupMeta = new Map<
+    string,
+    { key: string; clientId: string; brandId: string; name: string }
+  >();
   for (const b of brandRows) {
     const clientRow = clientById.get(b.clientId);
     if (!clientRow) continue;
@@ -299,9 +364,15 @@ async function brandScope(
       defaultCommission: b.defaultCommission,
       accountIds: usable,
     };
-    const covered = coveredProjects(b.projectIds, clientRow.raw);
-    const projectOfAcct = projectOfAccount(covered, usable);
-    const titleOf = new Map(covered.map((p) => [p.pageId, p.title]));
+    // Groups are formed over the owner's WHOLE board, so a Brand has the same members and name in
+    // every client that covers part of it; attribution then only looks at the rows this one covers.
+    const groupOfPage = new Map<string, { key: string; name: string }>();
+    const all = clientProjects(clientRow.raw);
+    const overrides = inputs.overrides.get(b.clientId);
+    for (const g of projectGroups(all, overrides, groupNames(inputs, b.clientId))) {
+      for (const p of g.projects) groupOfPage.set(p.pageId, { key: g.key, name: g.name });
+    }
+    const projectOfAcct = projectOfAccount(coveredProjects(b.projectIds, clientRow.raw), usable);
 
     // null = "no ownership restriction needed", i.e. every campaign on these accounts is this
     // client's. Otherwise it is the explicit whitelist.
@@ -320,7 +391,11 @@ async function brandScope(
 
     const ownedCampaigns = onAccounts
       .filter((c) => ownedSet === null || ownedSet.has(c.id))
-      .map((c) => ({ id: c.id, projectId: projectOfAcct.get(c.accountId) }));
+      .map((c) => {
+        const pageId = projectOfAcct.get(c.accountId);
+        const g = pageId === undefined ? undefined : groupOfPage.get(pageId);
+        return { id: c.id, group: g, groupId: g && groupId(b.clientId, g.key) };
+      });
     const wanted = new Set(visibleUnderGrants(b.id, ownedCampaigns, narrowing));
     if (wanted.size === 0) continue;
 
@@ -328,9 +403,14 @@ async function brandScope(
       if (!wanted.has(c.id)) continue;
       visible.add(c.id);
       brandOf.set(c.id, b.id);
-      if (c.projectId === undefined) continue;
-      projectOf.set(c.id, c.projectId);
-      projectMeta.set(c.projectId, { title: titleOf.get(c.projectId) ?? "", brandId: b.id });
+      if (!c.group || !c.groupId) continue;
+      groupOf.set(c.id, c.groupId);
+      groupMeta.set(c.groupId, {
+        key: c.group.key,
+        clientId: b.clientId,
+        brandId: b.id,
+        name: c.group.name,
+      });
     }
     brands.push(brand);
   }
@@ -369,28 +449,17 @@ async function brandScope(
 
   const campaignIds = [...visible].filter((id) => aliasOf.has(id));
   for (const id of [...brandOf.keys()]) if (!aliasOf.has(id)) brandOf.delete(id);
-  for (const id of [...projectOf.keys()]) if (!aliasOf.has(id)) projectOf.delete(id);
+  for (const id of [...groupOf.keys()]) if (!aliasOf.has(id)) groupOf.delete(id);
   const keptBrands = new Set(brandOf.values());
 
-  // Per-project overrides, one query for every project a visible campaign counts under.
-  const pageIds = [...new Set(projectOf.values())];
-  const settingsRows =
-    pageIds.length === 0
-      ? []
-      : await db
-          .select()
-          .from(schema.portalProjectSettings)
-          .where(inArray(schema.portalProjectSettings.pageId, pageIds));
-  const settingsOf = new Map(settingsRows.map((s) => [s.pageId, s]));
-  const projects = new Map<string, ScopedProject>();
-  for (const pageId of pageIds) {
-    const meta = projectMeta.get(pageId);
+  const groups = new Map<string, ScopedGroup>();
+  for (const id of new Set(groupOf.values())) {
+    const meta = groupMeta.get(id);
     if (!meta) continue;
-    const s = settingsOf.get(pageId);
-    projects.set(pageId, {
-      pageId,
-      title: meta.title,
-      brandId: meta.brandId,
+    const s = inputs.settings.get(meta.clientId)?.get(meta.key);
+    groups.set(id, {
+      id,
+      ...meta,
       pageName: s?.pageName ?? null,
       pageAvatarUrl: s?.pageAvatarUrl ?? null,
       commission: s?.commission ?? null,
@@ -403,30 +472,30 @@ async function brandScope(
     campaignIds,
     aliasOf,
     brandOf,
-    projectOf,
-    projects,
+    groupOf,
+    groups,
   };
 }
 
 /**
  * The portal's "brand" for a campaign — what a customer picks under "All your brands".
  *
- * A customer's brands are the Notion board rows the admin console also calls brands: a campaign's
- * portal brand is the row it counts under (`projectOf`, page id). A campaign on an account that no
- * covered row lists (a manual addition) falls back to its `brands` row, so EVERY visible campaign
- * has exactly one portal brand and the brands' figures always add up to "All your brands".
+ * A customer's brands are the Brands the admin console shows: groups of an owner's board rows
+ * (`groupOf`, global id). A campaign on an account that no covered row lists (a manual addition)
+ * falls back to its `brands` row, so EVERY visible campaign has exactly one portal brand and the
+ * brands' figures always add up to "All your brands".
  */
 export function portalBrandOf(
-  scope: Pick<PortalScope, "projectOf" | "brandOf">,
+  scope: Pick<PortalScope, "groupOf" | "brandOf">,
   campaignId: string,
 ): string | undefined {
-  return scope.projectOf.get(campaignId) ?? scope.brandOf.get(campaignId);
+  return scope.groupOf.get(campaignId) ?? scope.brandOf.get(campaignId);
 }
 
 /**
  * The brands a customer can switch between: one per portal brand holding a visible campaign,
- * named by its board row's title (or, for the fallback, by the client's name), sorted by name.
- * A row covered by two of the customer's clients appears once — it is keyed by page id.
+ * named by its group's name (or, for the fallback, by the client's name), sorted by name. A group
+ * reached through two of the customer's clients appears once — it is keyed by its global id.
  */
 export function portalBrands(scope: PortalScope): { id: string; name: string }[] {
   const clientName = new Map(scope.brands.map((b) => [b.id, b.name]));
@@ -434,10 +503,7 @@ export function portalBrands(scope: PortalScope): { id: string; name: string }[]
   for (const id of scope.campaignIds) {
     const key = portalBrandOf(scope, id);
     if (key === undefined || named.has(key)) continue;
-    const project = scope.projects.get(key);
-    const name = project
-      ? project.title.trim() || clientName.get(project.brandId)
-      : clientName.get(key);
+    const name = scope.groups.get(key)?.name ?? clientName.get(key);
     if (name) named.set(key, name);
   }
   return [...named]
@@ -451,7 +517,7 @@ export function portalBrands(scope: PortalScope): { id: string; name: string }[]
  * The request's ids are treated as a FILTER over what the user already has, never as a lookup: an
  * id the user was not granted contributes nothing instead of widening the scope. An empty or absent
  * selection — or one naming nothing in scope, such as a saved selection from before brands were
- * board rows — means "everything in scope", which is what "All your brands" sends.
+ * groups — means "everything in scope", which is what "All your brands" sends.
  *
  * The clients (`brands`) of the kept campaigns stay in the narrowed scope, because commission and
  * the ad page still inherit from them.
@@ -471,32 +537,32 @@ export function narrowToPortalBrands(
   });
   const brandOf = new Map<string, string>();
   const aliasOf = new Map<string, string>();
-  const projectOf = new Map<string, string>();
+  const groupOf = new Map<string, string>();
   for (const id of campaignIds) {
     const brandId = scope.brandOf.get(id);
     if (brandId !== undefined) brandOf.set(id, brandId);
     const alias = scope.aliasOf.get(id);
     if (alias !== undefined) aliasOf.set(id, alias);
-    const pageId = scope.projectOf.get(id);
-    if (pageId !== undefined) projectOf.set(id, pageId);
+    const gid = scope.groupOf.get(id);
+    if (gid !== undefined) groupOf.set(id, gid);
   }
   const clientIds = new Set(brandOf.values());
-  const pageIds = new Set(projectOf.values());
+  const groupIds = new Set(groupOf.values());
   return {
     actor: scope.actor,
     brands: scope.brands.filter((b) => clientIds.has(b.id)),
     campaignIds,
     aliasOf,
     brandOf,
-    projectOf,
-    projects: new Map([...scope.projects].filter(([pageId]) => pageIds.has(pageId))),
+    groupOf,
+    groups: new Map([...scope.groups].filter(([id]) => groupIds.has(id))),
   };
 }
 
 /**
  * The markup a campaign falls back to when it has no rate history of its own, for `markupRows`:
- * its project's commission, else its brand's default, else `fallback`. Inheritance runs one way —
- * a project only ever overrides its brand, never the other way round.
+ * its group's commission, else its brand's default, else `fallback`. Inheritance runs one way —
+ * a group only ever overrides its brand, never the other way round.
  */
 export function defaultCommissionLookup(
   scope: PortalScope,
@@ -505,10 +571,9 @@ export function defaultCommissionLookup(
   const byBrand = new Map<string, number>();
   for (const b of scope.brands) byBrand.set(b.id, b.defaultCommission ?? fallback);
   return (campaignId) => {
-    const pageId = scope.projectOf.get(campaignId);
-    const projectRate =
-      pageId === undefined ? null : (scope.projects.get(pageId)?.commission ?? null);
-    if (projectRate !== null) return projectRate;
+    const gid = scope.groupOf.get(campaignId);
+    const groupRate = gid === undefined ? null : (scope.groups.get(gid)?.commission ?? null);
+    if (groupRate !== null) return groupRate;
     const brandId = scope.brandOf.get(campaignId);
     const rate = brandId === undefined ? undefined : byBrand.get(brandId);
     return rate ?? fallback;

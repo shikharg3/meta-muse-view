@@ -1,8 +1,11 @@
 import { describe, expect, it } from "bun:test";
 import {
+  autoGroupKey,
+  baseTitle,
   brandAccountIds,
   clientProjects,
   coveredProjects,
+  projectGroups,
   projectOfAccount,
   projectSelection,
 } from "@/portal/brand-accounts";
@@ -113,5 +116,72 @@ describe("projectOfAccount", () => {
   it("attributes nothing for an account the brand does not resolve to", () => {
     // act_2 was removed from the client (or narrowed away), so no project may claim it.
     expect(projectOfAccount(clientProjects(board), ["act_1"]).has("act_2")).toBe(false);
+  });
+});
+
+describe("brand groups", () => {
+  const rows = (titles: string[]) =>
+    clientProjects(titles.map((title, i) => ({ pageId: `p${i}`, title, accountIds: [] })));
+  const grouping = (titles: string[]) =>
+    projectGroups(rows(titles)).map((g) => [g.name, g.projects.map((p) => p.title)]);
+
+  it("groups an owner's engagements of one brand, however the rows are titled", () => {
+    // Real board titles (2026-09-25): a month in brackets, a word after, a stray bracket, a link.
+    expect(
+      grouping([
+        "betonline.ag (September/October)",
+        "betonline.ag (June 2026)",
+        "Watt2Trade Renewal May 2026",
+        "watt2trade.com",
+        "wildcasino.ag (May/June 2026))",
+        "https://playquack.com/ (2)",
+        "https://playquack.com/",
+      ]),
+    ).toEqual([
+      ["betonline.ag", ["betonline.ag (September/October)", "betonline.ag (June 2026)"]],
+      ["watt2trade.com", ["Watt2Trade Renewal May 2026", "watt2trade.com"]],
+      ["wildcasino.ag", ["wildcasino.ag (May/June 2026))"]],
+      ["playquack.com", ["https://playquack.com/ (2)", "https://playquack.com/"]],
+    ]);
+  });
+
+  it("keeps different brands of one owner apart", () => {
+    expect(
+      grouping([
+        "Slots.lv",
+        "CafeCasino",
+        "Lucky Rebel",
+        "genesysaffiliates.com",
+        "genesysone.com",
+      ]),
+    ).toHaveLength(5);
+  });
+
+  it("lets an admin move a row, and names a group after the admin's name when set", () => {
+    const board = rows(["acrpoker.eu Money Maker", "ACR Poker"]);
+    const [only] = projectGroups(
+      board,
+      new Map([["p1", "acrpoker"]]),
+      new Map([["acrpoker", "ACR"]]),
+    );
+    expect(only.projects.map((p) => p.pageId)).toEqual(["p0", "p1"]);
+    expect([only.name, only.autoName, only.named, [...only.moved]]).toEqual([
+      "ACR",
+      "ACR Poker",
+      true,
+      ["p1"],
+    ]);
+  });
+
+  it("gives a row with no letters or digits its own group rather than pooling them", () => {
+    expect(projectGroups(rows(["???", "!!!"])).map((g) => g.key)).toEqual(["row:p0", "row:p1"]);
+  });
+
+  it("derives keys and names from the title alone", () => {
+    expect([autoGroupKey("PlayW3_BeTheBoss"), autoGroupKey("www.bspin.io (April)")]).toEqual([
+      "playw3",
+      "bspin",
+    ]);
+    expect(baseTitle("solflare.com (#3) Card Waitlist")).toBe("solflare.com (#3) Card Waitlist");
   });
 });

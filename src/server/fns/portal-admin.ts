@@ -4,14 +4,21 @@ import { db, schema } from "@/db/client";
 import { addDays } from "@/lib/range";
 import { LIVE_STATUSES } from "@/notion/parse";
 import {
+  autoGroupKey,
   brandAccountIds,
   clientProjects,
   coveredProjects,
+  groupId,
+  manualGroupKey,
+  projectGroups,
   projectOfAccount,
   projectSelection,
+  type ClientProject,
+  type ProjectGroup,
 } from "@/portal/brand-accounts";
 import { PORTAL_DEFAULT_COMMISSION } from "@/portal/markup";
 import { clientTokens, reviewName, type NameFlag } from "@/portal/name-review";
+import { groupNames, loadGroupInputs, type GroupInputs } from "@/portal/scope";
 import { effectiveAccountIds } from "@/sync/jobs/clients";
 import { audit, requireAdmin } from "./auth";
 import { loadCampaignOwnership, ownedCampaignIds } from "./campaign-attribution";
@@ -45,6 +52,9 @@ export interface ClientProjectView {
   droppedAccountCount: number;
   /** Campaigns this client owns across those accounts. */
   campaignCount: number;
+  /** The Brand (group of rows) it belongs to — `projectGroups`. */
+  groupKey: string;
+  groupName: string;
 }
 
 /**
@@ -79,6 +89,15 @@ export async function fetchClientProjects(clientId: string): Promise<ClientProje
   const effective = new Set(effectiveAccountIds(client));
   const projects = clientProjects(client.raw);
   if (projects.length === 0) return [];
+  const inputs = await loadGroupInputs([clientId]);
+  const groupOfPage = new Map<string, { key: string; name: string }>();
+  for (const g of projectGroups(
+    projects,
+    inputs.overrides.get(clientId),
+    groupNames(inputs, clientId),
+  )) {
+    for (const p of g.projects) groupOfPage.set(p.pageId, { key: g.key, name: g.name });
+  }
 
   const allAccountIds = [
     ...new Set(projects.flatMap((p) => p.accountIds).filter((id) => effective.has(id))),
@@ -112,6 +131,8 @@ export async function fetchClientProjects(clientId: string): Promise<ClientProje
       accountIds: [...new Set(accountIds)].sort(),
       droppedAccountCount: p.accountIds.length - accountIds.length,
       campaignCount: new Set(ids).size,
+      groupKey: groupOfPage.get(p.pageId)?.key ?? "",
+      groupName: groupOfPage.get(p.pageId)?.name ?? p.title,
       order,
     };
   });
@@ -123,23 +144,39 @@ export async function fetchClientProjects(clientId: string): Promise<ClientProje
 
 // ── Brands ─────────────────────────────────────────────────────────────────────────────────────
 
-/**
- * One Notion project a brand covers, with its per-project overrides — the admin console calls a
- * project a "brand" and a brand a "client".
- */
-export interface BrandProjectView {
+/** One engagement (Notion board row) inside a Brand, as a client covers it. */
+export interface BrandGroupRowView {
   pageId: string;
   title: string;
   status: string | null;
   live: boolean;
   /**
-   * Campaigns that count under this project for this brand: those on its accounts, owned by the
-   * brand's client, whose account no NEWER project of the brand also lists (`projectOfAccount`).
+   * Campaigns that count under this row for this client: those on its accounts, owned by the
+   * client's owner, whose account no NEWER covered row also lists (`projectOfAccount`).
    */
   campaignIds: string[];
-  /** Accounts this project lists that count under a newer project instead, so its settings lose. */
+  /** "moved" = an admin put the row in this Brand; "auto" = its title did. */
+  placement: "auto" | "moved";
+}
+
+/**
+ * One Brand a client covers — a group of its owner's board rows (`projectGroups`) — with the
+ * Brand's own settings. The admin console calls a group a "brand" and a brands row a "client".
+ */
+export interface BrandGroupView {
+  /** Global id `<owner>:<key>` — what grants and the portal use. */
+  id: string;
+  /** Owner-scoped key — what `saveBrandGroup` / `setProjectGroup` take. */
+  key: string;
+  name: string;
+  autoName: string;
+  named: boolean;
+  /** The rows this client covers in the Brand, board order (newest first). */
+  projects: BrandGroupRowView[];
+  campaignIds: string[];
+  /** Accounts its rows list that count under ANOTHER Brand of this client, so its settings lose. */
   sharedAccountIds: string[];
-  /** Overrides; null inherits the brand's own value. */
+  /** Overrides; null inherits the client's own value. */
   pageName: string | null;
   pageAvatarUrl: string | null;
   commission: number | null;
@@ -150,7 +187,7 @@ export interface BrandAdminView {
   clientId: string;
   clientName: string;
   name: string;
-  /** The default page name ad previews show for this brand's projects; null = the brand name. */
+  /** The default page name ad previews show for this brand's groups; null = the brand name. */
   pageName: string | null;
   /** The default profile photo, a public https URL; null = initials. */
   pageAvatarUrl: string | null;
@@ -160,9 +197,9 @@ export interface BrandAdminView {
   accountIds: string[];
   /** `null` = follows the client, including engagements it has not won yet. */
   projectIds: string[] | null;
-  /** The projects this brand covers, in board order (newest first). */
-  projects: BrandProjectView[];
-  /** Projects on the client's Notion board in total. */
+  /** The Brands (groups) this client covers, ordered by their newest row. */
+  groups: BrandGroupView[];
+  /** Board rows the owner has in total. */
   projectCount: number;
   /** How many of those this brand covers. Equal to `projectCount` when it follows the client. */
   selectedProjectCount: number;
@@ -188,7 +225,7 @@ export interface BrandAdminView {
  */
 export async function fetchBrands(): Promise<BrandAdminView[]> {
   await requireAdmin();
-  const [brandRows, clientRows, overrideRows, hiddenRows, settingsRows] = await Promise.all([
+  const [brandRows, clientRows, overrideRows, hiddenRows] = await Promise.all([
     db.select().from(schema.brands),
     db
       .select({
@@ -205,13 +242,12 @@ export async function fetchBrands(): Promise<BrandAdminView[]> {
       .select({ campaignId: schema.portalCampaigns.campaignId })
       .from(schema.portalCampaigns)
       .where(eq(schema.portalCampaigns.hidden, true)),
-    db.select().from(schema.portalProjectSettings),
   ]);
   if (brandRows.length === 0) return [];
 
   const clientById = new Map(clientRows.map((c) => [c.id, c]));
-  const settingsOf = new Map(settingsRows.map((s) => [s.pageId, s]));
   const hidden = new Set(hiddenRows.map((r) => r.campaignId));
+  const inputs = await loadGroupInputs([...new Set(brandRows.map((b) => b.clientId))]);
 
   const overridesByBrand = new Map<string, string[]>();
   for (const m of overrideRows) {
@@ -258,25 +294,58 @@ export async function fetchBrands(): Promise<BrandAdminView[]> {
       const all = clientProjects(client?.raw);
       const selection = projectSelection(b.projectIds);
       const covered = coveredProjects(b.projectIds, client?.raw);
+      const coveredIds = new Set(covered.map((p) => p.pageId));
       const projectOfAcct = projectOfAccount(covered, accountIds);
       const usable = new Set(accountIds);
 
-      const projects = covered.map((p): BrandProjectView => {
-        const listed = [...new Set(p.accountIds.filter((a) => usable.has(a)))];
-        const mine = listed.filter((a) => projectOfAcct.get(a) === p.pageId);
-        const s = settingsOf.get(p.pageId);
-        return {
-          pageId: p.pageId,
-          title: p.title,
-          status: p.status,
-          live: p.status !== null && LIVE_STATUSES.includes(p.status),
-          campaignIds: mine.flatMap((a) => campaignsByAccount.get(a) ?? []).filter(isOwned),
-          sharedAccountIds: listed.filter((a) => projectOfAcct.get(a) !== p.pageId).sort(),
+      // Formed over the owner's whole board, exactly as `portalScope()` forms them, then cut to
+      // the rows this client covers.
+      const formed = projectGroups(
+        all,
+        inputs.overrides.get(b.clientId),
+        groupNames(inputs, b.clientId),
+      );
+      const keyOfPage = new Map<string, string>();
+      for (const g of formed) for (const p of g.projects) keyOfPage.set(p.pageId, g.key);
+
+      const groups: BrandGroupView[] = [];
+      for (const g of formed) {
+        const rows = g.projects.filter((p) => coveredIds.has(p.pageId));
+        if (rows.length === 0) continue;
+        const listed = new Set<string>();
+        const projects = rows.map((p): BrandGroupRowView => {
+          const mine: string[] = [];
+          for (const a of new Set(p.accountIds)) {
+            if (!usable.has(a)) continue;
+            listed.add(a);
+            if (projectOfAcct.get(a) === p.pageId) mine.push(a);
+          }
+          return {
+            pageId: p.pageId,
+            title: p.title,
+            status: p.status,
+            live: p.status !== null && LIVE_STATUSES.includes(p.status),
+            campaignIds: mine.flatMap((a) => campaignsByAccount.get(a) ?? []).filter(isOwned),
+            placement: g.moved.has(p.pageId) ? "moved" : "auto",
+          };
+        });
+        const s = inputs.settings.get(b.clientId)?.get(g.key);
+        groups.push({
+          id: groupId(b.clientId, g.key),
+          key: g.key,
+          name: g.name,
+          autoName: g.autoName,
+          named: g.named,
+          projects,
+          campaignIds: projects.flatMap((p) => p.campaignIds),
+          sharedAccountIds: [...listed]
+            .filter((a) => keyOfPage.get(projectOfAcct.get(a) ?? "") !== g.key)
+            .sort(),
           pageName: s?.pageName ?? null,
           pageAvatarUrl: s?.pageAvatarUrl ?? null,
           commission: s?.commission ?? null,
-        };
-      });
+        });
+      }
 
       return {
         id: b.id,
@@ -288,7 +357,7 @@ export async function fetchBrands(): Promise<BrandAdminView[]> {
         defaultCommission: b.defaultCommission ?? PORTAL_DEFAULT_COMMISSION,
         accountIds,
         projectIds: selection,
-        projects,
+        groups,
         projectCount: all.length,
         selectedProjectCount: covered.length,
         campaignCount: ids.length,
@@ -444,26 +513,51 @@ export async function upsertBrand(
   return { ok: true, id };
 }
 
-export interface SaveProjectSettingsInput {
-  /** The Notion page id of the project (a board row). */
-  pageId: string;
-  /** Absent = unchanged, null or blank = inherit the brand's value again. */
+/** Longest Brand name an admin may set — a picker entry, not a paragraph. */
+const GROUP_NAME_MAX = 80;
+
+/** An owner's board rows and the Brands they group into. */
+interface OwnerBoard {
+  projects: ClientProject[];
+  groups: ProjectGroup[];
+}
+
+/** An owner's board, grouped exactly as the portal groups it. */
+async function ownerGroups(clientId: string): Promise<OwnerBoard | null> {
+  const [client] = await db
+    .select({ raw: schema.clients.raw })
+    .from(schema.clients)
+    .where(eq(schema.clients.id, clientId));
+  if (!client) return null;
+  const projects = clientProjects(client.raw);
+  const inputs = await loadGroupInputs([clientId]);
+  return {
+    projects,
+    groups: projectGroups(projects, inputs.overrides.get(clientId), groupNames(inputs, clientId)),
+  };
+}
+
+export interface SaveBrandGroupInput {
+  /** The OWNER (`clients.id`) whose board the group is on. */
+  clientId: string;
+  groupKey: string;
+  /** Each field: absent = unchanged; null or blank = back to automatic / inherited. */
+  name?: string | null;
   pageName?: string | null;
   pageAvatarUrl?: string | null;
   commission?: number | null;
 }
 
 /**
- * Set a project's own ad page and/or commission, overriding the brand's defaults for the campaigns
- * that count under it (see `projectOfAccount`).
+ * Rename a Brand, or set its own ad page and commission — overriding the client's defaults for
+ * every campaign that counts under any of its rows, including rows the owner adds next month.
  *
- * Only keys the caller sent are touched, as for brands. The project must be a row on some client's
- * board — found through `clients.raw` — which is also where the row's client id comes from, so a
- * settings row can never be filed under the wrong client. A row whose every override is cleared is
- * kept rather than deleted: it is inert (all nulls inherit) and deleting would race a concurrent save.
+ * Only keys the caller sent are touched, as for brands. The group must exist on the owner's board
+ * now; a settings row whose every field is cleared is kept rather than deleted — it is inert (all
+ * nulls inherit) and deleting would race a concurrent save.
  */
-export async function upsertProjectSettings(
-  input: SaveProjectSettingsInput,
+export async function upsertBrandGroup(
+  input: SaveBrandGroupInput,
 ): Promise<{ ok: boolean; error?: string }> {
   await requireAdmin();
   const page = pageFields(input);
@@ -471,35 +565,105 @@ export async function upsertProjectSettings(
   if (input.commission != null && !(Number.isFinite(input.commission) && input.commission >= 0)) {
     return { ok: false, error: "Commission cannot be negative" };
   }
+  const name = input.name === undefined ? undefined : input.name?.trim() || null;
+  if (name && name.length > GROUP_NAME_MAX) {
+    return { ok: false, error: `Brand name must be ${GROUP_NAME_MAX} characters or fewer` };
+  }
 
-  const clientRows = await db
-    .select({ id: schema.clients.id, raw: schema.clients.raw })
-    .from(schema.clients)
-    .where(sql`${schema.clients.raw} @> ${JSON.stringify([{ pageId: input.pageId }])}::jsonb`);
-  const owner = clientRows.find((c) =>
-    clientProjects(c.raw).some((p) => p.pageId === input.pageId),
-  );
-  if (!owner) return { ok: false, error: "That brand is not on any client's Notion board" };
-  const title =
-    clientProjects(owner.raw).find((p) => p.pageId === input.pageId)?.title ?? input.pageId;
+  const board = await ownerGroups(input.clientId);
+  if (!board) return { ok: false, error: `Unknown owner "${input.clientId}"` };
+  const group = board.groups.find((g) => g.key === input.groupKey);
+  if (!group) return { ok: false, error: "That brand is not on this owner's Notion board" };
 
-  const fields: Partial<typeof schema.portalProjectSettings.$inferInsert> = { ...page.fields };
+  const fields: Partial<typeof schema.portalGroupSettings.$inferInsert> = { ...page.fields };
+  if (name !== undefined) fields.name = name;
   if (input.commission !== undefined) fields.commission = input.commission;
 
   await db
+    .insert(schema.portalGroupSettings)
+    .values({ clientId: input.clientId, groupKey: input.groupKey, ...fields })
+    .onConflictDoUpdate({
+      target: [schema.portalGroupSettings.clientId, schema.portalGroupSettings.groupKey],
+      set: { ...fields, updatedAt: new Date() },
+    });
+  await audit(
+    "portal.group.update",
+    `${name ?? group.name} (${groupId(input.clientId, group.key)})`,
+  );
+  return { ok: true };
+}
+
+export interface SetProjectGroupInput {
+  pageId: string;
+  /** An existing group key of the same owner, or null for the row's automatic group. */
+  groupKey?: string | null;
+  /** Start a new Brand with this name instead. */
+  newGroupName?: string;
+}
+
+/**
+ * Move one board row into another Brand of the same owner, into a new Brand, or back to the one
+ * its title puts it in.
+ *
+ * The owner comes from the board (`clients.raw`), never from the caller, so a row cannot be filed
+ * under someone else. Moving a row back to its automatic group stores null rather than the key, so
+ * the row keeps following its title. A new Brand's key is namespaced (`manualGroupKey`) so it cannot
+ * collide with an automatic one, and its name is stored unless that Brand already has one.
+ */
+export async function setProjectGroup(
+  input: SetProjectGroupInput,
+): Promise<{ ok: boolean; error?: string; groupKey?: string }> {
+  await requireAdmin();
+  const owners = await db
+    .select({ id: schema.clients.id, raw: schema.clients.raw })
+    .from(schema.clients)
+    .where(sql`${schema.clients.raw} @> ${JSON.stringify([{ pageId: input.pageId }])}::jsonb`);
+  const owner = owners.find((c) => clientProjects(c.raw).some((p) => p.pageId === input.pageId));
+  if (!owner) return { ok: false, error: "That row is not on any owner's Notion board" };
+  const board = await ownerGroups(owner.id);
+  const row = board?.projects.find((p) => p.pageId === input.pageId);
+  if (!board || !row) return { ok: false, error: "That row is not on any owner's Notion board" };
+  const automatic = autoGroupKey(row.title) || `row:${row.pageId}`;
+
+  let key: string;
+  if (input.newGroupName !== undefined) {
+    const name = input.newGroupName.trim();
+    if (!name) return { ok: false, error: "Name the new brand" };
+    if (name.length > GROUP_NAME_MAX) {
+      return { ok: false, error: `Brand name must be ${GROUP_NAME_MAX} characters or fewer` };
+    }
+    key = manualGroupKey(name);
+    await db
+      .insert(schema.portalGroupSettings)
+      .values({ clientId: owner.id, groupKey: key, name })
+      .onConflictDoUpdate({
+        target: [schema.portalGroupSettings.clientId, schema.portalGroupSettings.groupKey],
+        set: { name: sql`coalesce(${schema.portalGroupSettings.name}, excluded.name)` },
+      });
+  } else if (input.groupKey) {
+    if (!board.groups.some((g) => g.key === input.groupKey)) {
+      return { ok: false, error: "That brand is not on this owner's Notion board" };
+    }
+    key = input.groupKey;
+  } else {
+    key = automatic;
+  }
+
+  const stored = key === automatic ? null : key;
+  await db
     .insert(schema.portalProjectSettings)
-    .values({ pageId: input.pageId, clientId: owner.id, ...fields })
+    .values({ pageId: row.pageId, clientId: owner.id, groupKey: stored })
     .onConflictDoUpdate({
       target: schema.portalProjectSettings.pageId,
-      set: { ...fields, clientId: owner.id, updatedAt: new Date() },
+      set: { clientId: owner.id, groupKey: stored, updatedAt: new Date() },
     });
-  await audit("portal.project.update", `${title} (${input.pageId})`);
-  return { ok: true };
+  await audit("portal.group.move", `${row.title} (${row.pageId}) -> ${stored ?? "automatic"}`);
+  return { ok: true, groupKey: key };
 }
 
 /**
  * Delete a brand, its account mapping and every grant that pointed at it — whole-brand grants and
- * the project grants held through it.
+ * the group grants held through it.
  *
  * `brand_accounts` cascades, but `portal_grants.target_id` and `parent_id` deliberately carry no FK
  * (they are polymorphic), so nothing in the database cleans those up. A leftover grant is not
@@ -520,7 +684,7 @@ export async function removeBrand(input: { id: string }): Promise<{ ok: boolean;
     .where(
       or(
         and(eq(schema.portalGrants.scope, "brand"), eq(schema.portalGrants.targetId, input.id)),
-        and(eq(schema.portalGrants.scope, "project"), eq(schema.portalGrants.parentId, input.id)),
+        and(eq(schema.portalGrants.scope, "group"), eq(schema.portalGrants.parentId, input.id)),
       ),
     )
     .returning({ id: schema.portalGrants.id });
@@ -929,19 +1093,41 @@ export async function removeCampaignCommission(input: {
 
 // ── Portal users and access ────────────────────────────────────────────────────────────────────
 
-export type PortalGrantScope = "brand" | "project" | "campaign";
+export type PortalGrantScope = "brand" | "group" | "campaign";
 export type PortalUserStatus = "pending" | "approved" | "rejected";
+
+/**
+ * The Brands (groups) a brands row covers — each group with at least one covered board row — by
+ * global id, named. What a `group` grant held through that brands row can open.
+ */
+function coveredGroupNames(
+  brand: { clientId: string; projectIds: unknown },
+  raw: unknown,
+  inputs: GroupInputs,
+): Map<string, string> {
+  const covered = new Set(coveredProjects(brand.projectIds, raw).map((p) => p.pageId));
+  const out = new Map<string, string>();
+  for (const g of projectGroups(
+    clientProjects(raw),
+    inputs.overrides.get(brand.clientId),
+    groupNames(inputs, brand.clientId),
+  )) {
+    if (g.projects.some((p) => covered.has(p.pageId)))
+      out.set(groupId(brand.clientId, g.key), g.name);
+  }
+  return out;
+}
 
 export interface PortalGrantView {
   id: string;
   scope: PortalGrantScope;
-  /** A brand id, a Notion page id (project) or a campaign id. */
+  /** A brand id, a group's global id (`<owner>:<key>`) or a campaign id. */
   targetId: string;
-  /** For a project grant, the brand it is held through; null otherwise. */
+  /** For a group grant, the brand it is held through; null otherwise. */
   parentId: string | null;
   /**
-   * Brand name, project title, or a campaign's client-facing name. Null when the target no longer
-   * exists — including a project its brand no longer covers.
+   * Brand name, group name, or a campaign's client-facing name. Null when the target no longer
+   * exists — including a group its brand no longer covers any row of.
    */
   targetName: string | null;
   createdAt: string;
@@ -1002,36 +1188,33 @@ export async function fetchPortalUsers(): Promise<PortalUserView[]> {
             .where(inArray(schema.campaigns.id, campaignTargets)),
         ]);
 
-  // A project grant is named by its row title, read from the owning client's board through the
-  // brand it is held by — and only while that brand still covers it, so a grant the scope would
-  // ignore reads as dangling here too.
-  const parentIds = new Set(
-    grantRows.filter((g) => g.scope === "project" && g.parentId).map((g) => g.parentId),
-  );
+  // A group grant is named by its group, formed from the owning client's board through the brand
+  // it is held by — and only while that brand still covers one of its rows, so a grant the scope
+  // would ignore reads as dangling here too.
   const brandById = new Map(brandRows.map((b) => [b.id, b]));
-  const ownerIds = [
+  const groupParents = [
     ...new Set(
-      [...parentIds]
-        .map((id) => brandById.get(id ?? "")?.clientId)
-        .filter((id): id is string => Boolean(id)),
+      grantRows.filter((g) => g.scope === "group" && g.parentId).map((g) => g.parentId ?? ""),
     ),
-  ];
-  const ownerRows =
+  ]
+    .map((id) => brandById.get(id))
+    .filter((b): b is (typeof brandRows)[number] => Boolean(b));
+  const ownerIds = [...new Set(groupParents.map((b) => b.clientId))];
+  const [ownerRows, inputs] = await Promise.all([
     ownerIds.length === 0
       ? []
-      : await db
+      : db
           .select({ id: schema.clients.id, raw: schema.clients.raw })
           .from(schema.clients)
-          .where(inArray(schema.clients.id, ownerIds));
+          .where(inArray(schema.clients.id, ownerIds)),
+    loadGroupInputs(ownerIds),
+  ]);
   const rawOf = new Map(ownerRows.map((c) => [c.id, c.raw]));
-  const projectTitle = (brandId: string | null, pageId: string): string | null => {
-    const brand = brandById.get(brandId ?? "");
-    if (!brand) return null;
-    const p = coveredProjects(brand.projectIds, rawOf.get(brand.clientId)).find(
-      (x) => x.pageId === pageId,
-    );
-    return p ? p.title || pageId : null;
-  };
+  const groupsOfBrand = new Map(
+    groupParents.map((b) => [b.id, coveredGroupNames(b, rawOf.get(b.clientId), inputs)]),
+  );
+  const groupName = (brandId: string | null, id: string): string | null =>
+    groupsOfBrand.get(brandId ?? "")?.get(id) ?? null;
 
   const campaignName = new Map(campaignRows.map((c) => [c.id, c.name]));
   for (const a of aliasRows) if (a.alias) campaignName.set(a.campaignId, a.alias);
@@ -1040,18 +1223,18 @@ export async function fetchPortalUsers(): Promise<PortalUserView[]> {
   const grantsByUser = new Map<string, PortalGrantView[]>();
   for (const g of grantRows) {
     const scope: PortalGrantScope =
-      g.scope === "campaign" ? "campaign" : g.scope === "project" ? "project" : "brand";
+      g.scope === "campaign" ? "campaign" : g.scope === "group" ? "group" : "brand";
     const targetName =
       scope === "brand"
         ? brandById.get(g.targetId)?.name
-        : scope === "project"
-          ? projectTitle(g.parentId, g.targetId)
+        : scope === "group"
+          ? groupName(g.parentId, g.targetId)
           : campaignName.get(g.targetId);
     const view: PortalGrantView = {
       id: g.id,
       scope,
       targetId: g.targetId,
-      parentId: scope === "project" ? g.parentId : null,
+      parentId: scope === "group" ? g.parentId : null,
       targetName: targetName ?? null,
       createdAt: g.createdAt.toISOString(),
     };
@@ -1148,13 +1331,13 @@ export async function removePortalUser(input: {
 }
 
 /**
- * Give a portal user a brand, one project within a brand, or a single campaign.
+ * Give a portal user a brand, one Brand (group of board rows) within a brand, or a single campaign.
  *
  * Idempotent: `portal_grants_unique` already forbids a duplicate, so re-granting is a no-op rather
  * than an error the operator has to read. The target is checked because `target_id` has no FK and a
  * grant for something that does not exist is silently ignored when the scope resolves — the operator
- * would be told access was given and the client would still see nothing. For a project that means
- * the brand (`parentId`) must exist and currently cover the project.
+ * would be told access was given and the client would still see nothing. For a group that means
+ * the brand (`parentId`) must exist and currently cover one of the group's rows.
  */
 export async function addPortalGrant(input: {
   portalUserId: string;
@@ -1175,11 +1358,12 @@ export async function addPortalGrant(input: {
       .from(schema.brands)
       .where(eq(schema.brands.id, input.targetId));
     if (!brand) return { ok: false, error: "Brand not found" };
-  } else if (input.scope === "project") {
+  } else if (input.scope === "group") {
     if (!input.parentId)
       return { ok: false, error: "A brand grant needs the client it belongs to" };
     const [brand] = await db
       .select({
+        clientId: schema.brands.clientId,
         projectIds: schema.brands.projectIds,
         raw: schema.clients.raw,
       })
@@ -1187,10 +1371,11 @@ export async function addPortalGrant(input: {
       .innerJoin(schema.clients, eq(schema.clients.id, schema.brands.clientId))
       .where(eq(schema.brands.id, input.parentId));
     if (!brand) return { ok: false, error: "Client not found" };
-    if (!coveredProjects(brand.projectIds, brand.raw).some((p) => p.pageId === input.targetId)) {
+    const inputs = await loadGroupInputs([brand.clientId]);
+    if (!coveredGroupNames(brand, brand.raw, inputs).has(input.targetId)) {
       return { ok: false, error: "That brand is not one this client covers" };
     }
-    // `portal_grants_unique` is (user, scope, target), so the same board row held through a second
+    // `portal_grants_unique` is (user, scope, target), so the same group held through a second
     // client would be swallowed by `onConflictDoNothing` below and reported as granted. Say so.
     const [held] = await db
       .select({ parentId: schema.portalGrants.parentId })
@@ -1198,7 +1383,7 @@ export async function addPortalGrant(input: {
       .where(
         and(
           eq(schema.portalGrants.portalUserId, input.portalUserId),
-          eq(schema.portalGrants.scope, "project"),
+          eq(schema.portalGrants.scope, "group"),
           eq(schema.portalGrants.targetId, input.targetId),
         ),
       );
@@ -1223,7 +1408,7 @@ export async function addPortalGrant(input: {
       portalUserId: input.portalUserId,
       scope: input.scope,
       targetId: input.targetId,
-      parentId: input.scope === "project" ? (input.parentId ?? null) : null,
+      parentId: input.scope === "group" ? (input.parentId ?? null) : null,
       grantedBy: admin.id,
     })
     .onConflictDoNothing();

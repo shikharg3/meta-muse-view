@@ -91,10 +91,12 @@ describe("creativePageResolver", () => {
     defaultCommission: null,
     accountIds: [],
   };
-  const project = (pageId: string, pageName: string | null, pageAvatarUrl: string | null) => ({
-    pageId,
-    title: pageId,
+  const group = (key: string, pageName: string | null, pageAvatarUrl: string | null) => ({
+    id: `owner:${key}`,
+    key,
+    clientId: "owner",
     brandId: "b1",
+    name: key,
     pageName,
     pageAvatarUrl,
     commission: null,
@@ -106,24 +108,24 @@ describe("creativePageResolver", () => {
       ["c_inherit", "b1"],
       ["c_bare", "b_bare"],
     ]),
-    projectOf: new Map([
-      ["c_named", "p_named"],
-      ["c_inherit", "p_inherit"],
+    groupOf: new Map([
+      ["c_named", "owner:sports"],
+      ["c_inherit", "owner:casino"],
     ]),
-    projects: new Map([
-      ["p_named", project("p_named", "Acme Sports", null)],
-      ["p_inherit", project("p_inherit", null, null)],
+    groups: new Map([
+      ["owner:sports", group("sports", "Acme Sports", null)],
+      ["owner:casino", group("casino", null, null)],
     ]),
   });
 
-  it("overrides field by field, so a project that renames its page keeps the client's photo", () => {
+  it("overrides field by field, so a brand that renames its page keeps the client's photo", () => {
     expect(pageOf("c_named")).toEqual({
       name: "Acme Sports",
       avatarUrl: "https://media.example/acme.png",
     });
   });
 
-  it("inherits the client's ad page when the project sets nothing", () => {
+  it("inherits the client's ad page when the brand sets nothing", () => {
     expect(pageOf("c_inherit")).toEqual({
       name: "Acme Casino",
       avatarUrl: "https://media.example/acme.png",

@@ -117,6 +117,109 @@ export function projectOfAccount(
   return owner;
 }
 
+// ── Brands: groups of board rows ────────────────────────────────────────────────────────────────
+
+/** URL scheme, then `www.`: a title typed as a link ("https://playquack.com/") names its site. */
+const SCHEME = /^[a-z][a-z0-9+.-]*:\/\//i;
+
+/**
+ * The automatic group key of a board row title: its first word, lowercased, without a URL scheme,
+ * `www.` or domain ending.
+ *
+ * Boards add a row per engagement and title each one after the brand plus whatever tells them
+ * apart: "betonline.ag (August/September)", "betonline.ag (June 2026)", "Watt2Trade Renewal May
+ * 2026" beside "watt2trade.com", "Farside (2)" beside "farside.app", "BSpin August 2026" beside
+ * "bspin.io (April 2026)". The first word is the part they share; stripping only a trailing bracket
+ * would merge the first pair and miss the rest (measured on the live board, 2026-09-25). Two
+ * genuinely different brands of one owner that start with the same word are rarer, and an admin can
+ * move a row (`portal_project_settings.group_key`). Empty when the title has no letters or digits.
+ */
+export function autoGroupKey(title: string): string {
+  const s = title
+    .trim()
+    .toLowerCase()
+    .replace(SCHEME, "")
+    .replace(/^www\./, "");
+  return s.match(/[\p{L}\p{N}]+(?:-[\p{L}\p{N}]+)*/u)?.[0] ?? "";
+}
+
+/**
+ * A row title as a Brand name: without trailing "( … )" groups — repeatedly, so a stray extra
+ * bracket goes too — URL scheme, `www.` and trailing slashes. "wildcasino.ag (May/June 2026))" →
+ * "wildcasino.ag", "https://playquack.com/" → "playquack.com".
+ */
+export function baseTitle(title: string): string {
+  let s = title.trim();
+  for (;;) {
+    const next = s.replace(/\s*\([^()]*\)+\s*$/, "").trim();
+    if (next === s) break;
+    s = next;
+  }
+  return s
+    .replace(SCHEME, "")
+    .replace(/^www\./i, "")
+    .replace(/\/+$/, "")
+    .trim();
+}
+
+/** The key of a Brand an admin named by hand. Prefixed so it can never collide with an automatic key. */
+export const manualGroupKey = (name: string): string =>
+  `n:${name.trim().toLowerCase().replace(/\s+/g, " ")}`;
+
+/** A group's global id — owner plus key, because keys are only unique within one owner's board. */
+export const groupId = (clientId: string, key: string): string => `${clientId}:${key}`;
+
+/** One Brand: an owner's board rows that are the same brand, newest row first. */
+export interface ProjectGroup {
+  key: string;
+  /** The admin's name when set, else `autoName`. */
+  name: string;
+  /** The shortest `baseTitle` of its rows (ties → the newest). */
+  autoName: string;
+  named: boolean;
+  projects: ClientProject[];
+  /** Page ids an admin moved into this group, rather than the title putting them here. */
+  moved: Set<string>;
+}
+
+/**
+ * Group an owner's board rows into Brands.
+ *
+ * `overrides` is page id → group key for rows an admin moved; `names` is group key → admin-set name.
+ * Groups come out ordered by their newest row, rows inside a group in board order — so the first
+ * group is the owner's current engagement and the first row of a group its current month.
+ */
+export function projectGroups(
+  projects: readonly ClientProject[],
+  overrides: ReadonlyMap<string, string> = new Map(),
+  names: ReadonlyMap<string, string> = new Map(),
+): ProjectGroup[] {
+  const byKey = new Map<string, ProjectGroup>();
+  for (const p of projects) {
+    const override = overrides.get(p.pageId);
+    const key = override || autoGroupKey(p.title) || `row:${p.pageId}`;
+    let group = byKey.get(key);
+    if (!group) {
+      group = { key, name: "", autoName: "", named: false, projects: [], moved: new Set() };
+      byKey.set(key, group);
+    }
+    group.projects.push(p);
+    if (override) group.moved.add(p.pageId);
+  }
+  for (const group of byKey.values()) {
+    let auto = "";
+    for (const p of group.projects) {
+      const b = baseTitle(p.title);
+      if (b && (!auto || b.length < auto.length)) auto = b;
+    }
+    group.autoName = auto || group.projects[0]?.title.trim() || "Untitled brand";
+    const named = names.get(group.key)?.trim();
+    group.named = Boolean(named);
+    group.name = named || group.autoName;
+  }
+  return [...byKey.values()];
+}
+
 /**
  * The accounts a brand covers.
  *

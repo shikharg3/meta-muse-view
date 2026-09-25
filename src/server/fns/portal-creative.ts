@@ -380,24 +380,25 @@ export async function fetchPortalCreatives(input: PortalCreativesInput): Promise
 }
 
 /**
- * The page a campaign's ads show as the advertiser, field by field: the project's override, else
- * the brand's default ad page, else the brand's own name (and no photo, so the card draws initials).
+ * The page a campaign's ads show as the advertiser, field by field: its Brand's (group's) override,
+ * else the client's default ad page, else the client's own name (and no photo, so the card draws
+ * initials).
  *
  * Resolved from the scope that already decided what the caller may see, so a card can only ever
- * carry the page of a brand — and a project — in that scope. Field-wise on purpose: a project that
- * sets only its own name keeps the brand's photo rather than losing it.
+ * carry the page of a client — and a group — in that scope. Field-wise on purpose: a group that
+ * sets only its own name keeps the client's photo rather than losing it.
  */
 export function creativePageResolver(
-  scope: Pick<PortalScope, "brands" | "brandOf" | "projectOf" | "projects">,
+  scope: Pick<PortalScope, "brands" | "brandOf" | "groupOf" | "groups">,
 ): (campaignId: string) => CreativePage | null {
   const brandById = new Map(scope.brands.map((b) => [b.id, b]));
   return (campaignId) => {
     const brand = brandById.get(scope.brandOf.get(campaignId) ?? "");
     if (!brand) return null;
-    const project = scope.projects.get(scope.projectOf.get(campaignId) ?? "");
+    const group = scope.groups.get(scope.groupOf.get(campaignId) ?? "");
     return {
-      name: project?.pageName ?? brand.pageName ?? brand.name,
-      avatarUrl: project?.pageAvatarUrl ?? brand.pageAvatarUrl,
+      name: group?.pageName ?? brand.pageName ?? brand.name,
+      avatarUrl: group?.pageAvatarUrl ?? brand.pageAvatarUrl,
     };
   };
 }
