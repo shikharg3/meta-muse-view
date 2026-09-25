@@ -128,12 +128,17 @@ a working default.
    report re-run for an old month must still say what it said.
 4. **Invite the login.** `/admin/users` → _Invite user_. This records the address in
    `portal_users` and then asks Base44 to email the person: with no password, Base44's own invite
-   email (`users.inviteUser`); with a password the admin types, `auth.register` creates the account
-   and Base44 emails a one-time code the person enters once at first sign-in (the login screen has
-   a "Have a verification code?" step). Base44 has no way to set an already-verified password. The
-   Mail button on a row re-sends the invite. The email **must match their Base44 login address
-   exactly**; an unknown address is refused rather than created. Then set them `approved` —
-   pending grants nothing at all, not even a read.
+   email (`users.inviteUser`), where they choose a password. With a password the admin types,
+   `auth.register` creates the account and Base44 emails a bare 6-digit code — no link, no
+   explanation — that must be entered once before the first sign-in. So the console also sends a
+   setup email (`integrations.Core.SendEmail`, "Activate your DotAnalytics account") with a link to
+   `/activate?email=…` and the steps, optionally including the password. The activation page takes
+   email, code and password on one screen, can email a fresh code, and signs them in. If the setup
+   email fails, the invite form shows the same instructions to copy. A row's Mail menu re-sends
+   activation instructions (without the password), sends Base44's invite link, or copies the
+   activation link. Base44 has no way to set an already-verified password. The email **must match
+   their Base44 login address exactly**; an unknown address is refused rather than created. Then
+   set them `approved` — pending grants nothing at all, not even a read.
 5. **Grant access.** A row's _Manage access_ lists every Client, its Brands and their campaigns: a
    whole Client (every campaign it owns, now and in future), one Brand, or single campaigns. A
    grant pointing at a campaign the Client's owner no longer owns is ignored, and so is a Brand
