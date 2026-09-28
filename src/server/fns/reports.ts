@@ -433,12 +433,40 @@ export async function markReportExported(input: {
 }
 
 /**
+ * Delete one run from the ledger — drafts and exported runs alike.
+ *
+ * Permanent: the frozen payload is the only copy of what the client received, and nothing
+ * references a run (no FK points at `report_runs`), so the row simply goes. The audit line therefore
+ * carries enough to say afterwards which report it was.
+ */
+export async function deleteRun(input: { id: string }): Promise<{ ok: boolean; error?: string }> {
+  await requireApproved();
+  const [deleted] = await db
+    .delete(schema.reportRuns)
+    .where(eq(schema.reportRuns.id, input.id))
+    .returning({
+      clientId: schema.reportRuns.clientId,
+      since: schema.reportRuns.since,
+      until: schema.reportRuns.until,
+      exportedAt: schema.reportRuns.exportedAt,
+    });
+  if (!deleted) return { ok: false, error: "Report not found" };
+  const exported = deleted.exportedAt ? `exported ${deleted.exportedAt.toISOString()}` : "draft";
+  await audit(
+    "report.run.delete",
+    `${deleted.clientId} ${deleted.since}→${deleted.until}, ${exported} (${input.id})`,
+  );
+  return { ok: true };
+}
+
+/**
  * Drop never-exported drafts. Called from the sync worker's daily gate, so deliberately WITHOUT
  * `requireApproved()` — there is no session cookie in the worker process.
  *
  * Only drafts are touched: an exported run is the frozen record of what a client received and is
- * kept indefinitely. Cutoff computed in JS to match the sibling prune (`pruneSyncEvents` in
- * `src/sync/state.ts`) rather than introduce a second style; worker and Postgres share the droplet.
+ * kept until someone deletes it from the history (`deleteRun`). Cutoff computed in JS to match the
+ * sibling prune (`pruneSyncEvents` in `src/sync/state.ts`) rather than introduce a second style;
+ * worker and Postgres share the droplet.
  */
 export async function pruneReportDrafts(): Promise<number> {
   const cutoff = new Date(Date.now() - DRAFT_RETENTION_DAYS * 86_400_000);

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   createReportRun,
+  deleteRun,
   deleteTemplate,
   fetchReportRun,
   fetchReportRuns,
@@ -104,6 +105,14 @@ export const stampReportExport = defineOp({
   mode: "write",
   input: z.object({ runId: z.string().min(1), format: z.enum(["csv", "pdf"]) }),
   handler: (input) => markReportExported(input),
+});
+
+/** Permanent, like `deleteReportTemplate`; the delegate audits which report went. */
+export const deleteReportRun = defineOp({
+  name: "deleteReportRun",
+  mode: "write",
+  input: idOnly,
+  handler: (input) => deleteRun(input),
 });
 
 /**
