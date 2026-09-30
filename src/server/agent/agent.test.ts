@@ -4,7 +4,7 @@ import { db, schema } from "@/db/client";
 import { resolveClient, runTool } from "./tools";
 import type { ToolContext } from "./tools/kit";
 import { runReport } from "./report";
-import { runAgentLoop, MAX_ITERATIONS, type ChatResult } from "./chat";
+import { runAgentLoop, staffToolbox, MAX_ITERATIONS, type ChatResult } from "./chat";
 import type { CreateMessageParams, AnthropicResponse, LlmClient } from "./anthropic";
 
 /** The agent tests exercise every tool, including admin-gated ones. */
@@ -341,7 +341,7 @@ test("runAgentLoop executes requested tools, captures KPI cards, and terminates"
     llm,
     "system",
     [{ role: "user", content: "stats for Wild last 7 days" }],
-    { model: "claude-opus-5", effort: "xhigh", ctx: CTX },
+    { model: "claude-opus-5", effort: "xhigh", toolbox: staffToolbox(CTX), volatile: "" },
   );
   expect(out.reply).toContain("$200");
   expect(out.toolCalls).toMatchObject([
@@ -363,7 +363,8 @@ test("runAgentLoop stops at the iteration cap if the model never finishes", asyn
   const out = await runAgentLoop(looping, "system", [{ role: "user", content: "loop" }], {
     model: "claude-opus-5",
     effort: "low",
-    ctx: CTX,
+    toolbox: staffToolbox(CTX),
+    volatile: "",
   });
   expect(out.reply).toContain("couldn't finish");
   // Bound to the constant, not a copy of it: the number changed once and only this line noticed.

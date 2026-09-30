@@ -5,11 +5,13 @@ import {
   fetchBrands,
   fetchClientProjects,
   fetchCampaignCommission,
+  fetchDefaultCommission,
   bulkCampaignPresentation,
   fetchCampaignPresentation,
   fetchPortalUsers,
   removeBrand,
   removeCampaignCommission,
+  removeDefaultCommission,
   removePortalGrant,
   removePortalUser,
   replaceBrandAccounts,
@@ -18,6 +20,7 @@ import {
   upsertBrand,
   upsertBrandGroup,
   upsertCampaignCommission,
+  upsertDefaultCommission,
   upsertCampaignPresentation,
 } from "@/server/fns/portal-admin";
 import { runPortalOpAs } from "@/server/fns/portal-view-as";
@@ -38,7 +41,7 @@ import * as portalReportOps from "./portal-report";
  *
  * The delegates all open with `requireAdmin()` and write an `audit()` entry per mutation, so no op
  * here adds a guard of its own. Like the infra ops, the schemas leave field-level rules (a required
- * name, a non-negative rate) to the delegates, which answer with `{ok:false,error}` for the admin
+ * name, a rate within 0–100%) to the delegates, which answer with `{ok:false,error}` for the admin
  * screen to render inline; a schema minimum would replace that sentence with a parse failure.
  */
 
@@ -59,7 +62,6 @@ const brandId = z.object({ brandId: z.string().min(1) });
 const campaignId = z.object({ campaignId: z.string().min(1) });
 /** Ad-account ids are `act_<digits>` everywhere; anything else can never join to a campaign. */
 const accountId = z.string().regex(/^act_\d+$/, "Expected an act_<digits> ad account id");
-const money = z.number().finite().nullable().optional();
 
 // ── Projects
 
@@ -87,8 +89,6 @@ export const saveBrand = defineOp({
     clientId: z.string().min(1),
     /** Omitted on create = the client's own name; omitted on update = unchanged. */
     name: z.string().nullable().optional(),
-    /** Omitted on create = the default rate; omitted on update = unchanged; null = the default. */
-    defaultCommission: money,
     /**
      * `null` = follow the client (the default for a new brand, and what makes a future engagement
      * appear by itself). An array = exactly those Notion page ids. OMITTED on an update = leave
@@ -114,9 +114,10 @@ export const deleteBrand = defineOp({
 });
 
 /**
- * One Brand's name, ad page and commission — a Brand being a group of an owner's board rows —
- * overriding the client's defaults for every campaign under any of its rows. Each field is
- * three-valued: omitted = unchanged, null = automatic / inherit again, a value = override.
+ * One Brand's name and ad page — a Brand being a group of an owner's board rows — overriding the
+ * client's for every campaign under any of its rows. Each field is three-valued: omitted =
+ * unchanged, null = automatic / inherit again, a value = override. Its commission is a dated
+ * schedule: `saveDefaultCommission` with `kind: "group"`.
  */
 export const saveBrandGroup = defineOp({
   name: staffName("saveBrandGroup"),
@@ -127,7 +128,6 @@ export const saveBrandGroup = defineOp({
     name: z.string().nullable().optional(),
     pageName: z.string().nullable().optional(),
     pageAvatarUrl: z.string().nullable().optional(),
-    commission: money,
   }),
   handler: (input) => upsertBrandGroup(input),
 });
@@ -204,6 +204,13 @@ export const saveCampaignPresentationBulk = defineOp({
 });
 
 // ── Commission
+//
+// Every level is a dated schedule: an entry applies from `fromDate` until the next entry of the
+// same level, and a day with none falls to the level below — campaign, then Brand (`group`), then
+// Client (`brand`), then 10%. Every list returns `CommissionScheduleView`: the level's own
+// entries plus the server-resolved `timeline` of what is billed, so no screen re-derives the
+// margin. Rates and date bounds (0–100%, 2020-01-01 to a year ahead) are checked by the delegates,
+// which answer with a sentence for the dialog.
 
 export const listCampaignCommission = defineOp({
   name: staffName("listCampaignCommission"),
@@ -224,6 +231,48 @@ export const deleteCampaignCommission = defineOp({
   mode: "write",
   input: campaignId.extend({ fromDate: ymd }),
   handler: (input) => removeCampaignCommission(input),
+});
+
+/** A Client's default: `targetId` = `brands.id`. */
+const clientDefault = z.object({ kind: z.literal("brand"), targetId: z.string().min(1) });
+/**
+ * A Brand's rate: `targetId` = its global id `<owner>:<key>`, addressed through the client
+ * (`brandId` = `brands.id`) whose page it is edited on — the default it inherits.
+ */
+const brandRate = z.object({
+  kind: z.literal("group"),
+  targetId: z.string().min(1),
+  brandId: z.string().min(1),
+});
+/** `rate: null` = from `fromDate`, inherit the level below instead of setting a rate. */
+const defaultEntry = { fromDate: ymd, rate: z.number().nullable() };
+
+export const listDefaultCommission = defineOp({
+  name: staffName("listDefaultCommission"),
+  mode: "read",
+  input: z.discriminatedUnion("kind", [clientDefault, brandRate]),
+  handler: (input) => fetchDefaultCommission(input),
+});
+
+export const saveDefaultCommission = defineOp({
+  name: staffName("saveDefaultCommission"),
+  mode: "write",
+  input: z.discriminatedUnion("kind", [
+    clientDefault.extend(defaultEntry),
+    brandRate.extend(defaultEntry),
+  ]),
+  handler: (input) => upsertDefaultCommission(input),
+});
+
+export const deleteDefaultCommission = defineOp({
+  name: staffName("deleteDefaultCommission"),
+  mode: "write",
+  input: z.object({
+    kind: z.enum(["brand", "group"]),
+    targetId: z.string().min(1),
+    fromDate: ymd,
+  }),
+  handler: (input) => removeDefaultCommission(input),
 });
 
 // ── Portal users and access

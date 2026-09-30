@@ -9,6 +9,12 @@ import {
   projectGroups,
   projectOfAccount,
 } from "@/portal/brand-accounts";
+import {
+  defaultRateOn,
+  loadDefaultCommissions,
+  type DefaultCommissionPeriod,
+  type DefaultRateLookup,
+} from "@/portal/markup";
 
 /**
  * Who is asking, and exactly what they may see.
@@ -52,8 +58,12 @@ export interface ScopedBrand {
   pageName: string | null;
   /** The ad previews' default profile photo, a public https URL; null = initials. */
   pageAvatarUrl: string | null;
-  /** Markup for campaigns whose group and own rate history set none. */
-  defaultCommission: number | null;
+  /**
+   * The Client default's dated schedule (`commission_defaults`), oldest first — what a campaign
+   * day falls back to when neither the campaign nor its Brand has an entry in force. Empty = the
+   * agency default throughout.
+   */
+  commission: DefaultCommissionPeriod[];
   accountIds: string[];
 }
 
@@ -71,7 +81,8 @@ export interface ScopedGroup {
   name: string;
   pageName: string | null;
   pageAvatarUrl: string | null;
-  commission: number | null;
+  /** Its own dated commission schedule, oldest first. Empty = the Client's throughout. */
+  commission: DefaultCommissionPeriod[];
 }
 
 export interface PortalScope {
@@ -333,18 +344,13 @@ async function brandScope(
   ]);
   const clientById = new Map(clientRows.map((c) => [c.id, c]));
 
-  const brands: ScopedBrand[] = [];
-  const brandOf = new Map<string, string>();
-  const visible = new Set<string>();
+  // Commission schedules are attached at the end, in one query for every brand and group kept.
+  const brands: Omit<ScopedBrand, "commission">[] = [];
   // Meta's own campaign name, which is the default client-facing label. Collected here because the
   // campaigns are already being read per brand and re-querying them for the name would double the
   // round trips on the portal's hottest path.
   const metaName = new Map<string, string>();
-  const groupOf = new Map<string, string>();
-  const groupMeta = new Map<
-    string,
-    { key: string; clientId: string; brandId: string; name: string }
-  >();
+  const claims: CampaignClaim[] = [];
   for (const b of brandRows) {
     const clientRow = clientById.get(b.clientId);
     if (!clientRow) continue;
@@ -355,13 +361,12 @@ async function brandScope(
     const usable = brandAccountIds(b.projectIds, clientRow, overridesByBrand.get(b.id) ?? []);
     if (usable.length === 0) continue;
 
-    const brand: ScopedBrand = {
+    const brand: Omit<ScopedBrand, "commission"> = {
       id: b.id,
       clientId: b.clientId,
       name: b.name,
       pageName: b.pageName,
       pageAvatarUrl: b.pageAvatarUrl,
-      defaultCommission: b.defaultCommission,
       accountIds: usable,
     };
     // Groups are formed over the owner's WHOLE board, so a Brand has the same members and name in
@@ -399,22 +404,17 @@ async function brandScope(
     const wanted = new Set(visibleUnderGrants(b.id, ownedCampaigns, narrowing));
     if (wanted.size === 0) continue;
 
-    for (const c of ownedCampaigns) {
-      if (!wanted.has(c.id)) continue;
-      visible.add(c.id);
-      brandOf.set(c.id, b.id);
-      if (!c.group || !c.groupId) continue;
-      groupOf.set(c.id, c.groupId);
-      groupMeta.set(c.groupId, {
-        key: c.group.key,
-        clientId: b.clientId,
-        brandId: b.id,
-        name: c.group.name,
-      });
-    }
+    claims.push({
+      brandId: b.id,
+      clientId: b.clientId,
+      name: b.name,
+      campaigns: ownedCampaigns.filter((c) => wanted.has(c.id)),
+    });
     brands.push(brand);
   }
 
+  const { brandOf, groupOf, groupMeta } = claimCampaigns(claims);
+  const visible = new Set(brandOf.keys());
   if (visible.size === 0) return EMPTY_SCOPE(actor);
 
   // The client-facing name defaults to the Meta campaign name, and `portal_campaigns.alias` is an
@@ -426,14 +426,20 @@ async function brandScope(
   // DIFFERENT client. `listCampaignPresentation` flags those so they get looked at; an operator
   // then either overrides the alias or sets `hidden`. What this function must not do is invent a
   // name or silently drop a campaign — a missing row now means "use the Meta name", not "hide".
-  const presentation = await db
-    .select({
-      campaignId: schema.portalCampaigns.campaignId,
-      alias: schema.portalCampaigns.alias,
-      hidden: schema.portalCampaigns.hidden,
-    })
-    .from(schema.portalCampaigns)
-    .where(inArray(schema.portalCampaigns.campaignId, [...visible]));
+  //
+  // The commission schedules ride along in the same round trip: every brand and group met above
+  // is a superset of the ones kept, and loading a few extra rows is cheaper than a second wait.
+  const [presentation, commissions] = await Promise.all([
+    db
+      .select({
+        campaignId: schema.portalCampaigns.campaignId,
+        alias: schema.portalCampaigns.alias,
+        hidden: schema.portalCampaigns.hidden,
+      })
+      .from(schema.portalCampaigns)
+      .where(inArray(schema.portalCampaigns.campaignId, [...visible])),
+    loadDefaultCommissions({ brandIds: brands.map((b) => b.id), groupIds: [...groupMeta.keys()] }),
+  ]);
 
   const override = new Map(presentation.map((p) => [p.campaignId, p]));
 
@@ -462,19 +468,76 @@ async function brandScope(
       ...meta,
       pageName: s?.pageName ?? null,
       pageAvatarUrl: s?.pageAvatarUrl ?? null,
-      commission: s?.commission ?? null,
+      commission: commissions.group.get(id) ?? [],
     });
   }
 
   return {
     actor,
-    brands: brands.filter((b) => keptBrands.has(b.id)),
+    brands: brands
+      .filter((b) => keptBrands.has(b.id))
+      .map((b) => ({ ...b, commission: commissions.brand.get(b.id) ?? [] })),
     campaignIds,
     aliasOf,
     brandOf,
     groupOf,
     groups,
   };
+}
+
+/** One `brands` row's visible campaigns, each with the Brand (group) it counts under there. */
+export interface CampaignClaim {
+  brandId: string;
+  /** The owner (`clients.id`). */
+  clientId: string;
+  name: string;
+  campaigns: readonly {
+    id: string;
+    group: { key: string; name: string } | undefined;
+    groupId: string | undefined;
+  }[];
+}
+
+/**
+ * Give each campaign exactly one client — and with it one Brand — when several of the caller's
+ * clients cover it (two `brands` rows of one owner over the same accounts): the first by name, then
+ * id, whatever order the rows were read in.
+ *
+ * The client decides the commission default a campaign's inherited days are billed at, so the
+ * choice must be stable across page loads (heap order is not) and must be the one the staff
+ * commission dialog prices its timeline through (`campaignOwners`, same order). The Brand is taken
+ * from the same client, so a campaign never pairs one client's Brand with another's default.
+ */
+export function claimCampaigns(claims: readonly CampaignClaim[]): {
+  brandOf: Map<string, string>;
+  groupOf: Map<string, string>;
+  groupMeta: Map<string, { key: string; clientId: string; brandId: string; name: string }>;
+} {
+  const brandOf = new Map<string, string>();
+  const groupOf = new Map<string, string>();
+  const groupMeta = new Map<
+    string,
+    { key: string; clientId: string; brandId: string; name: string }
+  >();
+  const ordered = [...claims].sort((a, b) =>
+    byNameThenId({ id: a.brandId, name: a.name }, { id: b.brandId, name: b.name }),
+  );
+  for (const claim of ordered) {
+    for (const c of claim.campaigns) {
+      if (brandOf.has(c.id)) continue;
+      brandOf.set(c.id, claim.brandId);
+      if (!c.group || !c.groupId) continue;
+      groupOf.set(c.id, c.groupId);
+      if (groupMeta.has(c.groupId)) continue;
+      groupMeta.set(c.groupId, {
+        key: c.group.key,
+        clientId: claim.clientId,
+        brandId: claim.brandId,
+        name: c.group.name,
+      });
+    }
+  }
+  return { brandOf, groupOf, groupMeta };
 }
 
 /**
@@ -492,23 +555,64 @@ export function portalBrandOf(
   return scope.groupOf.get(campaignId) ?? scope.brandOf.get(campaignId);
 }
 
+/** One brand a customer can switch between, and the client (`brands.id`) it is shown under. */
+export interface PortalBrandEntry {
+  id: string;
+  name: string;
+  /**
+   * The `brands` row the brand is reached through — the customer's "client". For the fallback
+   * entry (campaigns under no board row) it equals `id`, which is how the portal tells the two
+   * apart and labels the fallback as that client's other campaigns.
+   */
+  clientId: string;
+}
+
 /**
  * The brands a customer can switch between: one per portal brand holding a visible campaign,
  * named by its group's name (or, for the fallback, by the client's name), sorted by name. A group
  * reached through two of the customer's clients appears once — it is keyed by its global id.
+ *
+ * Such a group is listed under the first of those clients by name (then id), not under whichever
+ * client's campaigns happened to be read first: `campaignIds` follows database order, and a brand
+ * hopping between clients from one page load to the next would be worse than either choice. The
+ * client is taken from the visible campaigns (`brandOf`) rather than `ScopedGroup.brandId`, which
+ * can name a client whose every campaign was later dropped for want of a name.
  */
-export function portalBrands(scope: PortalScope): { id: string; name: string }[] {
-  const clientName = new Map(scope.brands.map((b) => [b.id, b.name]));
-  const named = new Map<string, string>();
+export function portalBrands(scope: PortalScope): PortalBrandEntry[] {
+  const clientById = new Map(scope.brands.map((b) => [b.id, b]));
+  const entries = new Map<string, PortalBrandEntry>();
   for (const id of scope.campaignIds) {
     const key = portalBrandOf(scope, id);
-    if (key === undefined || named.has(key)) continue;
-    const name = scope.groups.get(key)?.name ?? clientName.get(key);
-    if (name) named.set(key, name);
+    const client = clientById.get(scope.brandOf.get(id) ?? "");
+    if (key === undefined || !client) continue;
+    const seen = entries.get(key);
+    if (seen) {
+      const current = clientById.get(seen.clientId);
+      if (current && byNameThenId(client, current) < 0) seen.clientId = client.id;
+      continue;
+    }
+    const name = scope.groups.get(key)?.name ?? (key === client.id ? client.name : undefined);
+    if (name) entries.set(key, { id: key, name, clientId: client.id });
   }
-  return [...named]
-    .map(([id, name]) => ({ id, name }))
-    .sort((a, b) => a.name.localeCompare(b.name));
+  return [...entries.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+const byNameThenId = (a: { id: string; name: string }, b: { id: string; name: string }): number =>
+  a.name.localeCompare(b.name) || a.id.localeCompare(b.id);
+
+/**
+ * The clients `brands` are listed under, sorted by name — only those some brand belongs to, as an
+ * id and a name. `ScopedBrand` also carries ad accounts and commission; neither may leave here.
+ */
+export function portalClients(
+  scope: PortalScope,
+  brands: readonly PortalBrandEntry[],
+): { id: string; name: string }[] {
+  const used = new Set(brands.map((b) => b.clientId));
+  return scope.brands
+    .filter((b) => used.has(b.id))
+    .map((b) => ({ id: b.id, name: b.name }))
+    .sort(byNameThenId);
 }
 
 /**
@@ -560,23 +664,22 @@ export function narrowToPortalBrands(
 }
 
 /**
- * The markup a campaign falls back to when it has no rate history of its own, for `markupRows`:
- * its group's commission, else its brand's default, else `fallback`. Inheritance runs one way —
- * a group only ever overrides its brand, never the other way round.
+ * What a campaign-day is billed at when the campaign has no entry of its own in force that day,
+ * for `markupRows`: its group's (Brand's) rate on that date, else its brand's (Client's) default on
+ * that date, else `fallback`. Each level is a dated schedule and is read AS IT STOOD ON THE DAY, so
+ * a default changed from some date re-prices nothing before it. Inheritance runs one way — a group
+ * only ever overrides its brand, never the other way round — and `markup.ts`'s `commissionOn` is
+ * the same order with the source attached, for the staff screens.
  */
-export function defaultCommissionLookup(
-  scope: PortalScope,
-  fallback: number,
-): (campaignId: string) => number {
-  const byBrand = new Map<string, number>();
-  for (const b of scope.brands) byBrand.set(b.id, b.defaultCommission ?? fallback);
-  return (campaignId) => {
+export function defaultCommissionLookup(scope: PortalScope, fallback: number): DefaultRateLookup {
+  const byBrand = new Map(scope.brands.map((b) => [b.id, b.commission]));
+  return (campaignId, date) => {
     const gid = scope.groupOf.get(campaignId);
-    const groupRate = gid === undefined ? null : (scope.groups.get(gid)?.commission ?? null);
+    const groupRate =
+      gid === undefined ? null : defaultRateOn(scope.groups.get(gid)?.commission, date);
     if (groupRate !== null) return groupRate;
     const brandId = scope.brandOf.get(campaignId);
-    const rate = brandId === undefined ? undefined : byBrand.get(brandId);
-    return rate ?? fallback;
+    return (brandId === undefined ? null : defaultRateOn(byBrand.get(brandId), date)) ?? fallback;
   };
 }
 

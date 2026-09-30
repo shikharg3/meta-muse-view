@@ -1,7 +1,7 @@
 import { and, eq, gte, inArray, lte, sql } from "drizzle-orm";
 import { db, schema } from "@/db/client";
 import { clickDestinations } from "@/lib/creative-links";
-import { resolveWindow, type RangeSpec } from "@/lib/range";
+import { resolveWindow, type DateWindow, type RangeSpec } from "@/lib/range";
 import type { Ad } from "@/lib/types";
 import { currentPortalActor } from "@/portal/context";
 import {
@@ -10,6 +10,7 @@ import {
   totalSpend,
   PORTAL_DEFAULT_COMMISSION,
   type CommissionTable,
+  type DefaultRateLookup,
   type RawDayRow,
 } from "@/portal/markup";
 import {
@@ -190,13 +191,13 @@ export function shapePortalCreatives(
   ads: AdCreativeRow[],
   perf: AdDayRow[],
   commissions: CommissionTable,
-  defaultFor: (campaignId: string) => number,
+  defaultFor: DefaultRateLookup,
   pageOf: (campaignId: string) => CreativePage | null,
 ): PortalCreative[] {
   const campaignOfAd = new Map(ads.map((a) => [a.id, a.campaignId]));
 
   // Each daily row is stamped with the ad's OWNING CAMPAIGN id, which is exactly what `markupRows`
-  // keys its rate lookup on — so `rateOn(commissions.get(owningCampaignId), date, …)` is what runs,
+  // keys its rate lookup on — so the owning campaign's rate (or defaults) on that day is what runs,
   // and an ad never picks up a rate belonging to another campaign. Going through `markupRows`
   // rather than re-applying the uplift here keeps one implementation of the formula in the tree.
   // A row for an ad that is not in `ads` is dropped: its owner is unknown, so it cannot be marked
@@ -303,17 +304,26 @@ const feedSpecSql = sql<unknown>`coalesce(${schema.adCreatives.assetFeedSpec}, $
 
 export async function fetchPortalCreatives(input: PortalCreativesInput): Promise<PortalCreative[]> {
   const scope = narrowToPortalBrands(await portalScope(currentPortalActor()), input.brandIds);
+  return buildCreatives(scope, resolveWindow(input), input.campaignIds);
+}
 
+/**
+ * `fetchPortalCreatives` over an already-resolved scope — for a caller that narrowed it once
+ * itself (the portal assistant; see `buildOverview` in `./portal.ts`).
+ */
+export async function buildCreatives(
+  scope: PortalScope,
+  w: DateWindow,
+  requested: string[] | undefined,
+): Promise<PortalCreative[]> {
   // The requested campaigns are a FILTER over the whitelist, never a lookup: an id the caller was
   // not granted matches nothing instead of widening the query.
   let campaignIds = scope.campaignIds;
-  if (input.campaignIds) {
-    const asked = new Set(input.campaignIds);
+  if (requested) {
+    const asked = new Set(requested);
     campaignIds = campaignIds.filter((id) => asked.has(id));
   }
   if (campaignIds.length === 0) return [];
-
-  const w = resolveWindow(input);
 
   const ads: AdCreativeRow[] = await db
     .select({

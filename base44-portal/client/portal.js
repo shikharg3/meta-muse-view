@@ -5,17 +5,18 @@ import { clearViewAs, getViewAs } from "@/lib/viewAs";
  * The frontend half of the client portal's bridge, and the only module in the portal app that
  * should mention the backend at all.
  *
- * Every call goes through the `portal` backend function, which holds `PORTAL_API_TOKEN` and is the
- * only thing that may see it. The catalogue of callable ops is `GET /api/v1/_ops` presented with
- * that token, which returns ONLY the `portal*` ops — the internal dashboard's hundred-odd ops are
- * not merely forbidden here, they are unaddressable.
+ * Every op goes through the `portal` backend function, and every assistant turn through its
+ * streaming sibling `portal-stream`; those two hold `PORTAL_API_TOKEN` and are the only things that
+ * may see it. The catalogue of callable ops is `GET /api/v1/_ops` presented with that token, which
+ * returns ONLY the `portal*` ops — the internal dashboard's hundred-odd ops are not merely forbidden
+ * here, they are unaddressable.
  *
  * `functions.fetch` rather than `functions.invoke`: invoke returns the raw axios response and
  * throws on any non-2xx, which would bury the error envelope the backend deliberately sends.
  *
- * The one exception to "only the portal function": while an agency admin is previewing the portal
+ * The one exception to "only the portal functions": while an agency admin is previewing the portal
  * as a client (`@/lib/viewAs`), the same ops go through the staff function's `viewPortalAs`
- * instead. See `callPortalAs`.
+ * instead (see `callPortalAs`), and assistant turns through `staff-stream`.
  */
 
 /** Thrown when a call could not be completed — not signed in, no access, bad input, upstream down. */
@@ -110,4 +111,78 @@ export function isNoAccess(err) {
     err instanceof PortalError &&
     (err.info.code === "unknown_actor" || err.info.code === "not_approved")
   );
+}
+
+// ── The assistant ──────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Stream one AI Intelligence turn about ONE brand, calling `onEvent` for each event as it lands.
+ *
+ * The conversation lives in the browser, so `messages` is the whole history (`{ role, content }`,
+ * ending with the question); the server keeps none. `brandId` is a `portalBootstrap` brand id and is
+ * checked on the server against the caller's own brands — the assistant's tools are bound to it
+ * there, so nothing sent from here can make a turn read another brand.
+ *
+ * Events are newline-delimited JSON: `status | tool_start | tool_end | delta | cards | series |
+ * done | error`. Chunk boundaries fall wherever the network puts them, so a line can be split
+ * across two reads; anything after the last newline waits in `buffer` for the rest of it.
+ *
+ * A refusal before the stream starts (no such brand, the daily limit, no access) throws
+ * `PortalError` with the server's sentence. While previewing as a client the turn goes through
+ * `staff-stream` instead, and a staff-side refusal ends the preview exactly as `callPortalAs` does.
+ */
+export async function streamPortalChat({ brandId, messages, signal, onEvent }) {
+  const viewAs = getViewAs();
+  const res = await base44.functions.fetch(viewAs ? "/staff-stream" : "/portal-stream", {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/x-ndjson" },
+    body: JSON.stringify(viewAs ? { email: viewAs.email, brandId, messages } : { brandId, messages }),
+    signal,
+  });
+
+  if (!res.ok || !res.body) {
+    const body = await res.json().catch(() => null);
+    const info = readError(body && typeof body === "object" ? body.error : null, "portalChat", res.status);
+    if (viewAs && STAFF_REFUSALS.includes(info.code)) {
+      clearViewAs();
+      throw new PortalError("portalChat", {
+        code: "view_as_refused",
+        message: `Viewing as a client needs an approved agency admin login. ${info.message} Reload to see your own portal.`,
+      });
+    }
+    throw new PortalError("portalChat", info);
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  const flush = (line) => {
+    const text = line.trim();
+    if (text === "") return;
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed && typeof parsed === "object" && "type" in parsed) onEvent(parsed);
+    } catch {
+      // A truncated tail (connection dropped mid-write) is not worth surfacing: the events already
+      // delivered stand, and the caller reacts to `done` never arriving.
+    }
+  };
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let nl = buffer.indexOf("\n");
+      while (nl !== -1) {
+        flush(buffer.slice(0, nl));
+        buffer = buffer.slice(nl + 1);
+        nl = buffer.indexOf("\n");
+      }
+    }
+    flush(buffer + decoder.decode());
+  } finally {
+    reader.releaseLock();
+  }
 }

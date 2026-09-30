@@ -5,6 +5,8 @@ import { authFailure } from "@/lib/auth/errors";
 import { provisionFederatedUser, toPublicUser, type PublicUser } from "@/lib/auth/users";
 import { env } from "@/lib/env";
 import { handleChatStream } from "@/server/agent/stream";
+import { handlePortalChat } from "@/server/agent/portal/turn";
+import { streamPortalChatAs } from "@/server/fns/portal-view-as";
 import { runAsPortalActor } from "@/portal/context";
 import { resolvePortalActor, touchPortalActor, type PortalActor } from "@/portal/scope";
 import { allOps, lookupOp } from "./ops";
@@ -31,6 +33,14 @@ import { allOps, lookupOp } from "./ops";
 
 const PREFIX = "/api/v1/";
 const CHAT_STREAM_PATH = `${PREFIX}chat/stream`;
+/**
+ * The portal assistant (`src/server/agent/portal`), on the PORTAL audience. Streams NDJSON, so it
+ * is a route beside the op dispatcher rather than an op — and not `portal*`-named in the op table,
+ * which `portal-surface.test.ts` pins.
+ */
+const PORTAL_CHAT_STREAM_PATH = `${PREFIX}portal/chat/stream`;
+/** The same assistant for an admin previewing a client, on the STAFF audience (`viewPortalAs`). */
+const VIEW_AS_CHAT_STREAM_PATH = `${PREFIX}viewPortalAs/chat/stream`;
 
 const envelope = z.object({ op: z.string().min(1).optional(), data: z.unknown().optional() });
 
@@ -179,6 +189,19 @@ async function handlePortalRequest(request: Request, url: URL): Promise<Response
     );
   }
 
+  // After the approval floor and before the op envelope: a turn is a stream, not an op. The body is
+  // `{ brandId, messages }`, validated — brand included, against this actor's own scope — inside.
+  if (url.pathname === PORTAL_CHAT_STREAM_PATH) {
+    let raw: unknown;
+    try {
+      raw = await request.json();
+    } catch {
+      return fail(400, "bad_request", "Body must be JSON.");
+    }
+    void touchPortalActor(actor.id);
+    return handlePortalChat(actor, raw, null);
+  }
+
   let body: z.infer<typeof envelope>;
   try {
     body = envelope.parse(await request.json());
@@ -275,6 +298,26 @@ export async function handleApiRequest(request: Request): Promise<Response | nul
   if (url.pathname === CHAT_STREAM_PATH) {
     if (request.method !== "POST") return fail(405, "method_not_allowed", "POST only.");
     return handleChatStream(request, actor);
+  }
+
+  // Needs an approved account explicitly: this route sits in front of the op approval floor below,
+  // and `requireAdmin()` inside checks the role, not the status.
+  if (url.pathname === VIEW_AS_CHAT_STREAM_PATH) {
+    if (request.method !== "POST") return fail(405, "method_not_allowed", "POST only.");
+    if (actor.status !== "approved") {
+      return fail(403, "not_approved", "Your account is waiting for an admin to approve it.");
+    }
+    let raw: unknown;
+    try {
+      raw = await request.json();
+    } catch {
+      return fail(400, "bad_request", "Body must be JSON.");
+    }
+    try {
+      return await runAsActor(actor, () => streamPortalChatAs(raw));
+    } catch (e) {
+      return errorResponse("viewPortalAs/chat/stream", e);
+    }
   }
 
   // The manifest exists so a client can assert at startup that the op it is about to call still

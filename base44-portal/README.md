@@ -14,7 +14,7 @@ Customer's browser ──invoke──▶ base44/functions/portal ──Bearer─
 | -------------- | ------------------------------------- | ----------------------------------------- |
 | Base44 app     | `6a9fc1bd1da17a04aaf31ecc` (MetaMuse) | `6a91757327c7555d5f5a8f91` (DotAnalytics) |
 | slug           | `analytic-meta-muse-view`             | `wakeful-data-pulse-view`                 |
-| function       | `vps`, `vps-stream`                   | `portal`                                  |
+| function       | `vps`, `vps-stream`                   | `portal`, `portal-stream`                 |
 | secret         | `VPS_API_TOKEN`                       | `PORTAL_API_TOKEN`                        |
 | ops reachable  | all of them                           | **only `portal*`**                        |
 | identity table | `users` (staff)                       | `portal_users` (customers)                |
@@ -51,9 +51,10 @@ Board rows group into Brands by title automatically: the first word, without a U
 ending (`autoGroupKey` in `src/portal/brand-accounts.ts`) — so `betonline.ag (August/September)`
 and `betonline.ag (June 2026)` are Brand "betonline.ag", and `Watt2Trade Renewal May 2026` joins
 `watt2trade.com`. On the Client page an admin can rename a Brand, move a row into another Brand or a
-new one, or send it back to automatic (`portal_project_settings.group_key`). A Brand's own name, ad
-page and commission live in `portal_group_settings`, keyed by owner + group key, so next month's row
-joins the Brand and gets its settings with nothing re-set.
+new one, or send it back to automatic (`portal_project_settings.group_key`). A Brand's own name and
+ad page live in `portal_group_settings`, and its commission schedule in `commission_defaults`
+(`target_id` = `<owner>:<group key>`), both keyed by owner + group key, so next month's row joins
+the Brand and gets its settings with nothing re-set.
 
 Grant scopes keep the code names: `brand` = a whole Client, `group` = one Brand held **through** a
 Client (`target_id` = `<owner>:<group key>`, `parent_id` = the `brands` id), `campaign` = one
@@ -65,10 +66,34 @@ engagement (`projectOfAccount`). Its Brand is that row's group; that Brand's set
 Brand grant opens it. A Brand whose rows share an account with a newer row of ANOTHER Brand shows a
 "shared with a newer brand" marker, because its settings do not reach those campaigns.
 
-The customer portal uses the same meaning: its "All your brands" picker, the `brandIds` filter on
+The customer portal uses the same meaning: its "All brands" picker, the `brandIds` filter on
 every `portal*` op, a campaign row's `brandId` and the report's per-brand totals are all Brands
 (groups, by `<owner>:<group key>` — `portalBrandOf` in `src/portal/scope.ts`). A campaign on an
 account no covered row lists falls back to its Client, so the Brands always add up to the whole.
+
+`portalBootstrap` lists both levels, and the portal words them the customer's way — a Client is
+their "client", a Brand their "brand":
+
+```ts
+{
+  user: { name: string | null; email: string },
+  freshness: { syncedAt: string | null; completeThrough: string | null },
+  clients: { id: string /* brands.id */; name: string }[], // by name; only those a brand is under
+  brands: { id: string; name: string; clientId: string /* one of clients[].id */ }[], // by name
+}
+```
+
+A Brand is listed under the Client it is reached through; one reached through two of the
+customer's Clients appears once, under the first by name (`portalBrands`). The fallback entry has
+`id === clientId` and is shown as that client's "Other campaigns", not as a brand named after the
+client. Only ids and names cross: no commission, ad account or owner id.
+
+The portal opens on every brand combined, and says so: the brand picker shows a layered icon and
+a count, a strip under the top bar reads "Combined results for N brands across M clients" with
+one-click picks, and the overview headline names the scope. The picker groups brands under their
+clients when there are several (a client header selects that whole client; each brand has an
+"Only" action). A single-brand customer sees neither picker nor strip. Opening a campaign shows
+that campaign's own figures without changing the portal-wide selection.
 
 ## What a customer must never receive
 
@@ -105,27 +130,38 @@ a working default.
 1. **Add the client.** `/admin/brands` → _Add client_. Pick the owner; its Notion brands appear
    **already selected**, and the ad accounts follow from them — there is nothing to map by hand.
    Leaving every brand selected stores "follow this owner", so a row added to the board next month
-   is included by itself. Nothing is typed in: the name is the owner's and the default commission
-   is stored as `PORTAL_DEFAULT_COMMISSION` (10%). There is no website or monthly budget any more
-   (the columns are retired, and the portal's pacing stat with them).
-   Then, on the client's page, set its **Client defaults** — commission and **Ad page** (the page
-   name and profile photo every creative preview shows as the advertiser, whichever Facebook page
-   each ad really ran under; blank falls back to the client name and initials; the photo is
-   uploaded to Base44's public storage and must be https). Each **Brand** below can override the
-   ad page and/or commission field by field (`portal_group_settings`); anything it leaves blank
-   inherits the client's value. Check the grouping there too — rename a Brand, or move a row the
-   title rule put in the wrong one.
+   is included by itself. Nothing is typed in: the name is the owner's, and a new client with no
+   commission entry bills at `PORTAL_DEFAULT_COMMISSION` (10%). There is no website or monthly
+   budget any more (the columns are retired, and the portal's pacing stat with them).
+   Then, on the client's page, set its **Client defaults** — commission (_Change…_, see step 3) and
+   **Ad page** (the page name and profile photo every creative preview shows as the advertiser,
+   whichever Facebook page each ad really ran under; blank falls back to the client name and
+   initials; the photo is uploaded to Base44's public storage and must be https). Each **Brand**
+   below can override the ad page field by field (`portal_group_settings`) and has its own
+   commission schedule; anything it leaves unset inherits the client's value. Check the grouping
+   there too — rename a Brand, or move a row the title rule put in the wrong one.
 2. **Check the campaign names.** `/admin/campaigns`. Names default to Meta's own, so a client can
    already see everything — you do not have to name anything for the portal to work. What you
    should do once is filter to **"Needs a look"** and deal with the flagged handful: a name carrying
    a " - Copy" suffix, an opaque id, Meta's placeholder text, or — the one that matters — a name
    mentioning another client. Edit those in place and save the screen in one go, or set `hidden` on
    anything the client should not see at all.
-3. **Set commission, if it differs.** A campaign's rate resolves as: its own dated history
-   (Campaigns → the commission cell), else its Brand's commission, else the Client default, else
-   10%. Each history entry applies from a date onwards; the period's end is derived from the next
-   entry, so periods cannot overlap. Editing history re-prices past days, which is the point — a
-   report re-run for an old month must still say what it said.
+3. **Set commission, if it differs.** Three levels, each a dated schedule: the campaign's own
+   (Campaigns → the commission cell), its Brand's (the Brand row on the client's page → _Change…_)
+   and the Client default (_Client defaults_ → _Change…_), all stored server-side
+   (`campaign_commissions`, `commission_defaults`). An entry applies **from its date, inclusive,
+   until the next entry at the same level**; a day with no entry at a level falls to the level
+   below as it stood **on that day** — campaign, then Brand, then Client, then 10%. So a change is
+   made by adding an entry from the day it takes effect: "14% from 1 October" leaves September at
+   whatever it billed and prices October onwards at 14%; "11% from 1 November" then lowers it from
+   that day. Rates may go up or down (0–100%), any number of times, dated from 2020-01-01 up to a
+   year ahead. A Brand or Client entry can also be _Inherit_, handing its days back to the level
+   below from that date. Days before a campaign's first entry are never priced at that entry —
+   they keep inheriting. Periods cannot overlap: each ends the day before the next begins. Editing
+   or deleting an entry that has already started, or adding one dated in the past, re-prices those
+   past days in the portal and in any report re-run for them — the dialog asks before it does. The
+   dialog's timeline is resolved by the server (`effectiveTimeline`), the same rule `markupRows`
+   bills by, and no rate ever reaches a portal response.
 4. **Invite the login.** `/admin/users` → _Invite user_. This records the address in
    `portal_users` and then asks Base44 to email the person: with no password, Base44's own invite
    email (`users.inviteUser`), where they choose a password. With a password the admin types,
@@ -176,7 +212,8 @@ with a banner and an Exit. A pending or rejected login previews as the screen th
   `viewPortalAs` (`src/server/api/ops/portal-admin.ts`) on the `staff` function, so it needs the
   staff token, the Base44 `admin` role and `requireAdmin()` — the client token cannot address it.
   Letting the portal transport accept "act as this address" would make identity a request field
-  on the one surface a customer can reach.
+  on the one surface a customer can reach. AI Intelligence turns, which stream, take the same gates
+  through `staff-stream` instead (see the next section).
 - **It dispatches only `portal*` ops**, and runs them the way the portal transport does: same actor
   resolution, same approval floor, staff context explicitly empty. `src/server/api/view-as.test.ts`
   pins its op set to exactly the client-reachable one.
@@ -186,11 +223,61 @@ with a banner and an Exit. A pending or rejected login previews as the screen th
   the page, so no cached figure crosses between the admin's own view and the client's; opening
   the admin console or signing out ends it.
 
-## No streaming sibling
+## AI Intelligence — the portal assistant
 
-The internal app has `vps-stream` for the AI assistant. There is deliberately no portal equivalent:
-the assistant's tools read finance, infrastructure and every client. A portal assistant needs its
-own scoped tool set before it gets a transport.
+Customers can ask about their results in plain English: _AI Intelligence_ in the sidebar (`/ai`),
+with a suggestions strip on the Overview. It runs the internal Ask assistant's loop
+(`runAgentLoop`, `src/server/agent/chat.ts`) with an injected tool set, prompt and context of its
+own (`src/server/agent/portal/`) — not the internal assistant with a filter on top, whose tools
+read finance, infrastructure and every client's raw spend.
+
+```
+browser ──fetch──▶ base44/functions/portal-stream ──Bearer PORTAL──▶ POST /api/v1/portal/chat/stream
+ { brandId, messages }   (X-Actor-Email from auth.me())               (NDJSON, see below)
+```
+
+**One brand per turn, enforced on the VPS.**
+
+- The request names a brand; `bindPortalBrand` (`src/server/agent/portal/tools.ts`) looks it up in
+  the caller's OWN `portalBrands(portalScope(actor))` and answers `403 brand_forbidden` otherwise —
+  not through `narrowToPortalBrands`, which reads an unknown id as "all brands". The scope is then
+  narrowed to exactly that brand and verified to hold nothing else.
+- The tools close over that narrowed scope. None takes a brand or client parameter; a campaign id
+  the model passes is re-checked (`portalBrandOf(scope, id) === brand`). They read through the same
+  `build*` functions as the pages (`src/server/fns/portal.ts`, `portal-creative.ts`,
+  `portal-report.ts`), so every figure is marked up exactly as on screen; the module imports no
+  commission loader. Tools: `get_overview` (KPI strip), `get_daily_trend` (chart), `list_campaigns`,
+  `get_campaign` (ad-set spend flagged as an estimate), `get_breakdown`, `list_creatives` (copy and
+  metrics, no media or landing URLs), `get_report` (with its correct total), `get_data_freshness`.
+  Windows: `days` ≤ 400 or `since`/`until` spanning ≤ 400 days.
+- The prompt is customer-facing and names only that brand; the per-turn context is today's date and
+  the brand name. It refuses other brands, clients, the agency, commission and margins, and says
+  nothing about internal systems. All money is USD.
+- The conversation lives in the customer's tab (`sessionStorage`, one thread per brand). The server
+  keeps no thread and accepts text only — no tool results come back from the browser.
+
+**Events** (one JSON object per line): `status`, `tool_start`, `tool_end`, `delta`,
+`cards {title, kpis}`, `series {title, unit, points}`, `done {toolCalls}`, `error {message}`. The
+internal union's `start` and `report` never reach a customer, and `done` carries no cost
+(`toCustomerEvent` in `src/server/agent/portal/turn.ts`). Refusals before the stream starts are the
+usual `{ ok: false, error: { code, message } }`: `400 bad_request`, `403 brand_forbidden`,
+`429 daily_limit`, `429 too_many_in_flight`.
+
+**Guards.** At most 20 messages per request, the question ≤ 2,000 characters, any message ≤ 8,000
+and all of them together ≤ 40,000; 5 model round-trips and 12 tool calls per turn; effort `medium`
+on the configured model (Settings → Assistant, same key as the internal assistant — none configured
+means a polite error event); 2 turns running at once per login; 40 turns per login per UTC day. A
+turn is reserved before it streams: under a per-login advisory lock, today's `portal_chat_turns`
+rows are counted and the turn's row inserted (`error = 'in_progress'`), then filled in with the
+question's answer, tool calls and cost when it ends (DDL in `src/db/schema.ts`), so simultaneous
+requests cannot slip past the cap. The Overview's suggestions ask at once (router state); a
+`/ai?q=` link only fills the composer.
+
+**Previewing it as a client.** `staff-stream` (admin role checked in the function, like `staff`)
+forwards to `POST /api/v1/viewPortalAs/chat/stream` on the staff token, which needs an approved
+admin (`requireAdmin()`), writes a `portal.view_as.chat` audit entry per turn, and runs the same
+turn as the previewed login — logged with `viewed_by`, not counted against their daily limit. The
+JSON `viewPortalAs` op cannot carry a stream, hence the second function.
 
 ## Pushing a change
 
@@ -205,12 +292,14 @@ cat base44-portal/client/portal.js \
   | base44 sandbox write src/api/portal.js --overwrite --app-id "$BASE44_APP_ID" --json
 ```
 
-| this repo (source of truth for review)    | the Base44 sandbox                 |
-| ----------------------------------------- | ---------------------------------- |
-| `base44-portal/functions/portal/entry.ts` | `base44/functions/portal/entry.ts` |
-| `base44-portal/client/portal.js`          | `src/api/portal.js`                |
-| `base44-portal/client/viewAs.js`          | `src/lib/viewAs.js`                |
-| `base44-portal/client/staff.js`           | `src/api/staff.js`                 |
+| this repo (source of truth for review)           | the Base44 sandbox                        |
+| ------------------------------------------------ | ----------------------------------------- |
+| `base44-portal/functions/portal/entry.ts`        | `base44/functions/portal/entry.ts`        |
+| `base44-portal/client/portal.js`                 | `src/api/portal.js`                       |
+| `base44-portal/client/viewAs.js`                 | `src/lib/viewAs.js`                       |
+| `base44-portal/client/staff.js`                  | `src/api/staff.js`                        |
+| `base44-portal/functions/portal-stream/entry.ts` | `base44/functions/portal-stream/entry.ts` |
+| `base44-portal/functions/staff-stream/entry.ts`  | `base44/functions/staff-stream/entry.ts`  |
 
 Secrets are already set on the app (`PORTAL_API_URL`, `PORTAL_API_TOKEN`). To rotate: change
 `/opt/meta-next/.env`, `systemctl restart meta-web-next`, then re-set the Base44 secret.

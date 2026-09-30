@@ -8,6 +8,10 @@
  *
  * Shared by both sides on purpose — the previous design had the UI keep its own table of tool names,
  * which had already fallen out of date. Labels now travel with the event.
+ *
+ * The client portal's assistant streams the same events to CUSTOMERS, minus what is internal
+ * (`start`, `report`, the cost on `done`) — a new member here reaches them only once
+ * `toCustomerEvent` in `./portal/turn.ts` says so, which it will not compile without.
  */
 import type { Kpis } from "@/lib/types";
 import type { ReportPayload } from "./report";

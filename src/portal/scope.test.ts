@@ -1,8 +1,10 @@
 import { describe, expect, it } from "bun:test";
 import {
+  claimCampaigns,
   defaultCommissionLookup,
   narrowToPortalBrands,
   portalBrands,
+  portalClients,
   visibleUnderGrants,
   type GrantNarrowing,
   type PortalScope,
@@ -57,13 +59,56 @@ describe("visibleUnderGrants", () => {
   });
 });
 
-const brand = (id: string, defaultCommission: number | null): ScopedBrand => ({
+describe("claimCampaigns", () => {
+  // Two clients of one owner covering the same account: the campaign is billed through ONE of them,
+  // and it must be the same one on every load — and the one the staff dialog prices (first by name).
+  const sports = {
+    brandId: "b_sports",
+    clientId: "owner",
+    name: "Acme Sports",
+    campaigns: [
+      { id: "c_shared", group: { key: "sports", name: "Sports" }, groupId: "owner:sports" },
+    ],
+  };
+  const casino = {
+    brandId: "b_casino",
+    clientId: "owner",
+    name: "Acme Casino",
+    campaigns: [
+      { id: "c_shared", group: undefined, groupId: undefined },
+      { id: "c_own", group: { key: "casino", name: "Casino" }, groupId: "owner:casino" },
+    ],
+  };
+
+  it("gives a shared campaign to the first client by name, whatever order the rows arrive in", () => {
+    for (const order of [
+      [sports, casino],
+      [casino, sports],
+    ]) {
+      const { brandOf, groupOf } = claimCampaigns(order);
+      expect(brandOf.get("c_shared")).toBe("b_casino");
+      // Its Brand comes from the same client: Casino covers it under no row, so it has none,
+      // rather than pairing Sports' Brand with Casino's default.
+      expect(groupOf.has("c_shared")).toBe(false);
+      expect(brandOf.get("c_own")).toBe("b_casino");
+    }
+  });
+});
+
+/** When the fixtures' commission entries start; `ON` is a day they are all in force. */
+const SINCE = "2025-03-24";
+const ON = "2026-06-15";
+
+/** A one-entry schedule from `SINCE`, or none: what a rate set once and never changed looks like. */
+const since = (rate: number | null) => (rate === null ? [] : [{ fromDate: SINCE, rate }]);
+
+const brand = (id: string, commission: number | null): ScopedBrand => ({
   id,
   clientId: "owner",
   name: id,
   pageName: null,
   pageAvatarUrl: null,
-  defaultCommission,
+  commission: since(commission),
   accountIds: [],
 });
 
@@ -75,7 +120,7 @@ const group = (key: string, brandId: string, commission: number | null): ScopedG
   name: key,
   pageName: null,
   pageAvatarUrl: null,
-  commission,
+  commission: since(commission),
 });
 
 const scopeOf = (
@@ -114,20 +159,25 @@ describe("defaultCommissionLookup", () => {
   const rateOf = defaultCommissionLookup(scope, 10);
 
   it("uses the group's own rate over its brand's", () => {
-    expect(rateOf("c_override")).toBe(25);
+    expect(rateOf("c_override", ON)).toBe(25);
   });
 
   it("honours a group deliberately set to 0% instead of falling through to the brand", () => {
-    expect(rateOf("c_zero")).toBe(0);
+    expect(rateOf("c_zero", ON)).toBe(0);
   });
 
   it("inherits the brand's rate when the group sets none, or the campaign has no group", () => {
-    expect(rateOf("c_inherit")).toBe(15);
-    expect(rateOf("c_no_group")).toBe(15);
+    expect(rateOf("c_inherit", ON)).toBe(15);
+    expect(rateOf("c_no_group", ON)).toBe(15);
   });
 
   it("falls back to the default when neither group nor brand sets a rate", () => {
-    expect(rateOf("c_unset")).toBe(10);
+    expect(rateOf("c_unset", ON)).toBe(10);
+  });
+
+  it("sets nothing before the entries begin, so those days fall through to the default", () => {
+    expect(rateOf("c_override", "2025-03-23")).toBe(10);
+    expect(rateOf("c_override", SINCE)).toBe(25);
   });
 });
 
@@ -146,9 +196,43 @@ describe("portal brands", () => {
 
   it("lists each group once, and the client only for campaigns no row lists", () => {
     expect(portalBrands(scope).sort((a, b) => a.id.localeCompare(b.id))).toEqual([
+      { id: "b1", name: "Acme Holdings", clientId: "b1" },
+      { id: "owner:acme", name: "acme", clientId: "b1" },
+      { id: "owner:zeta", name: "zeta", clientId: "b1" },
+    ]);
+  });
+
+  it("lists a group two clients reach under one of them, whatever order campaigns arrive in", () => {
+    // Two `brands` rows of one owner can cover the same group. It must appear once and under the
+    // same client on every load; `campaignIds` follows database order, so it cannot decide.
+    const clients = [
+      { ...brand("b_zulu", null), name: "Zulu" },
+      { ...brand("b_alpha", null), name: "Alpha" },
+    ];
+    const groups = [group("shared", "b_zulu", null)];
+    const zuluFirst = scopeOf(
+      clients,
+      { c_z: { brand: "b_zulu", group: "shared" }, c_a: { brand: "b_alpha", group: "shared" } },
+      groups,
+    );
+    const alphaFirst = scopeOf(
+      clients,
+      { c_a: { brand: "b_alpha", group: "shared" }, c_z: { brand: "b_zulu", group: "shared" } },
+      groups,
+    );
+    const expected = [{ id: "owner:shared", name: "shared", clientId: "b_alpha" }];
+    expect(portalBrands(zuluFirst)).toEqual(expected);
+    expect(portalBrands(alphaFirst)).toEqual(expected);
+    // …and the client it is not listed under is not offered as an empty one.
+    expect(portalClients(zuluFirst, portalBrands(zuluFirst))).toEqual([
+      { id: "b_alpha", name: "Alpha" },
+    ]);
+  });
+
+  it("projects clients to an id and a name only", () => {
+    // `ScopedBrand` carries the default commission and ad accounts; neither may reach a client.
+    expect(portalClients(scope, portalBrands(scope))).toEqual([
       { id: "b1", name: "Acme Holdings" },
-      { id: "owner:acme", name: "acme" },
-      { id: "owner:zeta", name: "zeta" },
     ]);
   });
 
@@ -156,7 +240,7 @@ describe("portal brands", () => {
     // Dropping the client from the narrowed scope would silently re-price them at the fallback.
     const narrowed = narrowToPortalBrands(scope, ["owner:acme"]);
     expect(narrowed.campaignIds).toEqual(["c_sept", "c_aug"]);
-    expect(defaultCommissionLookup(narrowed, 10)("c_aug")).toBe(15);
+    expect(defaultCommissionLookup(narrowed, 10)("c_aug", ON)).toBe(15);
   });
 
   it("treats the client's own id as its row-less campaigns only, not the whole client", () => {

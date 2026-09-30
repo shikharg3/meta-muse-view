@@ -3,6 +3,7 @@ import { runAsActor } from "@/lib/auth/actor";
 import { authFailure } from "@/lib/auth/errors";
 import { runAsPortalActor } from "@/portal/context";
 import { resolvePortalActor } from "@/portal/scope";
+import { handlePortalChat } from "@/server/agent/portal/turn";
 import { audit, requireAdmin } from "@/server/fns/auth";
 import type { Op } from "@/server/api/registry";
 
@@ -73,4 +74,76 @@ export async function runPortalOpAs(
     console.error(`[view-as] op "${op.name}" failed for ${actor.email}`, e);
     return refuse("internal", "The operation failed. Check the server log.");
   }
+}
+
+const previewTarget = z.object({ email: z.string().email() });
+
+/**
+ * One portal assistant turn exactly as the portal user `email` would get it, for an agency admin
+ * previewing the portal — the streaming counterpart of `runPortalOpAs`, which answers JSON and so
+ * cannot carry a turn. Served as `POST /api/v1/viewPortalAs/chat/stream` behind the staff token.
+ *
+ * Same gates and same actor handling as `runPortalOpAs`; the turn itself is the customer's own
+ * `handlePortalChat`, so the preview is bound to the same brand check and the same tools. Different
+ * in the ways a preview must be:
+ * - **Audited per turn** (`portal.view_as.chat`). A turn spends money and puts words in front of
+ *   an admin in the client's name; unlike a page render, each one is worth a line.
+ * - **Logged with `viewed_by`** and not metered: an admin checking what a client sees must not use
+ *   up that client's questions for the day.
+ *
+ * Refusals are HTTP statuses with the transport's envelope. The codes about the CLIENT
+ * (`unknown_actor`, `inactive_client`, `brand_forbidden`) never coincide with the staff refusals
+ * (`unauthorized`, `forbidden`, `not_approved`), so the admin frontend can tell "you may not
+ * preview" from "this client has no such access" without a second envelope.
+ */
+export async function streamPortalChatAs(raw: unknown): Promise<Response> {
+  let adminId: string;
+  try {
+    adminId = (await requireAdmin()).id;
+  } catch (e) {
+    const auth = authFailure(e);
+    if (!auth) throw e;
+    return Response.json(
+      { ok: false, error: { code: "forbidden", message: auth.message } },
+      { status: 403 },
+    );
+  }
+
+  const target = previewTarget.safeParse(raw);
+  if (!target.success) {
+    return Response.json(
+      { ok: false, error: { code: "bad_request", message: "Send the previewed login's email." } },
+      { status: 400 },
+    );
+  }
+  const { email } = target.data;
+  await audit("portal.view_as.chat", email);
+
+  const actor = await resolvePortalActor(email);
+  if (!actor) {
+    return Response.json(
+      {
+        ok: false,
+        error: { code: "unknown_actor", message: "This account has no portal access." },
+      },
+      { status: 403 },
+    );
+  }
+  if (actor.status !== "approved") {
+    return Response.json(
+      {
+        ok: false,
+        error: {
+          code: "inactive_client",
+          message:
+            actor.status === "rejected"
+              ? "This login's portal access was withdrawn."
+              : "This login's portal access is not active yet.",
+        },
+      },
+      { status: 403 },
+    );
+  }
+
+  return handlePortalChat(actor, raw, adminId);
 }

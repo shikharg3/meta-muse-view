@@ -18,6 +18,7 @@ import {
   narrowToPortalBrands,
   portalBrandOf,
   portalBrands,
+  portalClients,
   portalScope,
   type PortalScope,
 } from "@/portal/scope";
@@ -41,8 +42,10 @@ import { canDeliver } from "@/sync/jobs/notion-budget";
  *    `totalSpend()`, so every derived cost figure (CPC, CPM, ROAS) is computed from the
  *    client-facing number and cannot disagree with the headline.
  * 3. **Nothing internal is serialised.** No raw spend, no commission rate, no `campaigns.name`, no
- *    account or client id. Campaign names come from `scope.aliasOf`, which only holds aliases an
- *    operator wrote by hand.
+ *    account or owner (`clients.id`) id. Campaign names come from `scope.aliasOf`, which only holds
+ *    aliases an operator wrote by hand. The one id of ours a customer does get is the `brands.id`
+ *    of each client they were granted (`PortalBootstrap.clients`) — already their fallback brand's
+ *    id, and useless outside their own scope, since every op narrows by filtering, never lookup.
  */
 
 const num = (v: unknown): number => Number(v ?? 0);
@@ -73,8 +76,19 @@ export interface ScopedDay extends RawDayRow {
 /** What a client is told about a campaign's delivery. Meta's own status words never reach them. */
 export type PortalCampaignStatus = "running" | "paused" | "finished" | "scheduled";
 
-/** One of the customer's brands: a Notion board row they may see campaigns under (`portalBrands`). */
+/** One of the customer's brands: a Brand they may see campaigns under (`portalBrands`). */
 export interface PortalBrandCard {
+  id: string;
+  name: string;
+  /**
+   * The client (`PortalClientCard.id`) it is listed under. Equal to `id` for the fallback entry —
+   * the client's campaigns under no board row — which the portal labels as "Other campaigns".
+   */
+  clientId: string;
+}
+
+/** One of the customer's clients (a `brands` row they were granted), for grouping their brands. */
+export interface PortalClientCard {
   id: string;
   name: string;
 }
@@ -88,6 +102,8 @@ export interface PortalFreshness {
 
 export interface PortalBootstrap {
   user: { name: string | null; email: string };
+  /** Sorted by name; only clients some entry of `brands` belongs to. */
+  clients: PortalClientCard[];
   brands: PortalBrandCard[];
   freshness: PortalFreshness;
 }
@@ -471,43 +487,55 @@ async function campaignFacts(
 
 // ── ops data ──────────────────────────────────────────────────────────────────────────────────
 
+/** How fresh the figures inside `scope` are: the last sync write and the latest day with data. */
+export async function portalFreshness(scope: PortalScope): Promise<PortalFreshness> {
+  const freshness: PortalFreshness = { syncedAt: null, completeThrough: null };
+  if (scope.campaignIds.length === 0) return freshness;
+  const [row] = await db
+    .select({
+      syncedAt: sql<string | Date | null>`max(${schema.insightsDaily.syncedAt})`,
+      // ::text because the driver would otherwise hand back a Date for a DATE column and the
+      // local-time render of it can land a day out.
+      completeThrough: sql<string | null>`max(${schema.insightsDaily.date})::text`,
+    })
+    .from(schema.insightsDaily)
+    .where(
+      and(
+        eq(schema.insightsDaily.level, "campaign"),
+        inArray(schema.insightsDaily.entityId, scope.campaignIds),
+      ),
+    );
+  const synced = row?.syncedAt ? new Date(row.syncedAt) : null;
+  freshness.syncedAt = synced && !Number.isNaN(synced.getTime()) ? synced.toISOString() : null;
+  freshness.completeThrough = row?.completeThrough ?? null;
+  return freshness;
+}
+
 /**
  * What the portal shell needs before it can render anything: who is signed in, which brands they
  * may switch between, and how fresh the figures are.
  *
- * The brands are the board rows their campaigns count under (`portalBrands`), each projected to an
- * id and a name — `ScopedBrand` and `ScopedProject` also carry ad accounts, commission and the
- * owner, none of which a client may ever see.
+ * The brands are the Brands their campaigns count under (`portalBrands`), each projected to an
+ * id, a name and the client it is listed under; the clients are the granted `brands` rows those
+ * point at (`portalClients`), projected to an id and a name. `ScopedBrand` and `ScopedGroup` also
+ * carry ad accounts, commission and the owner, none of which a client may ever see — hence the
+ * explicit projections rather than spreading the scope's objects.
  */
 export async function fetchPortalBootstrap(): Promise<PortalBootstrap> {
   const scope = await scopeFor(undefined);
-  const brands: PortalBrandCard[] = portalBrands(scope);
-
-  const freshness: PortalFreshness = { syncedAt: null, completeThrough: null };
-  if (scope.campaignIds.length > 0) {
-    const [row] = await db
-      .select({
-        syncedAt: sql<string | Date | null>`max(${schema.insightsDaily.syncedAt})`,
-        // ::text because the driver would otherwise hand back a Date for a DATE column and the
-        // local-time render of it can land a day out.
-        completeThrough: sql<string | null>`max(${schema.insightsDaily.date})::text`,
-      })
-      .from(schema.insightsDaily)
-      .where(
-        and(
-          eq(schema.insightsDaily.level, "campaign"),
-          inArray(schema.insightsDaily.entityId, scope.campaignIds),
-        ),
-      );
-    const synced = row?.syncedAt ? new Date(row.syncedAt) : null;
-    freshness.syncedAt = synced && !Number.isNaN(synced.getTime()) ? synced.toISOString() : null;
-    freshness.completeThrough = row?.completeThrough ?? null;
-  }
+  const entries = portalBrands(scope);
+  const brands: PortalBrandCard[] = entries.map((b) => ({
+    id: b.id,
+    name: b.name,
+    clientId: b.clientId,
+  }));
+  const clients: PortalClientCard[] = portalClients(scope, entries);
 
   return {
     user: { name: scope.actor.name, email: scope.actor.email },
+    clients,
     brands,
-    freshness,
+    freshness: await portalFreshness(scope),
   };
 }
 
@@ -516,7 +544,20 @@ export async function fetchPortalOverview(
   w: DateWindow,
   brandIds: string[] | undefined,
 ): Promise<PortalOverview> {
-  const scope = await scopeFor(brandIds);
+  return buildOverview(await scopeFor(brandIds), w);
+}
+
+/**
+ * `fetchPortalOverview` over an already-resolved scope.
+ *
+ * The `build*` variants exist for a caller that resolves and narrows the scope ONCE and then reads
+ * several times inside it — the portal assistant, which binds a whole turn to one brand
+ * (`src/server/agent/portal`). Going back through `scopeFor` on every tool call would re-resolve
+ * the grants each time and, should the brand drop out of scope mid-turn, `narrowToPortalBrands`
+ * would read the unknown id as "everything in scope". Whoever passes a scope here owns its
+ * narrowing.
+ */
+export async function buildOverview(scope: PortalScope, w: DateWindow): Promise<PortalOverview> {
   // One read covers both windows: the previous period is [prevSince, since), the same convention
   // the internal dashboard's deltas use.
   const { days, marked } = await readWindow(scope, w.prevSince, w.until);
@@ -572,7 +613,15 @@ export async function fetchPortalCampaigns(
   brandIds: string[] | undefined,
   now = new Date(),
 ): Promise<PortalCampaignRow[]> {
-  const scope = await scopeFor(brandIds);
+  return buildCampaigns(await scopeFor(brandIds), w, now);
+}
+
+/** `fetchPortalCampaigns` over an already-resolved scope; see `buildOverview`. */
+export async function buildCampaigns(
+  scope: PortalScope,
+  w: DateWindow,
+  now = new Date(),
+): Promise<PortalCampaignRow[]> {
   const [{ days, marked }, facts] = await Promise.all([
     readWindow(scope, w.since, w.until),
     campaignFacts(scope, now),
@@ -683,7 +732,19 @@ export async function fetchPortalCampaign(
   w: DateWindow,
   now = new Date(),
 ): Promise<PortalCampaignDetail> {
-  const scope = await scopeFor(undefined);
+  return buildCampaign(await scopeFor(undefined), id, w, now);
+}
+
+/**
+ * `fetchPortalCampaign` over an already-resolved scope; see `buildOverview`. The id is still
+ * checked against `scope`, so a narrowed scope refuses a campaign outside its narrowing too.
+ */
+export async function buildCampaign(
+  scope: PortalScope,
+  id: string,
+  w: DateWindow,
+  now = new Date(),
+): Promise<PortalCampaignDetail> {
   if (!canSeeCampaign(scope, id)) {
     throw new ForbiddenError("You don't have access to this campaign.");
   }
@@ -733,7 +794,15 @@ export async function fetchPortalBreakdowns(
   brandIds: string[] | undefined,
   dimension: PortalDimension,
 ): Promise<PortalSegment[]> {
-  const scope = await scopeFor(brandIds);
+  return buildBreakdowns(await scopeFor(brandIds), w, dimension);
+}
+
+/** `fetchPortalBreakdowns` over an already-resolved scope; see `buildOverview`. */
+export async function buildBreakdowns(
+  scope: PortalScope,
+  w: DateWindow,
+  dimension: PortalDimension,
+): Promise<PortalSegment[]> {
   if (scope.campaignIds.length === 0) return [];
 
   const rows = await db

@@ -58,6 +58,17 @@ export interface PortalReportRow {
 
 export interface PortalReport {
   rows: PortalReportRow[];
+  /**
+   * The whole report in one row — every row above folded together — or null when there is at most
+   * one row, which already is the total.
+   *
+   * Computed here rather than by summing `rows` in the browser because reach does not add up: a
+   * daily report's rows each carry that day's reach, and summing seven of them counts a person
+   * reached on Monday and Tuesday twice. This total uses the same rule as the Overview's Reach tile
+   * (`totals()`: each campaign's peak day in the window), so the two agree for the same scope. The
+   * ratios are re-derived from the summed parts, never averaged across rows.
+   */
+  totals: PortalReportMetrics | null;
   range: { since: string; until: string; days: number };
 }
 
@@ -85,7 +96,7 @@ interface Bucket {
 }
 
 /** Build the rows for an already-resolved scope, at each campaign's recorded commission. */
-async function buildRows(
+export async function buildRows(
   scope: PortalScope,
   w: DateWindow,
   req: PortalReportRequest,
@@ -97,7 +108,7 @@ async function buildRows(
   const wanted = new Set(req.campaignIds ?? []);
   const campaignIds =
     wanted.size === 0 ? scope.campaignIds : scope.campaignIds.filter((id) => wanted.has(id));
-  if (campaignIds.length === 0) return { rows: [], range };
+  if (campaignIds.length === 0) return { rows: [], totals: null, range };
 
   // A campaign groups under itself; a whole-brand report groups under its portal brand (the board
   // row it counts under, `portalBrandOf`). Either way the group is resolved through the scope,
@@ -216,7 +227,21 @@ async function buildRows(
       a.label.localeCompare(b.label),
   );
 
-  return { rows, range };
+  // `marked` is exactly the rows the buckets were built from (unlabelled ones were dropped with
+  // `days`), and a bucket filtered out above is zero in every figure, so the additive parts of this
+  // total equal the column sums. The two event counts ARE summed from the rows: each row resolves
+  // its own Meta action variant (`familyCount`), and re-resolving over the whole report could pick
+  // a variant some campaigns never fire and drop their counts, disagreeing with the column above.
+  const grand: PortalReportMetrics | null =
+    rows.length > 1
+      ? {
+          ...deriveKpis(totals(marked)),
+          registrations: rows.reduce((sum, r) => sum + r.metrics.registrations, 0),
+          deposits: rows.reduce((sum, r) => sum + r.metrics.deposits, 0),
+        }
+      : null;
+
+  return { rows, totals: grand, range };
 }
 
 /** The signed-in client's own report, over their own brands, at their own commission rates. */

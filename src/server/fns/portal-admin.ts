@@ -16,7 +16,13 @@ import {
   type ClientProject,
   type ProjectGroup,
 } from "@/portal/brand-accounts";
-import { PORTAL_DEFAULT_COMMISSION } from "@/portal/markup";
+import {
+  effectiveTimeline,
+  loadDefaultCommissions,
+  PORTAL_DEFAULT_COMMISSION,
+  type CommissionLevels,
+  type EffectiveCommission,
+} from "@/portal/markup";
 import { clientTokens, reviewName, type NameFlag } from "@/portal/name-review";
 import { groupNames, loadGroupInputs, type GroupInputs } from "@/portal/scope";
 import { effectiveAccountIds } from "@/sync/jobs/clients";
@@ -179,7 +185,12 @@ export interface BrandGroupView {
   /** Overrides; null inherits the client's own value. */
   pageName: string | null;
   pageAvatarUrl: string | null;
-  commission: number | null;
+  /**
+   * What its campaigns bill at when they have no rate of their own — its own dated schedule, over
+   * THIS client's, over the agency default — oldest first (`effectiveTimeline`). Through this
+   * client because a group covered by two clients inherits a different default under each.
+   */
+  commissionTimeline: EffectiveCommission[];
 }
 
 export interface BrandAdminView {
@@ -191,8 +202,8 @@ export interface BrandAdminView {
   pageName: string | null;
   /** The default profile photo, a public https URL; null = initials. */
   pageAvatarUrl: string | null;
-  /** Never null: a row created before the default was stored reads as `PORTAL_DEFAULT_COMMISSION`. */
-  defaultCommission: number;
+  /** The client default as billed, day by day: its dated schedule over the agency default. */
+  commissionTimeline: EffectiveCommission[];
   /** Resolved on read from the project selection — not a stored mapping. */
   accountIds: string[];
   /** `null` = follows the client, including engagements it has not won yet. */
@@ -225,7 +236,7 @@ export interface BrandAdminView {
  */
 export async function fetchBrands(): Promise<BrandAdminView[]> {
   await requireAdmin();
-  const [brandRows, clientRows, overrideRows, hiddenRows] = await Promise.all([
+  const [brandRows, clientRows, overrideRows, hiddenRows, commissions] = await Promise.all([
     db.select().from(schema.brands),
     db
       .select({
@@ -242,6 +253,7 @@ export async function fetchBrands(): Promise<BrandAdminView[]> {
       .select({ campaignId: schema.portalCampaigns.campaignId })
       .from(schema.portalCampaigns)
       .where(eq(schema.portalCampaigns.hidden, true)),
+    loadDefaultCommissions(),
   ]);
   if (brandRows.length === 0) return [];
 
@@ -330,8 +342,9 @@ export async function fetchBrands(): Promise<BrandAdminView[]> {
           };
         });
         const s = inputs.settings.get(b.clientId)?.get(g.key);
+        const gid = groupId(b.clientId, g.key);
         groups.push({
-          id: groupId(b.clientId, g.key),
+          id: gid,
           key: g.key,
           name: g.name,
           autoName: g.autoName,
@@ -343,7 +356,10 @@ export async function fetchBrands(): Promise<BrandAdminView[]> {
             .sort(),
           pageName: s?.pageName ?? null,
           pageAvatarUrl: s?.pageAvatarUrl ?? null,
-          commission: s?.commission ?? null,
+          commissionTimeline: effectiveTimeline(
+            { group: commissions.group.get(gid), brand: commissions.brand.get(b.id) },
+            PORTAL_DEFAULT_COMMISSION,
+          ),
         });
       }
 
@@ -354,7 +370,10 @@ export async function fetchBrands(): Promise<BrandAdminView[]> {
         name: b.name,
         pageName: b.pageName,
         pageAvatarUrl: b.pageAvatarUrl,
-        defaultCommission: b.defaultCommission ?? PORTAL_DEFAULT_COMMISSION,
+        commissionTimeline: effectiveTimeline(
+          { brand: commissions.brand.get(b.id) },
+          PORTAL_DEFAULT_COMMISSION,
+        ),
         accountIds,
         projectIds: selection,
         groups,
@@ -381,12 +400,6 @@ export interface UpsertBrandInput {
    * own name (`clients.name`), absent on update means unchanged.
    */
   name?: string | null;
-  /**
-   * Markup for campaigns whose project and own history set none. Absent on create means
-   * `PORTAL_DEFAULT_COMMISSION`, stored so the screen shows the real number; absent on update means
-   * unchanged; `null` resets it to the default.
-   */
-  defaultCommission?: number | null;
   /**
    * Which of the client's Notion projects this brand covers.
    *
@@ -451,20 +464,15 @@ export function pageFields(
  * Create or update a brand.
  *
  * `client_id` is `ON DELETE RESTRICT`, so an unknown id would surface as a raw constraint violation;
- * it is checked first to answer with a sentence instead. A negative default commission is refused
- * because it would quietly *discount* the client below cost.
+ * it is checked first to answer with a sentence instead. The default commission is not a field
+ * here: it is a dated schedule (`saveDefaultCommission`), and a new client with no entry bills at
+ * `PORTAL_DEFAULT_COMMISSION` without anything being stored.
  */
 export async function upsertBrand(
   input: UpsertBrandInput,
 ): Promise<{ ok: boolean; error?: string; id?: string }> {
   await requireAdmin();
   const typedName = input.name?.trim() || null;
-  if (
-    input.defaultCommission != null &&
-    !(Number.isFinite(input.defaultCommission) && input.defaultCommission >= 0)
-  ) {
-    return { ok: false, error: "Default commission cannot be negative" };
-  }
   const page = pageFields(input);
   if ("error" in page) return { ok: false, error: page.error };
 
@@ -490,9 +498,6 @@ export async function upsertBrand(
       ...page.fields,
     };
     if (typedName) fields.name = typedName;
-    if (input.defaultCommission !== undefined) {
-      fields.defaultCommission = input.defaultCommission ?? PORTAL_DEFAULT_COMMISSION;
-    }
     if (selection !== undefined) fields.projectIds = selection;
     await db.update(schema.brands).set(fields).where(eq(schema.brands.id, input.id));
     await audit("portal.brand.update", `${typedName ?? existing.name} (${input.id})`);
@@ -505,7 +510,6 @@ export async function upsertBrand(
     id,
     clientId: input.clientId,
     name,
-    defaultCommission: input.defaultCommission ?? PORTAL_DEFAULT_COMMISSION,
     projectIds: selection ?? null,
     ...page.fields,
   });
@@ -545,12 +549,12 @@ export interface SaveBrandGroupInput {
   name?: string | null;
   pageName?: string | null;
   pageAvatarUrl?: string | null;
-  commission?: number | null;
 }
 
 /**
- * Rename a Brand, or set its own ad page and commission — overriding the client's defaults for
- * every campaign that counts under any of its rows, including rows the owner adds next month.
+ * Rename a Brand, or set its own ad page — overriding the client's for every campaign that counts
+ * under any of its rows, including rows the owner adds next month. Its commission is a dated
+ * schedule of its own (`saveDefaultCommission` with `kind: "group"`), not a field here.
  *
  * Only keys the caller sent are touched, as for brands. The group must exist on the owner's board
  * now; a settings row whose every field is cleared is kept rather than deleted — it is inert (all
@@ -562,9 +566,6 @@ export async function upsertBrandGroup(
   await requireAdmin();
   const page = pageFields(input);
   if ("error" in page) return { ok: false, error: page.error };
-  if (input.commission != null && !(Number.isFinite(input.commission) && input.commission >= 0)) {
-    return { ok: false, error: "Commission cannot be negative" };
-  }
   const name = input.name === undefined ? undefined : input.name?.trim() || null;
   if (name && name.length > GROUP_NAME_MAX) {
     return { ok: false, error: `Brand name must be ${GROUP_NAME_MAX} characters or fewer` };
@@ -577,7 +578,6 @@ export async function upsertBrandGroup(
 
   const fields: Partial<typeof schema.portalGroupSettings.$inferInsert> = { ...page.fields };
   if (name !== undefined) fields.name = name;
-  if (input.commission !== undefined) fields.commission = input.commission;
 
   await db
     .insert(schema.portalGroupSettings)
@@ -662,14 +662,16 @@ export async function setProjectGroup(
 }
 
 /**
- * Delete a brand, its account mapping and every grant that pointed at it — whole-brand grants and
- * the group grants held through it.
+ * Delete a brand, its account mapping, its default commission schedule and every grant that
+ * pointed at it — whole-brand grants and the group grants held through it.
  *
  * `brand_accounts` cascades, but `portal_grants.target_id` and `parent_id` deliberately carry no FK
  * (they are polymorphic), so nothing in the database cleans those up. A leftover grant is not
  * merely untidy: it keeps naming a target the access list can no longer resolve, and it becomes
  * live access again the moment that id exists once more — a restored row or a re-imported export
- * is enough.
+ * is enough. `commission_defaults.target_id` is polymorphic for the same reason and is cleared
+ * here too. The client's Brands' schedules stay: a Brand belongs to the owner's board, not to
+ * this row, and another client covering it still bills its campaigns by them.
  */
 export async function removeBrand(input: { id: string }): Promise<{ ok: boolean; error?: string }> {
   await requireAdmin();
@@ -688,6 +690,14 @@ export async function removeBrand(input: { id: string }): Promise<{ ok: boolean;
       ),
     )
     .returning({ id: schema.portalGrants.id });
+  await db
+    .delete(schema.commissionDefaults)
+    .where(
+      and(
+        eq(schema.commissionDefaults.targetKind, "brand"),
+        eq(schema.commissionDefaults.targetId, input.id),
+      ),
+    );
   await db.delete(schema.brands).where(eq(schema.brands.id, input.id));
 
   await audit(
@@ -956,35 +966,65 @@ export async function bulkCampaignPresentation(input: {
 }
 
 // ── Commission ─────────────────────────────────────────────────────────────────────────────────
+//
+// Three levels, each a dated schedule: a campaign's own history (`campaign_commissions`), its
+// Brand's rate and its Client's default (`commission_defaults`). An entry applies from its date
+// until the next entry of the same level; a day no entry of a level covers falls to the level
+// below, and below the Client is `PORTAL_DEFAULT_COMMISSION`. See `src/portal/markup.ts`.
 
-/** One stored rate, with the end date the next period implies. */
+/** Earliest `fromDate` accepted: before any spend on record, and a guard against a mistyped year. */
+const COMMISSION_EARLIEST = "2020-01-01";
+/** How far ahead a change may be scheduled. */
+const COMMISSION_MAX_DAYS_AHEAD = 366;
+
+/**
+ * Why a commission entry cannot be saved, or null when it can — the same rule at every level.
+ *
+ * Below 0% would mark spend DOWN, billing the client less than the agency paid Meta; above 100% is
+ * refused as the likelier typo ("150" for "15" would bill 2.5× spend). `rate: null` (inherit) is
+ * only offered at the Client and Brand levels, and the callers' input types say so.
+ */
+export function commissionEntryError(
+  fromDate: string,
+  rate: number | null,
+  today: Date = new Date(),
+): string | null {
+  if (fromDate < COMMISSION_EARLIEST) return `A rate cannot start before ${COMMISSION_EARLIEST}`;
+  if (fromDate > addDays(today.toISOString().slice(0, 10), COMMISSION_MAX_DAYS_AHEAD)) {
+    return `A change can be scheduled at most ${COMMISSION_MAX_DAYS_AHEAD} days ahead`;
+  }
+  if (rate !== null && !(Number.isFinite(rate) && rate >= 0 && rate <= 100)) {
+    return "Commission must be between 0% and 100%";
+  }
+  return null;
+}
+
+/** One stored entry at one level, with the end date the next entry implies. */
 export interface CommissionPeriodView {
   fromDate: string;
-  /** Day before the next period starts; null while this is the rate currently in force. */
+  /** Day before the next entry at this level starts; null for the last, which runs on. */
   toDate: string | null;
-  rate: number;
   /**
-   * True for the earliest period, which also covers every date BEFORE `fromDate`. That is what
-   * `rateOn()` does, and the UI must say so rather than imply the campaign was un-marked-up until
-   * somebody first set a rate.
+   * Percent uplift. Null only at the Client and Brand levels: from `fromDate`, the days go back to
+   * the level below. Days BEFORE the first entry are never this level's — they inherit too.
    */
-  openStart: boolean;
+  rate: number | null;
   setByEmail: string | null;
   createdAt: string;
 }
 
-/** One stored rate as the table holds it, before the neighbouring rows give it an end. */
+/** One stored entry as a table holds it, before the neighbouring rows give it an end. */
 interface CommissionRow {
   fromDate: string;
-  rate: number;
+  rate: number | null;
   setByEmail: string | null;
   createdAt: Date;
 }
 
 /**
- * Close each period against the next one's start.
+ * Close each entry against the next one's start.
  *
- * Pure and exported so the off-by-one has a seam: `toDate` is the day BEFORE the next period
+ * Pure and exported so the off-by-one has a seam: `toDate` is the day BEFORE the next entry
  * begins, because a row stored `from_date = 2026-03-01` charges the new rate ON the 1st. Sorted
  * here rather than in SQL since the derivation depends on the order, and a lexical sort of
  * `YYYY-MM-DD` is the chronological one.
@@ -995,35 +1035,169 @@ export function commissionPeriods(rows: CommissionRow[]): CommissionPeriodView[]
     fromDate: r.fromDate,
     toDate: i + 1 < sorted.length ? addDays(sorted[i + 1].fromDate, -1) : null,
     rate: r.rate,
-    openStart: i === 0,
     setByEmail: r.setByEmail,
     createdAt: r.createdAt.toISOString(),
   }));
 }
 
-export async function fetchCampaignCommission(input: {
-  campaignId: string;
-}): Promise<CommissionPeriodView[]> {
-  await requireAdmin();
-  const rows = await db
-    .select({
-      fromDate: schema.campaignCommissions.fromDate,
-      rate: schema.campaignCommissions.rate,
-      createdAt: schema.campaignCommissions.createdAt,
-      setByEmail: schema.users.email,
-    })
-    .from(schema.campaignCommissions)
-    .leftJoin(schema.users, eq(schema.users.id, schema.campaignCommissions.setBy))
-    .where(eq(schema.campaignCommissions.campaignId, input.campaignId));
-
-  return commissionPeriods(rows.map((r) => ({ ...r, fromDate: String(r.fromDate) })));
+/** A Client (`brands` row) or Brand (group) a schedule inherits from, named for the dialog. */
+export interface CommissionOwnerRef {
+  id: string;
+  name: string;
 }
 
 /**
- * Set the rate that applies from `fromDate` onwards.
+ * One commission level as the timeline dialog shows it: the entries stored AT this level, and
+ * what is actually billed once the levels beneath are folded in.
+ *
+ * `timeline` is `effectiveTimeline()` — the resolution `markupRows` applies — so the admin console
+ * reads the margin instead of re-deriving it, and cannot disagree with the portal's figures.
+ */
+export interface CommissionScheduleView {
+  /** Oldest first. */
+  periods: CommissionPeriodView[];
+  /** Oldest first, gapless; its first stretch starts at the beginning of time. */
+  timeline: EffectiveCommission[];
+  /**
+   * Who a `group` / `brand` stretch of `timeline` comes from. Null where that level does not sit
+   * below this one: a Client's own schedule inherits only the agency default.
+   */
+  inherits: { group: CommissionOwnerRef | null; brand: CommissionOwnerRef | null };
+  /**
+   * Campaigns only: further clients covering the same campaign (two `brands` rows of one owner
+   * over the same accounts). A portal user who reaches the campaign through one of them sees that
+   * client's defaults on the inherited days; `timeline` is priced through `inherits.brand`.
+   */
+  alsoUnder: CommissionOwnerRef[];
+}
+
+/**
+ * The clients a campaign counts under, each with the Brand it counts under there — resolved as
+ * `portalScope()` resolves them: the client's project selection gives its accounts, ownership
+ * decides whether the campaign is the client's at all, and the newest covered board row listing
+ * the account picks the Brand. Sorted by name, then id — the order `claimCampaigns` (scope.ts)
+ * lets the first client claim a shared campaign in — so the client that prices the dialog's
+ * timeline is the one the portal bills through, on every load.
+ */
+async function campaignOwners(
+  campaignId: string,
+): Promise<{ brand: CommissionOwnerRef; group: CommissionOwnerRef | null }[]> {
+  const [campaign] = await db
+    .select({ accountId: schema.campaigns.accountId })
+    .from(schema.campaigns)
+    .where(eq(schema.campaigns.id, campaignId));
+  if (!campaign) return [];
+  const brandRows = await db
+    .select({
+      id: schema.brands.id,
+      clientId: schema.brands.clientId,
+      name: schema.brands.name,
+      projectIds: schema.brands.projectIds,
+    })
+    .from(schema.brands);
+  if (brandRows.length === 0) return [];
+
+  const ownerIds = [...new Set(brandRows.map((b) => b.clientId))];
+  const [clientRows, overrideRows, inputs] = await Promise.all([
+    db
+      .select({
+        id: schema.clients.id,
+        notionAccountIds: schema.clients.notionAccountIds,
+        manualAddIds: schema.clients.manualAddIds,
+        manualRemoveIds: schema.clients.manualRemoveIds,
+        raw: schema.clients.raw,
+      })
+      .from(schema.clients)
+      .where(inArray(schema.clients.id, ownerIds)),
+    db.select().from(schema.brandAccounts),
+    loadGroupInputs(ownerIds),
+  ]);
+  const clientById = new Map(clientRows.map((c) => [c.id, c]));
+  const overridesByBrand = new Map<string, string[]>();
+  for (const m of overrideRows) {
+    const list = overridesByBrand.get(m.brandId);
+    if (list) list.push(m.accountId);
+    else overridesByBrand.set(m.brandId, [m.accountId]);
+  }
+
+  const found: { brand: CommissionOwnerRef; group: CommissionOwnerRef | null }[] = [];
+  for (const b of brandRows) {
+    const client = clientById.get(b.clientId);
+    if (!client) continue;
+    const usable = brandAccountIds(b.projectIds, client, overridesByBrand.get(b.id) ?? []);
+    if (!usable.includes(campaign.accountId)) continue;
+    const owned = await ownedCampaignIds(b.clientId, usable);
+    if (owned !== null && !owned.includes(campaignId)) continue;
+
+    const pageId = projectOfAccount(coveredProjects(b.projectIds, client.raw), usable).get(
+      campaign.accountId,
+    );
+    const g =
+      pageId === undefined
+        ? undefined
+        : projectGroups(
+            clientProjects(client.raw),
+            inputs.overrides.get(b.clientId),
+            groupNames(inputs, b.clientId),
+          ).find((x) => x.projects.some((p) => p.pageId === pageId));
+    found.push({
+      brand: { id: b.id, name: b.name },
+      group: g ? { id: groupId(b.clientId, g.key), name: g.name } : null,
+    });
+  }
+  return found.sort(
+    (a, b) => a.brand.name.localeCompare(b.brand.name) || a.brand.id.localeCompare(b.brand.id),
+  );
+}
+
+/** A campaign's own history, and what it bills at day by day through its Brand and Client. */
+export async function fetchCampaignCommission(input: {
+  campaignId: string;
+}): Promise<CommissionScheduleView> {
+  await requireAdmin();
+  const [rows, owners] = await Promise.all([
+    db
+      .select({
+        fromDate: schema.campaignCommissions.fromDate,
+        rate: schema.campaignCommissions.rate,
+        createdAt: schema.campaignCommissions.createdAt,
+        setByEmail: schema.users.email,
+      })
+      .from(schema.campaignCommissions)
+      .leftJoin(schema.users, eq(schema.users.id, schema.campaignCommissions.setBy))
+      .where(eq(schema.campaignCommissions.campaignId, input.campaignId)),
+    campaignOwners(input.campaignId),
+  ]);
+  const [primary, ...others] = owners;
+  const defaults = primary
+    ? await loadDefaultCommissions({
+        brandIds: [primary.brand.id],
+        groupIds: primary.group ? [primary.group.id] : [],
+      })
+    : null;
+
+  const stored = rows.map((r) => ({ ...r, fromDate: String(r.fromDate) }));
+  const levels: CommissionLevels = {
+    campaign: stored
+      .map((r) => ({ fromDate: r.fromDate, rate: r.rate }))
+      .sort((a, b) => a.fromDate.localeCompare(b.fromDate)),
+    group: primary?.group ? defaults?.group.get(primary.group.id) : undefined,
+    brand: primary ? defaults?.brand.get(primary.brand.id) : undefined,
+  };
+  return {
+    periods: commissionPeriods(stored),
+    timeline: effectiveTimeline(levels, PORTAL_DEFAULT_COMMISSION),
+    inherits: { group: primary?.group ?? null, brand: primary?.brand ?? null },
+    alsoUnder: others.map((o) => o.brand),
+  };
+}
+
+/**
+ * Set a campaign's rate from `fromDate` onwards.
  *
  * One row per `(campaign, from_date)`, so re-sending a date corrects that period instead of adding
- * a second, contradictory one — overlapping periods are unrepresentable by design.
+ * a second, contradictory one — overlapping periods are unrepresentable by design. Days before the
+ * campaign's first row keep inheriting, so a rate "from today" re-prices nothing already shown.
  */
 export async function upsertCampaignCommission(input: {
   campaignId: string;
@@ -1031,10 +1205,8 @@ export async function upsertCampaignCommission(input: {
   rate: number;
 }): Promise<{ ok: boolean; error?: string }> {
   const user = await requireAdmin();
-  // A negative rate would mark spend DOWN, i.e. bill the client less than the agency paid Meta.
-  if (!Number.isFinite(input.rate) || input.rate < 0) {
-    return { ok: false, error: "Commission cannot be negative" };
-  }
+  const invalid = commissionEntryError(input.fromDate, input.rate);
+  if (invalid) return { ok: false, error: invalid };
   const [campaign] = await db
     .select({ id: schema.campaigns.id })
     .from(schema.campaigns)
@@ -1062,11 +1234,11 @@ export async function upsertCampaignCommission(input: {
 }
 
 /**
- * Drop one period.
+ * Drop one period of a campaign's history.
  *
- * Deleting the earliest one does not leave its dates un-marked-up: the next period becomes the
- * earliest and `rateOn()` extends it backwards. Deleting the only period falls the campaign back to
- * its brand default.
+ * Its days go to the period before it, or — for the first — back to what the campaign inherits
+ * (its Brand's, then its Client's schedule, as each stood on those days). Deleting the only period
+ * returns the campaign to inheriting throughout.
  */
 export async function removeCampaignCommission(input: {
   campaignId: string;
@@ -1087,6 +1259,148 @@ export async function removeCampaignCommission(input: {
   await audit(
     "portal.commission.delete",
     `${input.campaignId} from ${input.fromDate} (was ${removed[0].rate}%)`,
+  );
+  return { ok: true };
+}
+
+/**
+ * A Client's default (`brand`, `targetId` = `brands.id`) or a Brand's rate (`group`, `targetId` =
+ * its global id). A Brand is addressed THROUGH a client (`brandId`), the one whose page it is being
+ * edited on: that client's default is what it inherits, and covering it is what proves it exists.
+ */
+export type DefaultCommissionTarget =
+  | { kind: "brand"; targetId: string }
+  | { kind: "group"; targetId: string; brandId: string };
+
+/** Check a target exists and name it; for a Brand, also name the client it inherits from. */
+async function resolveDefaultTarget(
+  target: DefaultCommissionTarget,
+): Promise<{ name: string; via: CommissionOwnerRef | null } | { error: string }> {
+  if (target.kind === "brand") {
+    const [brand] = await db
+      .select({ name: schema.brands.name })
+      .from(schema.brands)
+      .where(eq(schema.brands.id, target.targetId));
+    return brand ? { name: brand.name, via: null } : { error: "Client not found" };
+  }
+  const [brand] = await db
+    .select({
+      name: schema.brands.name,
+      clientId: schema.brands.clientId,
+      projectIds: schema.brands.projectIds,
+      raw: schema.clients.raw,
+    })
+    .from(schema.brands)
+    .innerJoin(schema.clients, eq(schema.clients.id, schema.brands.clientId))
+    .where(eq(schema.brands.id, target.brandId));
+  if (!brand) return { error: "Client not found" };
+  const inputs = await loadGroupInputs([brand.clientId]);
+  const name = coveredGroupNames(brand, brand.raw, inputs).get(target.targetId);
+  if (name === undefined) return { error: "That brand is not one this client covers" };
+  return { name, via: { id: target.brandId, name: brand.name } };
+}
+
+/** A Client's or Brand's own schedule, and what it bills at day by day with the levels below. */
+export async function fetchDefaultCommission(
+  input: DefaultCommissionTarget,
+): Promise<CommissionScheduleView> {
+  await requireAdmin();
+  const target = await resolveDefaultTarget(input);
+  if ("error" in target) throw new Error(target.error);
+
+  const t = schema.commissionDefaults;
+  const [rows, below] = await Promise.all([
+    db
+      .select({
+        fromDate: t.fromDate,
+        rate: t.rate,
+        createdAt: t.createdAt,
+        setByEmail: schema.users.email,
+      })
+      .from(t)
+      .leftJoin(schema.users, eq(schema.users.id, t.setBy))
+      .where(and(eq(t.targetKind, input.kind), eq(t.targetId, input.targetId))),
+    target.via
+      ? loadDefaultCommissions({ brandIds: [target.via.id], groupIds: [] })
+      : Promise.resolve(null),
+  ]);
+
+  const periods = commissionPeriods(rows.map((r) => ({ ...r, fromDate: String(r.fromDate) })));
+  const own = periods.map((p) => ({ fromDate: p.fromDate, rate: p.rate }));
+  const levels: CommissionLevels =
+    input.kind === "brand"
+      ? { brand: own }
+      : { group: own, brand: target.via ? below?.brand.get(target.via.id) : undefined };
+  return {
+    periods,
+    timeline: effectiveTimeline(levels, PORTAL_DEFAULT_COMMISSION),
+    inherits: { group: null, brand: target.via },
+    alsoUnder: [],
+  };
+}
+
+/**
+ * Set a Client's or Brand's rate from `fromDate` onwards; `rate: null` hands the days from then
+ * back to the level below. Every campaign without an entry of its own on those days inherits it;
+ * days before `fromDate` keep the rate they had.
+ */
+export async function upsertDefaultCommission(
+  input: DefaultCommissionTarget & { fromDate: string; rate: number | null },
+): Promise<{ ok: boolean; error?: string }> {
+  const user = await requireAdmin();
+  const invalid = commissionEntryError(input.fromDate, input.rate);
+  if (invalid) return { ok: false, error: invalid };
+  const target = await resolveDefaultTarget(input);
+  if ("error" in target) return { ok: false, error: target.error };
+
+  const t = schema.commissionDefaults;
+  await db
+    .insert(t)
+    .values({
+      targetKind: input.kind,
+      targetId: input.targetId,
+      fromDate: input.fromDate,
+      rate: input.rate,
+      setBy: user.id,
+    })
+    .onConflictDoUpdate({
+      target: [t.targetKind, t.targetId, t.fromDate],
+      set: { rate: input.rate, setBy: user.id },
+    });
+
+  await audit(
+    "portal.commission.default.set",
+    `${input.kind} ${target.name} (${input.targetId}) from ${input.fromDate}: ${
+      input.rate === null ? "inherit" : `${input.rate}%`
+    }`,
+  );
+  return { ok: true };
+}
+
+/** Drop one entry of a Client's or Brand's schedule; its days go to the entry before, or inherit. */
+export async function removeDefaultCommission(input: {
+  kind: DefaultCommissionTarget["kind"];
+  targetId: string;
+  fromDate: string;
+}): Promise<{ ok: boolean; error?: string }> {
+  await requireAdmin();
+  const t = schema.commissionDefaults;
+  const removed = await db
+    .delete(t)
+    .where(
+      and(
+        eq(t.targetKind, input.kind),
+        eq(t.targetId, input.targetId),
+        eq(t.fromDate, input.fromDate),
+      ),
+    )
+    .returning({ rate: t.rate });
+  if (removed.length === 0) return { ok: false, error: "No rate set from that date" };
+
+  const was = removed[0].rate;
+  await audit(
+    "portal.commission.default.delete",
+    `${input.kind} ${input.targetId} from ${input.fromDate} (was ${was === null ? "inherit" : `${was}%`})`,
   );
   return { ok: true };
 }

@@ -903,9 +903,10 @@ export const brands = pgTable(
     // RETIRED with the portal's pacing widget: no code reads or writes it. Kept for the same reason
     // as `website`.
     monthlyBudget: doublePrecision("monthly_budget"),
-    // Markup applied to this brand's campaigns unless their project or the campaign itself has its
-    // own rate. Set to `PORTAL_DEFAULT_COMMISSION` on create; a null left by an older row is read
-    // as that default too.
+    // RETIRED: the Client default commission is now a dated schedule in `commission_defaults`
+    // (`target_kind = 'brand'`), because an undated number re-priced every past day whenever it was
+    // edited. No code reads or writes it; its non-null values were copied into the schedule by the
+    // seed documented there. Kept, not dropped, for the same reason as `website`.
     defaultCommission: doublePrecision("default_commission"),
     // Which Notion board rows ("projects"/engagements) this brand covers, as page ids.
     // NULL means follow the client: every project it has now and every one it gains later, which
@@ -1040,8 +1041,8 @@ export const portalProjectSettings = pgTable(
  * adding next month's row: the new row joins the same group and gets the same ad page and rate.
  *
  * Sparse: no row, or a null column, inherits — `name` falls back to the derived name, the page
- * fields and commission to the `brands` row's (`page_name`, `page_avatar_url`,
- * `default_commission`). Applied as additive DDL on `meta`:
+ * fields to the `brands` row's (`page_name`, `page_avatar_url`). The Brand's commission is a dated
+ * schedule in `commission_defaults` (`target_kind = 'group'`). Applied as additive DDL on `meta`:
  *   CREATE TABLE IF NOT EXISTS portal_group_settings (
  *     client_id text NOT NULL REFERENCES clients(id) ON DELETE CASCADE,
  *     group_key text NOT NULL,
@@ -1059,7 +1060,9 @@ export const portalGroupSettings = pgTable(
     name: text("name"),
     pageName: text("page_name"),
     pageAvatarUrl: text("page_avatar_url"),
-    commission: doublePrecision("commission"), // percent uplift; null = the client's default
+    // RETIRED: superseded by `commission_defaults` (`target_kind = 'group'`), for the same reason as
+    // `brands.default_commission`. No code reads or writes it; kept, not dropped.
+    commission: doublePrecision("commission"),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [primaryKey({ columns: [t.clientId, t.groupKey] })],
@@ -1068,7 +1071,10 @@ export const portalGroupSettings = pgTable(
 /**
  * Commission history per campaign: each row is a rate that applies FROM `from_date` onwards, and
  * the period's end is always derived from the next row. Storing only the start date is what makes
- * overlapping or contradictory periods unrepresentable.
+ * overlapping or contradictory periods unrepresentable. Days before a campaign's first row are NOT
+ * priced at that row's rate: they inherit the campaign's Brand, then Client, schedule
+ * (`commission_defaults`) as it stood on each day — so adding a rate "from today" leaves every
+ * earlier figure exactly where it was.
  *
  * This is the agency's margin, so it exists server-side and nowhere else. The portal never receives
  * a rate or a raw spend figure — `src/portal/markup.ts` folds the rate into the numbers before they
@@ -1085,6 +1091,65 @@ export const campaignCommissions = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [primaryKey({ columns: [t.campaignId, t.fromDate] })],
+);
+
+/**
+ * The dated rates beneath a campaign's own history: a Client's default (`target_kind = 'brand'`,
+ * `target_id` = `brands.id`) and a Brand's rate (`'group'`, `target_id` = the group's global id
+ * `<owner clients.id>:<group key>`, as `groupId()` builds it). Same rule as `campaign_commissions`:
+ * a row applies FROM `from_date` until the next row of the same target, so a change of default
+ * from a date leaves every earlier day priced as it was. `rate` null hands the days from
+ * `from_date` back to the next level down — a Brand to its Client, a Client to
+ * `PORTAL_DEFAULT_COMMISSION` — which is how "go back to inheriting" is written without deleting
+ * the history that came before it. Resolution (`src/portal/markup.ts`): campaign row in force, else
+ * Brand row in force, else Client row in force, else the agency default.
+ *
+ * Replaces the undated `brands.default_commission` and `portal_group_settings.commission`. A Brand's
+ * rows are keyed exactly like its `portal_group_settings` row (owner + group key), and no op ever
+ * re-keys a group — renaming stores a name, moving a board row changes which group the row's
+ * campaigns count under, not any group's key — so the history stays with its Brand as the
+ * settings do. `target_id` carries no FK for the reason `portal_grants.target_id` carries none (it
+ * is polymorphic); `removeBrand` deletes a Client's rows itself.
+ *
+ * Applied as additive DDL on `meta`, then seeded so that no figure the portal shows moves: every
+ * non-null scalar becomes one row from 2020-01-01 (`COMMISSION_EARLIEST`, the earliest date an
+ * entry may have) — not from the first day of recorded spend, because the sync keeps backfilling
+ * older history, and days before a seeded entry would fall through to the agency default. MUST be
+ * applied before the code that reads it is deployed — `portalScope()` queries this table on every
+ * request.
+ *   CREATE TABLE IF NOT EXISTS commission_defaults (
+ *     target_kind text NOT NULL CHECK (target_kind IN ('brand', 'group')),
+ *     target_id text NOT NULL,
+ *     from_date date NOT NULL,
+ *     rate double precision,
+ *     set_by text REFERENCES users(id) ON DELETE SET NULL,
+ *     created_at timestamptz NOT NULL DEFAULT now(),
+ *     PRIMARY KEY (target_kind, target_id, from_date));
+ *   INSERT INTO commission_defaults (target_kind, target_id, from_date, rate)
+ *   SELECT 'brand', b.id, DATE '2020-01-01', b.default_commission
+ *     FROM brands b
+ *    WHERE b.default_commission IS NOT NULL
+ *      AND NOT EXISTS (SELECT 1 FROM commission_defaults d
+ *                       WHERE d.target_kind = 'brand' AND d.target_id = b.id)
+ *   UNION ALL
+ *   SELECT 'group', g.client_id || ':' || g.group_key, DATE '2020-01-01', g.commission
+ *     FROM portal_group_settings g
+ *    WHERE g.commission IS NOT NULL
+ *      AND NOT EXISTS (SELECT 1 FROM commission_defaults d WHERE d.target_kind = 'group'
+ *                         AND d.target_id = g.client_id || ':' || g.group_key)
+ *   ON CONFLICT (target_kind, target_id, from_date) DO NOTHING;
+ */
+export const commissionDefaults = pgTable(
+  "commission_defaults",
+  {
+    targetKind: text("target_kind").notNull(), // "brand" | "group" (CHECK in the DDL)
+    targetId: text("target_id").notNull(), // brands.id, or a group id `<owner>:<key>`
+    fromDate: date("from_date").notNull(),
+    rate: doublePrecision("rate"), // percent uplift; null = inherit the next level from this date
+    setBy: text("set_by").references(() => users.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.targetKind, t.targetId, t.fromDate] })],
 );
 
 /**
@@ -1113,3 +1178,56 @@ export const portalCampaigns = pgTable("portal_campaigns", {
   updatedBy: text("updated_by").references(() => users.id, { onDelete: "set null" }),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+/**
+ * One portal assistant turn: who asked, about which brand, what they were told and what it cost.
+ *
+ * Append-only, and doing two jobs. It is the audit trail of everything the assistant said to a
+ * customer — the model is the one surface that phrases our figures in its own words, so what it
+ * actually said is kept, not reconstructed. And it is the meter for the per-login daily turn limit
+ * (`src/server/fns/portal-chat.ts`), which counts a login's rows since UTC midnight.
+ *
+ * `viewed_by` is the staff user id when an agency admin ran the turn while previewing the portal
+ * as this login; those rows are logged against the login but never counted towards its limit.
+ * Deliberately no FK: `ON DELETE SET NULL` would turn a deleted colleague's previews into the
+ * client's own turns and spend their quota. `brand_id` is the portal brand id (`portalBrandOf`),
+ * also without an FK — a group has no row of its own to point at.
+ *
+ * The conversation itself lives in the customer's browser; this is a log, not history the
+ * assistant replays. Applied as additive DDL on `meta`:
+ *   CREATE TABLE IF NOT EXISTS portal_chat_turns (
+ *     id text PRIMARY KEY,
+ *     portal_user_id text NOT NULL REFERENCES portal_users(id) ON DELETE CASCADE,
+ *     brand_id text NOT NULL,
+ *     question text NOT NULL,
+ *     answer text NOT NULL DEFAULT '',
+ *     tool_calls jsonb NOT NULL DEFAULT '[]'::jsonb,
+ *     error text,
+ *     model text,
+ *     cost_usd double precision NOT NULL DEFAULT 0,
+ *     viewed_by text,
+ *     created_at timestamptz NOT NULL DEFAULT now());
+ *   CREATE INDEX IF NOT EXISTS portal_chat_turns_user_created_idx
+ *     ON portal_chat_turns (portal_user_id, created_at);
+ */
+export const portalChatTurns = pgTable(
+  "portal_chat_turns",
+  {
+    id: text("id").primaryKey(), // crypto.randomUUID()
+    portalUserId: text("portal_user_id")
+      .notNull()
+      .references(() => portalUsers.id, { onDelete: "cascade" }),
+    brandId: text("brand_id").notNull(),
+    question: text("question").notNull(),
+    answer: text("answer").notNull().default(""),
+    toolCalls: jsonb("tool_calls")
+      .notNull()
+      .default(sql`'[]'::jsonb`),
+    error: text("error"),
+    model: text("model"),
+    costUsd: doublePrecision("cost_usd").notNull().default(0),
+    viewedBy: text("viewed_by"), // staff users.id for an admin preview; null = the client
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("portal_chat_turns_user_created_idx").on(t.portalUserId, t.createdAt)],
+);

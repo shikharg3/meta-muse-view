@@ -88,7 +88,7 @@ describe("creativePageResolver", () => {
     name: "Acme",
     pageName: "Acme Casino",
     pageAvatarUrl: "https://media.example/acme.png",
-    defaultCommission: null,
+    commission: [],
     accountIds: [],
   };
   const group = (key: string, pageName: string | null, pageAvatarUrl: string | null) => ({
@@ -99,7 +99,7 @@ describe("creativePageResolver", () => {
     name: key,
     pageName,
     pageAvatarUrl,
-    commission: null,
+    commission: [],
   });
   const pageOf = creativePageResolver({
     brands: [brand, { ...brand, id: "b_bare", pageName: null, pageAvatarUrl: null }],

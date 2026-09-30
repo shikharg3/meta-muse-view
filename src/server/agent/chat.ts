@@ -3,13 +3,14 @@ import { fetchClients } from "@/server/fns/clients";
 import {
   AnthropicClient,
   type AnthropicMessage,
+  type AnthropicTool,
   type ContentBlock,
   type LlmClient,
 } from "./anthropic";
 import { runTool, toolLabel, toolsFor } from "./tools";
 import type { ToolContext } from "./tools/kit";
 import { costUsd, type TokenUsage } from "./pricing";
-import { emptyExtras, type ChatEvent, type MessageExtras } from "./events";
+import { emptyExtras, type ChatEvent, type MessageExtras, type SeriesPoint } from "./events";
 export type { ToolTrace, MessageExtras, ChatEvent, SeriesPoint } from "./events";
 import type { Kpis } from "@/lib/types";
 
@@ -50,6 +51,8 @@ export interface ChatResult extends MessageExtras {
 export const MAX_ITERATIONS = 6;
 /** Per-tool replay budget. Big tables get summarised rather than dropped entirely. */
 const REPLAY_CHARS = 6000;
+/** What the model is told for a tool call past `LoopOptions.maxToolCalls`. */
+export const TOO_MANY_LOOKUPS = "Too many lookups in one answer — narrow the question.";
 
 /**
  * The cacheable half of the prompt: rules only, no dates and no client list.
@@ -152,18 +155,54 @@ function toApiMessages(history: ChatMessage[]): AnthropicMessage[] {
   return out;
 }
 
+/** What a successful tool result contributes to the message besides text: a KPI strip or a chart. */
+export type ToolVisual =
+  | { kind: "cards"; title: string; kpis: Kpis }
+  | { kind: "series"; title: string; unit: string; points: SeriesPoint[] };
+
+/**
+ * Everything the loop may call, and how it reads what comes back.
+ *
+ * Injected because the loop serves two audiences whose tools must never mix. The staff assistant
+ * (`staffToolbox`) reads raw figures for every client; the portal assistant
+ * (`src/server/agent/portal`) reads one brand's marked-up figures through tools with that brand
+ * bound in. The loop itself knows neither — it can only offer the model `definitions` and forward
+ * what the model asks for to `run`, so which data a turn can reach is decided entirely by whoever
+ * built the toolbox.
+ */
+export interface AgentToolbox {
+  /** The only tools the model is shown. */
+  definitions: AnthropicTool[];
+  /** Human label for the live trace. */
+  label(name: string): string;
+  /** Always resolves — failures come back as `{ error }` data the model can react to. */
+  run(name: string, input: Record<string, unknown>): Promise<unknown>;
+  /** Which KPI strip or chart, if any, a successful result becomes. */
+  visualOf(name: string, result: unknown): ToolVisual | null;
+}
+
 export interface LoopOptions {
   model: string;
   effort: string;
-  ctx: ToolContext;
+  toolbox: AgentToolbox;
+  /** Per-turn facts, sent outside the cached prefix (`CreateMessageParams.volatile`). */
+  volatile: string;
+  /** Model round-trips before the turn gives up. Defaults to `MAX_ITERATIONS`. */
+  maxIterations?: number;
+  /**
+   * Tools run per turn, across every round-trip. One response may request any number of tools at
+   * once, so the iteration cap alone does not bound the reads a turn makes. Past this, a requested
+   * call is answered with an error result without running. Omitted = no limit (the staff assistant).
+   */
+  maxToolCalls?: number;
   /** Emits progress as it happens. Omit for a silent (test) run. */
   emit?: (e: ChatEvent) => void;
 }
 
 /**
- * Drive the tool-use loop to completion: call the model, run any requested tools against Postgres,
- * feed results back, repeat until the model answers or the iteration cap trips. Pure w.r.t. the LLM
- * (injected) so it can be tested.
+ * Drive the tool-use loop to completion: call the model, run any requested tools, feed results
+ * back, repeat until the model answers or the iteration cap trips. Pure w.r.t. the LLM and the
+ * tools (both injected) so it can be tested.
  */
 export async function runAgentLoop(
   llm: LlmClient,
@@ -174,14 +213,16 @@ export async function runAgentLoop(
   // Only show the model the last 25 turns (user+assistant pairs) to bound context.
   const CONTEXT_TURNS = 25;
   const messages = toApiMessages(history.slice(-CONTEXT_TURNS * 2));
-  const tools = toolsFor(opts.ctx);
+  const { toolbox, volatile } = opts;
+  const tools = toolbox.definitions;
   const emit = opts.emit ?? (() => {});
   const extras: MessageExtras = emptyExtras();
   const captured: ReplayedTool[] = [];
   const acc: TokenUsage = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 };
-  const volatile = await buildVolatileContext();
+  const iterations = opts.maxIterations ?? MAX_ITERATIONS;
+  let toolBudget = opts.maxToolCalls ?? Number.POSITIVE_INFINITY;
 
-  for (let i = 0; i < MAX_ITERATIONS; i++) {
+  for (let i = 0; i < iterations; i++) {
     emit({ type: "status", text: i === 0 ? "Thinking" : "Working through the results" });
     const resp = await llm.send(
       { model: opts.model, effort: opts.effort, system, volatile, tools, messages },
@@ -212,25 +253,34 @@ export async function runAgentLoop(
     const results: ContentBlock[] = [];
     for (const block of resp.content) {
       if (block.type !== "tool_use") continue;
-      const label = toolLabel(block.name);
+      // Every tool_use still needs a tool_result, or the API rejects the continuation.
+      if (toolBudget <= 0) {
+        results.push({
+          type: "tool_result",
+          tool_use_id: block.id,
+          content: JSON.stringify({ error: TOO_MANY_LOOKUPS }),
+          is_error: true,
+        });
+        continue;
+      }
+      toolBudget -= 1;
+      const label = toolbox.label(block.name);
       const detail = describeInput(block.input);
       emit({ type: "tool_start", name: block.name, label, detail });
       const started = Date.now();
-      const result = await runTool(block.name, block.input, opts.ctx);
+      const result = await toolbox.run(block.name, block.input);
       const ms = Date.now() - started;
       const ok = !isErr(result);
       extras.toolCalls.push({ name: block.name, label, ok, ms, detail });
       emit({ type: "tool_end", name: block.name, label, ok, ms, detail });
 
       const content = JSON.stringify(result);
-      if (ok && isClientStats(result)) {
-        extras.cards = { title: result.client, kpis: result.kpis };
+      const visual = ok ? toolbox.visualOf(block.name, result) : null;
+      if (visual?.kind === "cards") {
+        extras.cards = { title: visual.title, kpis: visual.kpis };
         emit({ type: "cards", ...extras.cards });
-      } else if (ok && block.name === "get_overview" && hasKpis(result)) {
-        extras.cards = { title: "All accounts", kpis: result.kpis };
-        emit({ type: "cards", ...extras.cards });
-      } else if (ok && isSeries(result)) {
-        extras.series = { title: result.title, unit: result.unit, points: result.points };
+      } else if (visual?.kind === "series") {
+        extras.series = { title: visual.title, unit: visual.unit, points: visual.points };
         emit({ type: "series", ...extras.series });
       }
 
@@ -281,11 +331,30 @@ const hasKpis = (r: unknown): r is { kpis: Kpis } =>
 const isClientStats = (r: unknown): r is { client: string; kpis: Kpis } =>
   hasKpis(r) && "client" in r && typeof r.client === "string";
 
+/** The staff assistant's tools: the full registry, filtered to what the caller's role may run. */
+export function staffToolbox(ctx: ToolContext): AgentToolbox {
+  return {
+    definitions: toolsFor(ctx),
+    label: toolLabel,
+    run: (name, input) => runTool(name, input, ctx),
+    visualOf: (name, result) => {
+      if (isClientStats(result)) return { kind: "cards", title: result.client, kpis: result.kpis };
+      if (name === "get_overview" && hasKpis(result)) {
+        return { kind: "cards", title: "All accounts", kpis: result.kpis };
+      }
+      if (isSeries(result)) {
+        return { kind: "series", title: result.title, unit: result.unit, points: result.points };
+      }
+      return null;
+    },
+  };
+}
+
 export interface TurnOutcome extends ChatResult {
   error?: string;
 }
 
-const failed = (error: string): TurnOutcome => ({
+export const failedTurn = (error: string): TurnOutcome => ({
   ...emptyExtras(),
   reply: "",
   replay: [],
@@ -302,17 +371,18 @@ export async function chatTurn(
   emit?: (e: ChatEvent) => void,
 ): Promise<TurnOutcome> {
   const creds = await getChatCredentials();
-  if (!creds) return failed("No Claude API key configured. Add one in Settings → Assistant.");
+  if (!creds) return failedTurn("No Claude API key configured. Add one in Settings → Assistant.");
   const llm = new AnthropicClient(creds.token);
   try {
     const out = await runAgentLoop(llm, buildSystemPrompt(), history, {
       model: creds.model,
       effort: creds.effort,
-      ctx,
+      toolbox: staffToolbox(ctx),
+      volatile: await buildVolatileContext(),
       emit,
     });
     return out;
   } catch (e) {
-    return failed(e instanceof Error ? e.message : String(e));
+    return failedTurn(e instanceof Error ? e.message : String(e));
   }
 }

@@ -47,8 +47,24 @@ export function clearViewAs() {
   }
 }
 
-/** Sign out, ending any preview first so whoever signs in next in this tab starts as themselves. */
+/**
+ * Every AI Intelligence thread is kept under this prefix (`components/portal/ai/aiThread.js`).
+ * Spelled out here rather than imported so this module stays free of portal UI imports.
+ */
+const AI_THREADS = 'portal.ai.';
+
+/**
+ * Sign out, ending any preview first so whoever signs in next in this tab starts as themselves —
+ * and without the AI Intelligence threads, which sessionStorage would otherwise keep for them.
+ */
 export function signOut() {
   clearViewAs();
+  try {
+    const store = window.sessionStorage;
+    const keys = Array.from({ length: store.length }, (_, i) => store.key(i));
+    for (const k of keys) if (k?.startsWith(AI_THREADS)) store.removeItem(k);
+  } catch {
+    /* storage unavailable — nothing was stored */
+  }
   base44.auth.logout();
 }

@@ -2,7 +2,7 @@ import { createClientFromRequest } from "npm:@base44/sdk";
 import { secrets } from "base44:runtime";
 
 /**
- * The only door between the CLIENT PORTAL frontend and the VPS.
+ * The door between the CLIENT PORTAL frontend and the VPS, for every page read.
  *
  * Deployed in the Base44 app `6a91757327c7555d5f5a8f91` ("DotAnalytics"), which is the app the
  * agency's customers log into. Its sibling in `base44/functions/vps/entry.ts` does the same job for
@@ -16,9 +16,11 @@ import { secrets } from "base44:runtime";
  * cannot address `getFinance`, `listUsers` or `resetAndResync` even if it tried. A total compromise
  * of this frontend exposes one client's already-marked-up figures, never the agency's numbers.
  *
- * There is deliberately NO streaming sibling here. The internal app's `vps-stream` proxies the AI
- * assistant, whose tools read finance, infrastructure and every client — none of which a customer
- * may see. A portal assistant needs its own scoped tool set before it gets a transport.
+ * Its one sibling is `portal-stream`, the portal assistant's NDJSON transport: same secret, same
+ * identity rule, forwarding to the single route `/api/v1/portal/chat/stream`. The internal app's
+ * `vps-stream` is NOT reused for it — that assistant's tools read finance, infrastructure and every
+ * client. The portal's has its own tool set, bound on the VPS to one brand the caller was granted
+ * (`src/server/agent/portal`).
  */
 export default async function (req: Request): Promise<Response> {
   const base = secrets.get("PORTAL_API_URL");
