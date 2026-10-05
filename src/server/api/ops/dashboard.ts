@@ -14,6 +14,7 @@ import {
   fetchOverview,
   searchEntities,
 } from "@/server/fns/dashboard";
+import { fetchAdVideo } from "@/server/fns/ad-video";
 import { effectiveAccountIds, getClientRow } from "@/sync/jobs/clients";
 import { defineOp, scalarString } from "../registry";
 import { rangeSpec } from "../schemas";
@@ -127,6 +128,19 @@ export const getAdSetAds = defineOp({
   mode: "read",
   input: rangeSpec.extend({ adSetId: z.string().min(1) }),
   handler: (input) => fetchAdSetAds(input.adSetId, resolveWindow(input)),
+});
+
+/**
+ * One ad's playable video, asked of Meta on demand: Base44 holds no Meta token, and the signed MP4
+ * URL expires within hours, so the sync cannot store it. A Meta refusal answers `200` with
+ * `source: null` and a `reason`, because the viewer falls back to the poster rather than erroring.
+ * `fetchAdVideo` calls `requireApproved()` itself.
+ */
+export const getAdVideo = defineOp({
+  name: "getAdVideo",
+  mode: "read",
+  input: z.object({ adId: z.string().min(1) }),
+  handler: (input) => fetchAdVideo(input),
 });
 
 /**

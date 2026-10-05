@@ -59,6 +59,23 @@ export function specImage(specs: CreativeSpecs): { hash: string } | { url: strin
   return poster ? { url: poster } : null;
 }
 
+/**
+ * The video a creative plays, or null for a creative that carries none.
+ *
+ * Meta keeps it in three places. The synced `video_id` column is the creative's own top-level field
+ * and is authoritative when present; a plain video ad otherwise names it in
+ * `object_story_spec.video_data`, and a dynamic or placement-customised one only in
+ * `asset_feed_spec.videos`, where the first entry stands for the ad exactly as its first image does
+ * in `specImage`.
+ */
+export function specVideoId(specs: CreativeSpecs & { videoId?: string | null }): string | null {
+  return (
+    filled(specs.videoId) ??
+    filled(obj(obj(specs.objectStorySpec).video_data).video_id) ??
+    filled(head(obj(specs.assetFeedSpec).videos).video_id)
+  );
+}
+
 export interface ResultSpec {
   /**
    * Action types in preference order (Meta's unified `omni_*` first). The first type PRESENT in the

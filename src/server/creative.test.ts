@@ -8,6 +8,7 @@ import {
   isReachSpec,
   unanimousEvent,
   specImage,
+  specVideoId,
   type CreativeFacts,
 } from "./creative";
 
@@ -174,4 +175,43 @@ test("specImage finds the hash each creative shape keeps its image under", () =>
   ).toEqual({ url: "https://cdn/poster.jpg" });
   expect(specImage({ assetFeedSpec: { videos: [{ video_id: "v" }] } })).toBeNull();
   expect(specImage({})).toBeNull();
+});
+
+test("specVideoId reads the column first, then video_data, then the first asset-feed video", () => {
+  const story = { video_data: { video_id: "v_story", image_hash: "h" } };
+  const feed = { videos: [{ video_id: "v_feed1" }, { video_id: "v_feed2" }] };
+  // The synced column is the creative's own field — it outranks both specs.
+  expect(specVideoId({ videoId: "v_col", objectStorySpec: story, assetFeedSpec: feed })).toBe(
+    "v_col",
+  );
+  expect(specVideoId({ videoId: null, objectStorySpec: story, assetFeedSpec: feed })).toBe(
+    "v_story",
+  );
+  // A placement-customised creative names its video only in the asset feed.
+  expect(
+    specVideoId({ objectStorySpec: { page_id: "p", instagram_user_id: "i" }, assetFeedSpec: feed }),
+  ).toBe("v_feed1");
+  // An image ad has a story spec but no video anywhere.
+  expect(
+    specVideoId({
+      objectStorySpec: { link_data: { image_hash: "h_link" } },
+      assetFeedSpec: { images: [{ hash: "h_feed" }] },
+    }),
+  ).toBeNull();
+  // Blank strings are absences, not ids: each falls through to the next source.
+  expect(
+    specVideoId({
+      videoId: "",
+      objectStorySpec: { video_data: { video_id: "" } },
+      assetFeedSpec: { videos: [{ video_id: "v_feed1" }] },
+    }),
+  ).toBe("v_feed1");
+  expect(
+    specVideoId({
+      videoId: "",
+      objectStorySpec: { video_data: { video_id: "" } },
+      assetFeedSpec: { videos: [{ video_id: "" }] },
+    }),
+  ).toBeNull();
+  expect(specVideoId({})).toBeNull();
 });
