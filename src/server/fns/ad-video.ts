@@ -107,6 +107,20 @@ function noSource(reason: string): MetaVideo {
   return { source: null, poster: null, durationSec: null, permalinkUrl: null, reason };
 }
 
+// The three places a video id can live, exactly as `specVideoId` reads them — projected, never `raw`
+// itself, whose blobs are large. The spec columns are coalesced with `raw` because pre-pause
+// creative rows kept only `raw` (see `portal-creative.ts`).
+const videoDataSql = sql<unknown>`coalesce(${schema.adCreatives.objectStorySpec} -> 'video_data', ${schema.adCreatives.raw} -> 'object_story_spec' -> 'video_data')`;
+const feedVideosSql = sql<unknown>`coalesce(${schema.adCreatives.assetFeedSpec} -> 'videos', ${schema.adCreatives.raw} -> 'asset_feed_spec' -> 'videos')`;
+
+/**
+ * `specVideoId(...) !== null`, in SQL, for the listings that label a creative's format. Meta's
+ * `object_type` says VIDEO only for a plain video ad; a dynamic or Advantage+ creative whose video
+ * lives in the asset feed reports SHARE and was being shown as an image. False, never null, for an
+ * ad whose creative row is missing, so a left join still yields a boolean.
+ */
+export const hasVideoSql = sql<boolean>`(coalesce(nullif(${schema.adCreatives.videoId}, ''), nullif(${videoDataSql} ->> 'video_id', ''), nullif(${feedVideosSql} -> 0 ->> 'video_id', '')) is not null)`;
+
 export async function fetchAdVideo(input: { adId: string }): Promise<AdVideo> {
   await requireApproved();
   // Only the three places a video id can live are projected — never `raw` itself, whose blobs are
@@ -116,8 +130,8 @@ export async function fetchAdVideo(input: { adId: string }): Promise<AdVideo> {
     .select({
       accountId: schema.ads.accountId,
       videoId: schema.adCreatives.videoId,
-      videoData: sql<unknown>`coalesce(${schema.adCreatives.objectStorySpec} -> 'video_data', ${schema.adCreatives.raw} -> 'object_story_spec' -> 'video_data')`,
-      feedVideos: sql<unknown>`coalesce(${schema.adCreatives.assetFeedSpec} -> 'videos', ${schema.adCreatives.raw} -> 'asset_feed_spec' -> 'videos')`,
+      videoData: videoDataSql,
+      feedVideos: feedVideosSql,
     })
     .from(schema.ads)
     .leftJoin(schema.adCreatives, eq(schema.adCreatives.id, schema.ads.creativeId))

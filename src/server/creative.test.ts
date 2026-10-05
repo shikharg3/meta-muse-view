@@ -19,6 +19,7 @@ const facts = (over: Partial<CreativeFacts> = {}): CreativeFacts => ({
   linkPicture: null,
   childAttachments: 0,
   thumbnailUrl: null,
+  hasVideo: false,
   ...over,
 });
 
@@ -32,6 +33,13 @@ test("creativeFormat maps projected creative fields to display formats", () => {
   expect(creativeFormat(facts({ childAttachments: 1 }))).toBe("Image");
   // carousel wins over object type
   expect(creativeFormat(facts({ childAttachments: 3, objectType: "VIDEO" }))).toBe("Carousel");
+  // A dynamic creative whose video lives only in the asset feed: Meta calls it SHARE.
+  expect(creativeFormat(facts({ objectType: "SHARE", hasVideo: true }))).toBe("Video");
+  // ...but a carousel carrying a video card is still a carousel.
+  expect(creativeFormat(facts({ childAttachments: 2, hasVideo: true }))).toBe("Carousel");
+  expect(creativeFormat(facts({ objectType: "SHARE", imageUrl: "https://cdn/i.jpg" }))).toBe(
+    "Image",
+  );
 });
 
 test("hueFromId is stable and in range", () => {

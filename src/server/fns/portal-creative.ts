@@ -21,6 +21,7 @@ import {
 } from "@/portal/scope";
 import { deriveKpis } from "@/server/agg";
 import { creativeFormat, creativeImageUrl, type CreativeFacts } from "@/server/creative";
+import { hasVideoSql } from "./ad-video";
 
 /**
  * The portal's Creative page: one card per ad, with its media, its copy and its performance.
@@ -98,6 +99,7 @@ export interface AdCreativeRow {
   videoImageUrl: string | null;
   linkPicture: string | null;
   childAttachments: number;
+  hasVideo: boolean;
 }
 
 /** One ad-level daily insight row, before markup. */
@@ -229,6 +231,7 @@ export function shapePortalCreatives(
       linkPicture: ad.linkPicture,
       childAttachments: ad.childAttachments,
       thumbnailUrl: ad.thumbnailUrl,
+      hasVideo: ad.hasVideo,
     };
     const copy = creativeCopy(ad.storySpec, ad.feedSpec, {
       body: ad.body,
@@ -346,6 +349,7 @@ export async function buildCreatives(
       videoImageUrl: sql<string | null>`${storySpecSql} -> 'video_data' ->> 'image_url'`,
       linkPicture: sql<string | null>`${storySpecSql} -> 'link_data' ->> 'picture'`,
       childAttachments: sql<number>`coalesce(jsonb_array_length(${storySpecSql} -> 'link_data' -> 'child_attachments'), 0)`,
+      hasVideo: hasVideoSql,
     })
     .from(schema.ads)
     .innerJoin(schema.adSets, eq(schema.adSets.id, schema.ads.adSetId))

@@ -56,6 +56,7 @@ const ad = (id: string, campaignId: string): AdCreativeRow => ({
   videoImageUrl: null,
   linkPicture: null,
   childAttachments: 0,
+  hasVideo: false,
 });
 
 describe("shapePortalCreatives page identity", () => {

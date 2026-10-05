@@ -48,6 +48,7 @@ import type {
 } from "@/lib/types";
 import { isCycleRunning } from "@/sync/cycle";
 import { requireAdmin } from "./auth";
+import { hasVideoSql } from "./ad-video";
 
 const num = (v: unknown): number => Number(v ?? 0);
 
@@ -559,7 +560,7 @@ export async function fetchCampaigns(
         status: schema.accounts.status,
       })
       .from(schema.accounts),
-    // Project ONLY the five creative fields the UI needs (selecting `raw` loaded ~134 MB), and only
+    // Project ONLY the few creative fields the UI needs (selecting `raw` loaded ~134 MB), and only
     // when ads are actually being returned — creatives exist purely to decorate ads.
     withAds
       ? db
@@ -577,6 +578,7 @@ export async function fetchCampaigns(
               string | null
             >`${schema.adCreatives.raw}->'object_story_spec'->'link_data'->>'picture'`,
             childAttachments: sql<number>`coalesce(jsonb_array_length(${schema.adCreatives.raw}->'object_story_spec'->'link_data'->'child_attachments'), 0)`,
+            hasVideo: hasVideoSql,
           })
           .from(schema.adCreatives)
           // Only creatives referenced by ads in scope — a client view needs a handful, not all 24k.
@@ -831,6 +833,7 @@ export async function fetchAdSetAds(adSetId: string, w: DateWindow): Promise<Ad[
               string | null
             >`${schema.adCreatives.raw}->'object_story_spec'->'link_data'->>'picture'`,
             childAttachments: sql<number>`coalesce(jsonb_array_length(${schema.adCreatives.raw}->'object_story_spec'->'link_data'->'child_attachments'), 0)`,
+            hasVideo: hasVideoSql,
           })
           .from(schema.adCreatives)
           .where(inArray(schema.adCreatives.id, creativeIds))
@@ -938,7 +941,12 @@ export async function fetchMirrorCandidates(input: {
             then c.raw->'object_story_spec'->'video_data'->>'image_hash'
         end as hash,
         c.raw->>'object_type' as object_type,
-        coalesce(jsonb_array_length(c.raw->'object_story_spec'->'link_data'->'child_attachments'), 0) as children
+        coalesce(jsonb_array_length(c.raw->'object_story_spec'->'link_data'->'child_attachments'), 0) as children,
+        -- hasVideoSql, spelled against the alias c (that fragment names the bare table): a dynamic
+        -- creative's video lives only in the asset feed, and Meta still calls it SHARE.
+        coalesce(nullif(c.video_id, ''),
+                 nullif(coalesce(c.object_story_spec->'video_data', c.raw->'object_story_spec'->'video_data')->>'video_id', ''),
+                 nullif(coalesce(c.asset_feed_spec->'videos', c.raw->'asset_feed_spec'->'videos')->0->>'video_id', '')) is not null as has_video
       from ad_creatives c
     ), spend as (
       select entity_id, sum(spend) as s from insights_daily
@@ -953,7 +961,7 @@ export async function fetchMirrorCandidates(input: {
       left join spend sp on sp.entity_id = a.id
       where i.url is not null
     )
-    select id, ad_id, ad_name, ad_set_id, url, hash, object_type, children
+    select id, ad_id, ad_name, ad_set_id, url, hash, object_type, children, has_video
     from ranked where rn = 1
     order by creative_spend desc, id
     limit ${input.limit} offset ${input.offset}
@@ -966,6 +974,7 @@ export async function fetchMirrorCandidates(input: {
     hash: string | null;
     object_type: string | null;
     children: number;
+    has_video: boolean;
   }[];
   return rows.map((r) => ({
     creativeId: r.id,
@@ -979,6 +988,7 @@ export async function fetchMirrorCandidates(input: {
       videoImageUrl: null,
       linkPicture: null,
       thumbnailUrl: null,
+      hasVideo: r.has_video,
     }),
     imageUrl: r.url,
     imageHash: r.hash || null,

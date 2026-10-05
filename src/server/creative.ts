@@ -14,12 +14,18 @@ export interface CreativeFacts {
   /** Number of carousel child attachments (>1 means Carousel). */
   childAttachments: number;
   thumbnailUrl: string | null;
+  /**
+   * The creative carries a video in any of the places `specVideoId` reads. Needed beside
+   * `objectType` because Meta reports a dynamic or Advantage+ creative whose video lives only in the
+   * asset feed as SHARE, not VIDEO — 20 of the 25 top-spending "Image" creatives were videos.
+   */
+  hasVideo: boolean;
 }
 
 /** Display format for a creative. */
 export function creativeFormat(f: CreativeFacts | undefined): Ad["format"] {
   if ((f?.childAttachments ?? 0) > 1) return "Carousel";
-  if (f?.objectType === "VIDEO") return "Video";
+  if (f?.objectType === "VIDEO" || f?.hasVideo) return "Video";
   return "Image";
 }
 
