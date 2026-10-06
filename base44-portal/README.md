@@ -168,13 +168,19 @@ working default.
    also covers brands it gains later — or only some of its brands. `invitePortalUser` creates the
    `portal_users` row **already `approved`** together with those grants in one transaction (an
    invite is the admin's decision, so there is no separate approval step), then the console emails
-   them: Base44's join email (`users.inviteUser`), where they choose a password — or, when Base44
-   refuses because an account already exists, sign-in instructions (`integrations.Core.SendEmail`,
-   "Your DOT Analytics portal is ready") with the login link, _Forgot password_ and the activation
-   link. Typing an address that already has a login gives that login the access instead (and
-   activates a not-activated one; a paused one stays paused until resumed); nobody is invited
-   twice. The email **must match their Base44 login address exactly**; an unknown address is
-   refused rather than created.
+   them our own invitation (`integrations.Core.SendEmail`, "You're invited to DOT Analytics") with a
+   link to `/register?email=…` — the **set-up page**, where they choose a password (or use Google)
+   and confirm the 6-digit code Base44 emails them. `SendEmail` reaches an address that has never
+   signed up only because the app is on a paid plan with its own verified domain
+   (`analytics.dotaudiences.com`). Base44's own invitation (`users.inviteUser`) is the fallback
+   when ours cannot be sent: its only link is the site's home page, with no way to set a password,
+   so it works only through the login page's _First time here? Set up your account_. The set-up
+   page answers an address that already has an account with the ways in (log in, reset the
+   password, or activate an account the admin created), so one email serves everyone. Links built
+   from the editor's preview point at the published app. Typing an address that already has a
+   login gives that login the access instead (and activates a not-activated one; a paused one
+   stays paused until resumed); nobody is invited twice. The email **must match their Base44 login
+   address exactly**; an unknown address is refused rather than created.
 
    _Advanced_ in the same form creates the account with a password the admin types: `auth.register`
    creates it and Base44 emails a bare 6-digit code — no link, no explanation — that must be entered
@@ -189,11 +195,13 @@ working default.
    and so is a Brand grant whose Client no longer covers any of its rows, so a recycled ad account
    cannot hand a login somebody else's history.
 
-The client then signs in at the portal URL with that address. The login page has no sign-up link —
-access is invite-only — and an account nobody added sees "you're signed in — no data linked yet".
+The client then signs in at the portal URL with that address. The app is public with its own
+login pages (`public_without_login`), so anyone can create an account on the set-up page — an
+account nobody added sees "you're signed in — no data linked yet", because access is the
+`portal_users` row, not the account.
 
 Portal users shows each login as **Active** (has signed in), **Invited** (has not yet — the row's
-send button resends, choosing the join email or sign-in instructions the same way), **Paused**
+send button resends the invitation the same way), **Paused**
 (`rejected`: signs in to nothing until resumed) or **Not activated** (`pending`, only logins
 invited before invites created them approved). Opening a row runs an **access check** in the
 portal's own order — login on, access held, a visible campaign reached, one that ran in the last
