@@ -172,8 +172,9 @@ working default.
    refuses because an account already exists, sign-in instructions (`integrations.Core.SendEmail`,
    "Your DOT Analytics portal is ready") with the login link, _Forgot password_ and the activation
    link. Typing an address that already has a login gives that login the access instead (and
-   switches a paused one back on); nobody is invited twice. The email **must match their Base44
-   login address exactly**; an unknown address is refused rather than created.
+   activates a not-activated one; a paused one stays paused until resumed); nobody is invited
+   twice. The email **must match their Base44 login address exactly**; an unknown address is
+   refused rather than created.
 
    _Advanced_ in the same form creates the account with a password the admin types: `auth.register`
    creates it and Base44 emails a bare 6-digit code — no link, no explanation — that must be entered
