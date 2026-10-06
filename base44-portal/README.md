@@ -168,27 +168,33 @@ working default.
    also covers brands it gains later — or only some of its brands. `invitePortalUser` creates the
    `portal_users` row **already `approved`** together with those grants in one transaction (an
    invite is the admin's decision, so there is no separate approval step), then the console emails
-   them our own invitation (`integrations.Core.SendEmail`, "You're invited to DOT Analytics") with a
-   link to `/register?email=…` — the **set-up page**, where they choose a password (or use Google)
-   and confirm the 6-digit code Base44 emails them. `SendEmail` reaches an address that has never
-   signed up only because the app is on a paid plan with its own verified domain
-   (`analytics.dotaudiences.com`). Base44's own invitation (`users.inviteUser`) is the fallback
-   when ours cannot be sent: its only link is the site's home page, with no way to set a password,
-   so it works only through the login page's _First time here? Set up your account_. The set-up
-   page answers an address that already has an account with the ways in (log in, reset the
-   password, or activate an account the admin created), so one email serves everyone. Links built
-   from the editor's preview point at the published app. Typing an address that already has a
-   login gives that login the access instead (and activates a not-activated one; a paused one
-   stays paused until resumed); nobody is invited twice. The email **must match their Base44 login
-   address exactly**; an unknown address is refused rather than created.
+   them our own invitation ("You're invited to DOT Analytics") through the **`invite-email`
+   backend function**, with a button to `/register?email=…` — the **set-up page**, where they
+   choose a password (or use Google) and confirm the 6-digit code Base44 emails them. It has to be
+   a function: Base44 refuses `Core.SendEmail` from the browser ("blocked from direct app-runtime
+   calls") for every caller, admins included, so the console's earlier direct calls always failed
+   silently into the fallback. The function requires the Base44 `admin` role, sends with the
+   service role, and is templated — the console sends only `{kind: "invite" | "setup", email,
+   name, password?}`, never a subject, body or link — so a compromised admin page can send nothing
+   but these two emails, linking only to `https://analytics.dotaudiences.com`. It reaches an
+   address that has never signed up because the app is on a paid plan with its own verified domain.
+   Base44's own invitation (`users.inviteUser`) is the fallback when ours cannot be sent, and the
+   console shows why ours failed: its only link is the site's home page, with no way to set a
+   password, so it works only through the login page's _First time here? Set up your account_. The
+   set-up page answers an address that already has an account with the ways in (log in, reset the
+   password, or activate an account the admin created), so one email serves everyone. Typing an
+   address that already has a login gives that login the access instead (and activates a
+   not-activated one; a paused one stays paused until resumed); nobody is invited twice. The email
+   **must match their Base44 login address exactly**; an unknown address is refused rather than
+   created.
 
    _Advanced_ in the same form creates the account with a password the admin types: `auth.register`
    creates it and Base44 emails a bare 6-digit code — no link, no explanation — that must be entered
    once before the first sign-in. So the console also sends a setup email ("Activate your DOT
    Analytics account") with a link to `/activate?email=…` and the steps, optionally including the
    password. The activation page takes email, code and password on one screen, can email a fresh
-   code, and signs them in. If an email fails, the form shows the same instructions to copy. Base44
-   has no way to set an already-verified password.
+   code, and signs them in. If an email fails, the form offers the link it would have carried to
+   copy instead. Base44 has no way to set an already-verified password.
 5. **Adjust access later.** A row's _Manage access_ on Portal users lists every Client, its Brands
    and their campaigns: a whole Client (every campaign it owns, now and in future), one Brand, or
    single campaigns. A grant pointing at a campaign the Client's owner no longer owns is ignored,
@@ -324,6 +330,7 @@ cat base44-portal/client/portal.js \
 | `base44-portal/client/staff.js`                  | `src/api/staff.js`                        |
 | `base44-portal/functions/portal-stream/entry.ts` | `base44/functions/portal-stream/entry.ts` |
 | `base44-portal/functions/staff-stream/entry.ts`  | `base44/functions/staff-stream/entry.ts`  |
+| `base44-portal/functions/invite-email/entry.ts`  | `base44/functions/invite-email/entry.ts`  |
 
 Secrets are already set on the app (`PORTAL_API_URL`, `PORTAL_API_TOKEN`). To rotate: change
 `/opt/meta-next/.env`, `systemctl restart meta-web-next`, then re-set the Base44 secret.
