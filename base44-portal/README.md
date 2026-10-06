@@ -120,12 +120,13 @@ ops that administer the portal must NOT be named `portal*` — that prefix is th
 
 **The portal shows a client nothing until someone does this**, and every gate fails closed, so a
 half-finished setup shows them nothing rather than something wrong. All of it happens in the
-customer app's own admin console at `/admin`, signed in as a Base44 user whose role is `admin`. Its
-Home page lists these steps with a link to each, and flags anything a half-finished setup left
-behind under _Needs attention_.
+customer app's own admin console at `/admin`, signed in as a Base44 user whose role is `admin`.
+Each client's page opens on a **Setup** checklist (ad accounts found, campaigns ran in the last 30
+days, names checked, someone can see it, someone has signed in) with the fix beside each open step,
+and Home's _Client setup_ lists every client still missing one. _Needs attention_ flags the rest.
 
-In practice it is two steps: add a client, and grant the login access. Everything in between has
-a working default.
+In practice it is two steps: add a client, and add a person to it. Everything in between has a
+working default.
 
 1. **Add the client.** `/admin/brands` → _Add client_. Pick the owner; its Notion brands appear
    **already selected**, and the ad accounts follow from them — there is nothing to map by hand.
@@ -162,27 +163,41 @@ a working default.
    past days in the portal and in any report re-run for them — the dialog asks before it does. The
    dialog's timeline is resolved by the server (`effectiveTimeline`), the same rule `markupRows`
    bills by, and no rate ever reaches a portal response.
-4. **Invite the login.** `/admin/users` → _Invite user_. This records the address in
-   `portal_users` and then asks Base44 to email the person: with no password, Base44's own invite
-   email (`users.inviteUser`), where they choose a password. With a password the admin types,
-   `auth.register` creates the account and Base44 emails a bare 6-digit code — no link, no
-   explanation — that must be entered once before the first sign-in. So the console also sends a
-   setup email (`integrations.Core.SendEmail`, "Activate your DotAnalytics account") with a link to
-   `/activate?email=…` and the steps, optionally including the password. The activation page takes
-   email, code and password on one screen, can email a fresh code, and signs them in. If the setup
-   email fails, the invite form shows the same instructions to copy. A row's Mail menu re-sends
-   activation instructions (without the password), sends Base44's invite link, or copies the
-   activation link. Base44 has no way to set an already-verified password. The email **must match
-   their Base44 login address exactly**; an unknown address is refused rather than created. Then
-   set them `approved` — pending grants nothing at all, not even a read.
-5. **Grant access.** A row's _Manage access_ lists every Client, its Brands and their campaigns: a
-   whole Client (every campaign it owns, now and in future), one Brand, or single campaigns. A
-   grant pointing at a campaign the Client's owner no longer owns is ignored, and so is a Brand
-   grant whose Client no longer covers any of its rows, so a recycled ad account cannot hand a
-   login somebody else's history.
+4. **Add a person.** The client page's _Add person_ (client already chosen), or `/admin/users` →
+   _Add person_ (pick the client). Choose everything for the client — one whole-client grant, which
+   also covers brands it gains later — or only some of its brands. `invitePortalUser` creates the
+   `portal_users` row **already `approved`** together with those grants in one transaction (an
+   invite is the admin's decision, so there is no separate approval step), then the console emails
+   them: Base44's join email (`users.inviteUser`), where they choose a password — or, when Base44
+   refuses because an account already exists, sign-in instructions (`integrations.Core.SendEmail`,
+   "Your DOT Analytics portal is ready") with the login link, _Forgot password_ and the activation
+   link. Typing an address that already has a login gives that login the access instead (and
+   switches a paused one back on); nobody is invited twice. The email **must match their Base44
+   login address exactly**; an unknown address is refused rather than created.
 
-The client then signs in at the portal URL with that address. Until step 4 they see "you're signed
-in — no data linked yet".
+   _Advanced_ in the same form creates the account with a password the admin types: `auth.register`
+   creates it and Base44 emails a bare 6-digit code — no link, no explanation — that must be entered
+   once before the first sign-in. So the console also sends a setup email ("Activate your DOT
+   Analytics account") with a link to `/activate?email=…` and the steps, optionally including the
+   password. The activation page takes email, code and password on one screen, can email a fresh
+   code, and signs them in. If an email fails, the form shows the same instructions to copy. Base44
+   has no way to set an already-verified password.
+5. **Adjust access later.** A row's _Manage access_ on Portal users lists every Client, its Brands
+   and their campaigns: a whole Client (every campaign it owns, now and in future), one Brand, or
+   single campaigns. A grant pointing at a campaign the Client's owner no longer owns is ignored,
+   and so is a Brand grant whose Client no longer covers any of its rows, so a recycled ad account
+   cannot hand a login somebody else's history.
+
+The client then signs in at the portal URL with that address. The login page has no sign-up link —
+access is invite-only — and an account nobody added sees "you're signed in — no data linked yet".
+
+Portal users shows each login as **Active** (has signed in), **Invited** (has not yet — the row's
+send button resends, choosing the join email or sign-in instructions the same way), **Paused**
+(`rejected`: signs in to nothing until resumed) or **Not activated** (`pending`, only logins
+invited before invites created them approved). Opening a row runs an **access check** in the
+portal's own order — login on, access held, a visible campaign reached, one that ran in the last
+30 days (the range the portal opens on), signed in — with the fix next to the first failure and a
+_Preview as them_ button; a row whose check finds nothing to show carries a warning on its status.
 
 Steps 2 and 3 are optional — names and commission both have defaults that work. If the client's
 Notion board has no ad accounts on it yet, the brand screen says so and data appears as soon as
@@ -197,7 +212,7 @@ always add up to the overview's totals. An unfiltered whole-range report follows
 asking a report about specific campaigns still returns their zeroes, because that is the answer.
 Campaign detail pages stay reachable either way, so an old link never 403s.
 
-To revoke: remove the grant (immediate), or set the user `rejected`, or delete them — deleting
+To revoke: remove the grant (immediate), or pause the login (`rejected`), or delete it — deleting
 cascades their grants. Deleting a client also deletes the grants pointing at it and the Brand
 grants held through it, because `portal_grants.target_id` / `parent_id` deliberately carry no
 foreign key.

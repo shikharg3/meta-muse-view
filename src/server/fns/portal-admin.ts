@@ -1575,15 +1575,31 @@ export async function fetchPortalUsers(): Promise<PortalUserView[]> {
 }
 
 /**
- * Create a portal login.
+ * What a grant points at, before it belongs to anyone: a whole brand (`brand`), one Brand within a
+ * brand (`group`, held through `parentId`), or a single campaign.
+ */
+export interface PortalGrantTarget {
+  scope: PortalGrantScope;
+  targetId: string;
+  parentId?: string | null;
+}
+
+/**
+ * Create a portal login — active at once, with the access it starts with.
  *
  * Invitation is the ONLY way one comes into existence — the portal transport refuses an email it
  * does not already know rather than provisioning it, so this function is the whole front door. The
- * row starts `pending`, which grants nothing at all, not even a read.
+ * invite is itself the admin's decision, so the row starts `approved`: a separate approval step
+ * could only ever approve what the same admin had just invited.
+ *
+ * `grants` are checked exactly as `addPortalGrant` checks one, and written in the same transaction
+ * as the login, so an invite can never land as a login whose access half failed — one that signs in
+ * to an empty portal. Any target that cannot be granted refuses the whole invite.
  */
 export async function createPortalUser(input: {
   email: string;
   name?: string | null;
+  grants?: PortalGrantTarget[];
 }): Promise<{ ok: boolean; error?: string; id?: string }> {
   const admin = await requireAdmin();
   // The transport lowercases the asserted address before looking it up, so a mixed-case row here
@@ -1597,15 +1613,48 @@ export async function createPortalUser(input: {
     .where(eq(schema.portalUsers.email, email));
   if (existing) return { ok: false, error: `${email} already has a portal account` };
 
+  // `portal_grants_unique` is (user, scope, target): a repeated target collapses to one row, and the
+  // same Brand through two clients cannot be held at all — refused here as `addPortalGrant` does.
+  const grants = new Map<string, PortalGrantTarget>();
+  for (const g of input.grants ?? []) {
+    const key = `${g.scope}\u0000${g.targetId}`;
+    const seen = grants.get(key);
+    if (seen && g.scope === "group" && seen.parentId !== g.parentId) {
+      return { ok: false, error: "The same brand cannot be given through two clients." };
+    }
+    if (!seen) grants.set(key, g);
+  }
+  for (const g of grants.values()) {
+    const error = await grantTargetError(g);
+    if (error) return { ok: false, error };
+  }
+
   const id = randomUUID();
-  await db.insert(schema.portalUsers).values({
-    id,
-    email,
-    name: input.name?.trim() || null,
-    status: "pending",
-    invitedBy: admin.id,
+  await db.transaction(async (tx) => {
+    await tx.insert(schema.portalUsers).values({
+      id,
+      email,
+      name: input.name?.trim() || null,
+      status: "approved",
+      invitedBy: admin.id,
+    });
+    if (grants.size > 0) {
+      await tx.insert(schema.portalGrants).values(
+        [...grants.values()].map((g) => ({
+          id: randomUUID(),
+          portalUserId: id,
+          scope: g.scope,
+          targetId: g.targetId,
+          parentId: g.scope === "group" ? (g.parentId ?? null) : null,
+          grantedBy: admin.id,
+        })),
+      );
+    }
   });
   await audit("portal.user.invite", email);
+  for (const g of grants.values()) {
+    await audit("portal.access.grant", `${email}: ${g.scope} ${g.targetId}`);
+  }
   return { ok: true, id };
 }
 
@@ -1645,36 +1694,23 @@ export async function removePortalUser(input: {
 }
 
 /**
- * Give a portal user a brand, one Brand (group of board rows) within a brand, or a single campaign.
+ * Why `target` cannot be granted, or null when it can.
  *
- * Idempotent: `portal_grants_unique` already forbids a duplicate, so re-granting is a no-op rather
- * than an error the operator has to read. The target is checked because `target_id` has no FK and a
- * grant for something that does not exist is silently ignored when the scope resolves — the operator
- * would be told access was given and the client would still see nothing. For a group that means
- * the brand (`parentId`) must exist and currently cover one of the group's rows.
+ * The target is checked because `target_id` has no FK and a grant for something that does not
+ * exist is silently ignored when the scope resolves — the operator would be told access was given
+ * and the client would still see nothing. For a group that means the brand (`parentId`) must exist
+ * and currently cover one of the group's rows.
  */
-export async function addPortalGrant(input: {
-  portalUserId: string;
-  scope: PortalGrantScope;
-  targetId: string;
-  parentId?: string | null;
-}): Promise<{ ok: boolean; error?: string }> {
-  const admin = await requireAdmin();
-  const [user] = await db
-    .select({ email: schema.portalUsers.email })
-    .from(schema.portalUsers)
-    .where(eq(schema.portalUsers.id, input.portalUserId));
-  if (!user) return { ok: false, error: "Portal user not found" };
-
-  if (input.scope === "brand") {
+async function grantTargetError(target: PortalGrantTarget): Promise<string | null> {
+  if (target.scope === "brand") {
     const [brand] = await db
       .select({ id: schema.brands.id })
       .from(schema.brands)
-      .where(eq(schema.brands.id, input.targetId));
-    if (!brand) return { ok: false, error: "Brand not found" };
-  } else if (input.scope === "group") {
-    if (!input.parentId)
-      return { ok: false, error: "A brand grant needs the client it belongs to" };
+      .where(eq(schema.brands.id, target.targetId));
+    return brand ? null : "Brand not found";
+  }
+  if (target.scope === "group") {
+    if (!target.parentId) return "A brand grant needs the client it belongs to";
     const [brand] = await db
       .select({
         clientId: schema.brands.clientId,
@@ -1683,12 +1719,40 @@ export async function addPortalGrant(input: {
       })
       .from(schema.brands)
       .innerJoin(schema.clients, eq(schema.clients.id, schema.brands.clientId))
-      .where(eq(schema.brands.id, input.parentId));
-    if (!brand) return { ok: false, error: "Client not found" };
+      .where(eq(schema.brands.id, target.parentId));
+    if (!brand) return "Client not found";
     const inputs = await loadGroupInputs([brand.clientId]);
-    if (!coveredGroupNames(brand, brand.raw, inputs).has(input.targetId)) {
-      return { ok: false, error: "That brand is not one this client covers" };
-    }
+    return coveredGroupNames(brand, brand.raw, inputs).has(target.targetId)
+      ? null
+      : "That brand is not one this client covers";
+  }
+  const [campaign] = await db
+    .select({ id: schema.campaigns.id })
+    .from(schema.campaigns)
+    .where(eq(schema.campaigns.id, target.targetId));
+  return campaign ? null : `Unknown campaign "${target.targetId}"`;
+}
+
+/**
+ * Give a portal user a brand, one Brand (group of board rows) within a brand, or a single campaign.
+ *
+ * Idempotent: `portal_grants_unique` already forbids a duplicate, so re-granting is a no-op rather
+ * than an error the operator has to read. The target is checked first — see `grantTargetError`.
+ */
+export async function addPortalGrant(
+  input: PortalGrantTarget & { portalUserId: string },
+): Promise<{ ok: boolean; error?: string }> {
+  const admin = await requireAdmin();
+  const [user] = await db
+    .select({ email: schema.portalUsers.email })
+    .from(schema.portalUsers)
+    .where(eq(schema.portalUsers.id, input.portalUserId));
+  if (!user) return { ok: false, error: "Portal user not found" };
+
+  const error = await grantTargetError(input);
+  if (error) return { ok: false, error };
+
+  if (input.scope === "group") {
     // `portal_grants_unique` is (user, scope, target), so the same group held through a second
     // client would be swallowed by `onConflictDoNothing` below and reported as granted. Say so.
     const [held] = await db
@@ -1707,12 +1771,6 @@ export async function addPortalGrant(input: {
         error: "This person already has that brand through another client. Revoke that first.",
       };
     }
-  } else {
-    const [campaign] = await db
-      .select({ id: schema.campaigns.id })
-      .from(schema.campaigns)
-      .where(eq(schema.campaigns.id, input.targetId));
-    if (!campaign) return { ok: false, error: `Unknown campaign "${input.targetId}"` };
   }
 
   await db

@@ -283,10 +283,22 @@ export const listPortalUsers = defineOp({
   handler: () => fetchPortalUsers(),
 });
 
+/** What a grant points at; `parentId` is the brand a `group` grant is held through. */
+const grantTarget = z.object({
+  scope: z.enum(["brand", "group", "campaign"]),
+  targetId: z.string().min(1),
+  parentId: z.string().min(1).nullable().optional(),
+});
+
+/** Creates the login active, with the access it starts with — see `createPortalUser`. */
 export const invitePortalUser = defineOp({
   name: staffName("invitePortalUser"),
   mode: "write",
-  input: z.object({ email: z.string().email(), name: nullableText }),
+  input: z.object({
+    email: z.string().email(),
+    name: nullableText,
+    grants: z.array(grantTarget).max(100).optional(),
+  }),
   handler: (input) => createPortalUser(input),
 });
 
@@ -307,13 +319,7 @@ export const deletePortalUser = defineOp({
 export const grantPortalAccess = defineOp({
   name: staffName("grantPortalAccess"),
   mode: "write",
-  input: z.object({
-    portalUserId: z.string().min(1),
-    scope: z.enum(["brand", "group", "campaign"]),
-    targetId: z.string().min(1),
-    /** The brand a `group` grant is held through; ignored for the other scopes. */
-    parentId: z.string().min(1).nullable().optional(),
-  }),
+  input: grantTarget.extend({ portalUserId: z.string().min(1) }),
   handler: (input) => addPortalGrant(input),
 });
 
