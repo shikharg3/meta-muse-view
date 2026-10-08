@@ -128,7 +128,10 @@ and Home's _Client setup_ lists every client still missing one. _Needs attention
 In practice it is two steps: add a client, and add a person to it. Everything in between has a
 working default.
 
-1. **Add the client.** `/admin/brands` → _Add client_. Pick the owner; its Notion brands appear
+1. **Add the client.** `/admin/brands` → _Add client_ (or _Add new client…_ in the Add person
+   form). Search for the owner; an owner that already has a client is marked _Already a client_ in
+   the list and, once picked, gets a loud warning with a button to open (or use) that client — a
+   second client for the same owner needs its own tick. Its Notion brands appear
    **already selected**, and the ad accounts follow from them — there is nothing to map by hand.
    Leaving every brand selected stores "follow this owner", so a row added to the board next month
    is included by itself. Nothing is typed in: the name is the owner's, and a new client with no
@@ -141,16 +144,19 @@ working default.
    below can override the ad page field by field (`portal_group_settings`) and has its own
    commission schedule; anything it leaves unset inherits the client's value. Check the grouping
    there too — rename a Brand, or move a row the title rule put in the wrong one.
-2. **Check the campaign names.** `/admin/campaigns`. Names default to Meta's own, so a client can
-   already see everything — you do not have to name anything for the portal to work. What you
-   should do once is filter to **"Needs a look"** and deal with the flagged handful: a name carrying
-   a " - Copy" suffix, an opaque id, Meta's placeholder text, or — the one that matters — a name
-   mentioning another client. Edit those in place and save the screen in one go, or set `hidden` on
-   anything the client should not see at all.
-3. **Set commission, if it differs.** Three levels, each a dated schedule: the campaign's own
-   (Campaigns → the commission cell), its Brand's (the Brand row on the client's page → _Change…_)
-   and the Client default (_Client defaults_ → _Change…_), all stored server-side
-   (`campaign_commissions`, `commission_defaults`). An entry applies **from its date, inclusive,
+2. **Check the campaign names.** On the client's page, under _Campaigns_. Names default to Meta's
+   own, so a client can already see everything — you do not have to name anything for the portal
+   to work. The list puts the flagged handful first, each with its flags: a " - Copy" suffix, an
+   opaque id, Meta's placeholder text, or — the one that matters — a name mentioning another
+   client. _Edit_ renames one or sets `hidden` on anything the client should not see at all. (The
+   console's cross-client Campaigns page is gone; the setup checklist's _Review names_ scrolls to
+   this list.)
+3. **Set commission, if it differs.** Two levels the console edits, each a dated schedule: the
+   Brand's (the Brand row on the client's page → _Change…_) and the Client default (_Client
+   defaults_ → _Change…_), stored server-side in `commission_defaults`. The server also bills a
+   per-campaign level (`campaign_commissions`, checked before the Brand's) that the console no
+   longer edits; it held no entries when its editor was removed. An entry applies **from its
+   date, inclusive,
    until the next entry at the same level**; a day with no entry at a level falls to the level
    below as it stood **on that day** — campaign, then Brand, then Client, then 10%. So a change is
    made by adding an entry from the day it takes effect: "14% from 1 October" leaves September at
@@ -195,7 +201,7 @@ working default.
    password. The activation page takes email, code and password on one screen, can email a fresh
    code, and signs them in. If an email fails, the form offers the link it would have carried to
    copy instead. Base44 has no way to set an already-verified password.
-5. **Adjust access later.** A row's _Manage access_ on Portal users lists every Client, its Brands
+5. **Adjust access later.** A row's _Manage access_ on Users lists every Client, its Brands
    and their campaigns: a whole Client (every campaign it owns, now and in future), one Brand, or
    single campaigns. A grant pointing at a campaign the Client's owner no longer owns is ignored,
    and so is a Brand grant whose Client no longer covers any of its rows, so a recycled ad account
@@ -206,7 +212,7 @@ login pages (`public_without_login`), so anyone can create an account on the set
 account nobody added sees "you're signed in — no data linked yet", because access is the
 `portal_users` row, not the account.
 
-Portal users shows each login as **Active** (has signed in), **Invited** (has not yet — the row's
+Users shows each login as **Active** (has signed in), **Invited** (has not yet — the row's
 send button resends the invitation the same way), **Paused**
 (`rejected`: signs in to nothing until resumed) or **Not activated** (`pending`, only logins
 invited before invites created them approved). Opening a row runs an **access check** in the
@@ -234,7 +240,7 @@ foreign key.
 
 ## Viewing the portal as a client
 
-`/admin` → _View as client_ in the header, or the eye button on a Portal users row, opens the real
+`/admin` → _View as client_ in the header, or the eye button on a Users row, opens the real
 portal as that login — the same brands, campaigns, client-facing names and marked-up figures —
 with a banner and an Exit. A pending or rejected login previews as the screen that login gets.
 
