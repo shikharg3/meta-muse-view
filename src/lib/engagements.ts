@@ -79,7 +79,8 @@ export interface Claim {
 export const brandKey = (title: string): string =>
   normalizeName(title.split("(")[0]) || normalizeName(title);
 
-const isLive = (row: EngagementRow): boolean =>
+/** A row whose engagement is current (`LIVE_STATUSES`), the same test the budget job uses. */
+export const isLive = (row: EngagementRow): boolean =>
   row.status !== null && LIVE_STATUSES.includes(row.status);
 
 /** The shortest title of a brand's rows: the brand without an engagement window on it. */

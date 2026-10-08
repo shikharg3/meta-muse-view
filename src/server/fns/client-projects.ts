@@ -1,6 +1,7 @@
 import { and, eq, gt, inArray, isNull, sql } from "drizzle-orm";
 import { db, schema } from "@/db/client";
-import { windowFromDates, type DateWindow } from "@/lib/range";
+import { addDays, windowFromDates, type DateWindow } from "@/lib/range";
+import { forecastBudgetEnd, paceWindow, type BudgetForecast } from "@/lib/budget-forecast";
 import type { Campaign } from "@/lib/types";
 import {
   brandKey,
@@ -8,6 +9,7 @@ import {
   claimOn,
   clipClaim,
   impliedUntil,
+  isLive,
   planEngagements,
   type Claim,
   type EngagementRow,
@@ -60,6 +62,12 @@ export interface ClientProject {
   /** Spend on every day this row owns from its start through today, whatever the range — the figure
    *  its budget is measured against. Null without a start date. */
   spentSinceStart: number | null;
+  /** The board calls this engagement current (`LIVE_STATUSES`). */
+  live: boolean;
+  /** A live engagement with a budget and a start: its burn rate over its own last complete days and
+   *  when the budget runs out at it. Null for any other row — a runway for a finished engagement is
+   *  a figure nobody needs. */
+  forecast: BudgetForecast | null;
 }
 
 export interface ClientProjects {
@@ -137,21 +145,27 @@ function currentPage(
 }
 
 /**
- * Spend since each dated row's start, summed over exactly the days its claims hold. One query: the
- * spans travel as a single jsonb parameter (drizzle would expand a JS array into placeholders).
+ * Each row's spend between its own bounds (`from`, and `until` or open), summed over exactly the
+ * days its claims hold. One query: the spans travel as a single jsonb parameter (drizzle would
+ * expand a JS array into placeholders).
  */
-async function spendSinceStart(
+async function spendWithin(
   claims: Claim[],
-  rows: EngagementRow[],
+  bounds: ReadonlyMap<string, { from: string; until: string | null }>,
 ): Promise<Map<string, number>> {
-  const start = new Map(rows.map((row) => [row.pageId, row.startDate]));
   const spans = claims.flatMap((c) => {
-    const from = c.pageId ? start.get(c.pageId) : null;
-    if (!c.pageId || !from) return [];
+    const bound = c.pageId ? bounds.get(c.pageId) : undefined;
+    if (!c.pageId || !bound) return [];
     // Only from the engagement's own start: a hand-filed campaign's earlier spend is not this budget's.
-    const since = c.since !== null && c.since > from ? c.since : from;
-    if (c.until !== null && c.until < since) return [];
-    return [{ page_id: c.pageId, campaign_id: c.campaignId, since, until: c.until }];
+    const since = c.since !== null && c.since > bound.from ? c.since : bound.from;
+    const until =
+      bound.until === null
+        ? c.until
+        : c.until !== null && c.until < bound.until
+          ? c.until
+          : bound.until;
+    if (until !== null && until < since) return [];
+    return [{ page_id: c.pageId, campaign_id: c.campaignId, since, until }];
   });
   if (!spans.length) return new Map();
   const result = await db.execute(sql`
@@ -217,7 +231,20 @@ export async function fetchClientProjects(
     slice.accounts.add(accountId);
     slices.set(spanKey(span), slice);
   }
-  const [measured, lastSpend, sinceStart] = await Promise.all([
+  // Budgets are measured from each engagement's own start, and paced over its own last complete
+  // days (`paceWindow` never reaches back before the start: a recycled account carries the previous
+  // engagement's spend).
+  const today = new Date().toISOString().slice(0, 10);
+  const yesterday = addDays(today, -1);
+  const starts = new Map<string, { from: string; until: string | null }>();
+  const paces = new Map<string, { from: string; until: string | null; days: number }>();
+  for (const r of rows) {
+    if (!r.startDate) continue;
+    starts.set(r.pageId, { from: r.startDate, until: null });
+    const pw = isLive(r) ? paceWindow({ startDate: r.startDate, until: yesterday }) : null;
+    if (pw) paces.set(r.pageId, { from: pw.from, until: yesterday, days: pw.days });
+  }
+  const [measured, lastSpend, sinceStart, paceSpend] = await Promise.all([
     Promise.all(
       [...slices.values()].map(async (slice) => {
         const list = await fetchCampaigns(windowFromDates(slice.since, slice.until), [
@@ -227,13 +254,17 @@ export async function fetchClientProjects(
       }),
     ).then((entries) => new Map(entries)),
     lastSpendDays(owned.map((c) => c.id)),
-    spendSinceStart(claims, rows),
+    spendWithin(claims, starts),
+    spendWithin(claims, paces),
   ]);
 
   const projects = new Map<string, ClientProject>(
     rows.map((r) => {
       const siblings = rows.filter((other) => brandKey(other.title) === brandKey(r.title));
       const board = dates.byPage.get(r.pageId);
+      const budget = board?.budget ?? null;
+      const spent = r.startDate ? (sinceStart.get(r.pageId) ?? 0) : null;
+      const pace = paces.get(r.pageId);
       return [
         r.pageId,
         {
@@ -244,10 +275,27 @@ export async function fetchClientProjects(
           startDate: r.startDate,
           plannedEndDate: board?.endDate ?? null,
           impliedEndDate: impliedUntil(r, rows),
-          budget: board?.budget ?? null,
+          budget,
           accountIds: r.accountIds,
           campaigns: [],
-          spentSinceStart: r.startDate ? (sinceStart.get(r.pageId) ?? 0) : null,
+          spentSinceStart: spent,
+          live: isLive(r),
+          forecast:
+            isLive(r) && budget !== null && spent !== null
+              ? pace
+                ? forecastBudgetEnd({
+                    total: budget,
+                    spent,
+                    dailyPace: (paceSpend.get(r.pageId) ?? 0) / pace.days,
+                    today,
+                  })
+                : {
+                    projectedEndDate: null,
+                    dailyPace: 0,
+                    daysRemaining: null,
+                    reason: "too few complete days since it started",
+                  }
+              : null,
         },
       ];
     }),
