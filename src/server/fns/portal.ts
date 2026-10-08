@@ -51,15 +51,19 @@ import { canDeliver } from "@/sync/jobs/notion-budget";
 const num = (v: unknown): number => Number(v ?? 0);
 
 /**
- * The client's vocabulary for the two events every portal page is built around.
+ * The client's vocabulary for the events every portal page is built around.
  *
- * Both read canonical event FAMILIES rather than a single action type: Meta reports the same
+ * All read canonical event FAMILIES rather than a single action type: Meta reports the same
  * conversion under several near-identical `action_type`s, and a client whose pixel fires the bare
  * `purchase` variant instead of `omni_purchase` would otherwise report zero deposits. A funded
  * account is a purchase event — there is no separate "deposit" action type in the Meta taxonomy.
+ * Leads are Meta's lead events (forms, the Lead pixel event) — the denominator of CPL, kept apart
+ * from registrations exactly as the agency's own reports keep "cost per lead" and "cost per
+ * registration" apart.
  */
 const REGISTRATION_FAMILY = "Registrations";
 const DEPOSIT_FAMILY = "Purchases";
+const LEAD_FAMILY = "Leads";
 
 /**
  * A scoped campaign-level day, before markup, carrying the action jsonb the families need.
@@ -118,6 +122,8 @@ export interface PortalSeriesPoint {
   revenue: number;
   registrations: number;
   deposits: number;
+  /** Meta lead events that day — CPL's denominator on the portal's trend chart. */
+  leads: number;
 }
 
 export interface PortalOverview {
@@ -382,6 +388,7 @@ function seriesOf(marked: MarkedDayRow[], events: Map<string, Map<string, number
         revenue: 0,
         registrations: registrations(events.get(r.date)),
         deposits: deposits(events.get(r.date)),
+        leads: familyCount(events.get(r.date) ?? EMPTY_SUMS, LEAD_FAMILY),
       };
       byDate.set(r.date, point);
     }
