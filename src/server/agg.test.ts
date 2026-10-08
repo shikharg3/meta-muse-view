@@ -1,5 +1,5 @@
 import { test, expect } from "bun:test";
-import { familyCount, familyValue, eventFamilyLabels, EVENT_MEMBERS } from "./agg";
+import { familyCount, familyValue, eventCounts, eventFamilyLabels, EVENT_MEMBERS } from "./agg";
 import { EVENT_FAMILY_LABELS } from "@/lib/report-catalog";
 
 test("a family matches even when only a late synonym is present", () => {
@@ -40,6 +40,46 @@ test("familyValue reads the same variant familyCount does", () => {
 test("an unknown family is zero, never a throw", () => {
   expect(familyCount(new Map([["purchase", 1]]), "Not A Family")).toBe(0);
   expect(familyValue(new Map([["purchase", 1]]), "Not A Family")).toBe(0);
+});
+
+test("eventCounts reads the first reported member and never sums aliases", () => {
+  // Campaign-level sums carry every alias of one conversion; adding them would multiply it.
+  const sums = new Map([
+    ["omni_complete_registration", 47],
+    ["complete_registration", 47],
+    ["offsite_conversion.fb_pixel_complete_registration", 47],
+    // Only a late alias for leads: still a lead, and must not read as zero.
+    ["offsite_lead_add_20_s_calls", 9],
+  ]);
+  expect(eventCounts((t) => sums.get(t))).toEqual([
+    { label: "Registrations", count: 47 },
+    { label: "Leads", count: 9 },
+  ]);
+});
+
+test("eventCounts: a reported zero stops the search, like familyCount", () => {
+  // A preferred member reported as 0 is a real answer; falling through to a later alias would let
+  // the event list disagree with the report column and the headline result for the same row.
+  const sums = new Map([
+    ["omni_purchase", 0],
+    ["purchase", 5],
+  ]);
+  expect(eventCounts((t) => sums.get(t))).toEqual([]);
+  expect(familyCount(sums, "Purchases")).toBe(0);
+});
+
+test("eventCounts rounds, drops families that round to zero, and sorts busiest first", () => {
+  const sums = new Map([
+    ["link_click", 2.6],
+    ["lead", 0.4],
+    ["omni_purchase", 12.2],
+    ["omni_add_to_cart", 0],
+  ]);
+  expect(eventCounts((t) => sums.get(t))).toEqual([
+    { label: "Purchases", count: 12 },
+    { label: "Link clicks", count: 3 },
+  ]);
+  expect(eventCounts(() => undefined)).toEqual([]);
 });
 
 test("catalog family labels match EVENT_FAMILIES exactly", () => {

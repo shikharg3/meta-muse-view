@@ -181,6 +181,22 @@ export function canonicalEvents(
 }
 
 /**
+ * The family's first member that Meta REPORTED, read through `lookup`. Undefined means "not
+ * reported", distinct from a reported zero, which is a real answer and stops the search — the same
+ * rule `resultCount` applies, so a headline result and the event list never pick different variants.
+ */
+function firstPresent(
+  types: string[],
+  lookup: (actionType: string) => number | undefined,
+): number | undefined {
+  for (const t of types) {
+    const v = lookup(t);
+    if (v !== undefined) return v;
+  }
+  return undefined;
+}
+
+/**
  * Count for one canonical event family from a map of raw action_type -> summed count, using the
  * same first-present-variant de-dup as canonicalEvents. Lets the report engine expose per-event
  * columns (Registrations, Leads, Purchases, …) whose numbers match the chat's event list.
@@ -188,8 +204,30 @@ export function canonicalEvents(
 export function familyCount(sums: Map<string, number>, label: string): number {
   const fam = EVENT_FAMILIES.find((f) => f.label === label);
   if (!fam) return 0;
-  const key = fam.types.find((t) => sums.has(t));
-  return key ? Math.round(sums.get(key) ?? 0) : 0;
+  return Math.round(firstPresent(fam.types, (t) => sums.get(t)) ?? 0);
+}
+
+/** One de-duplicated event family's count, without the value `ClientEvent` carries. */
+export interface EventCount {
+  label: string;
+  count: number;
+}
+
+/**
+ * Every event family that fired, from pre-summed per-type action totals — the shape the campaign
+ * list already loads for its result counts (`${entityId}:${type}` maps), so campaigns and ad sets
+ * get their Registrations/Leads/… without a second query or the raw daily rows `canonicalEvents`
+ * needs. Same first-present rule and descending-count order as `canonicalEvents`, so a campaign's
+ * events agree with its ads' and with the report columns. Counts only: the per-type sums carry no
+ * action values. A family that rounds to zero is omitted, as `familyCount` would report it as 0.
+ */
+export function eventCounts(lookup: (actionType: string) => number | undefined): EventCount[] {
+  const out: EventCount[] = [];
+  for (const fam of EVENT_FAMILIES) {
+    const count = Math.round(firstPresent(fam.types, lookup) ?? 0);
+    if (count > 0) out.push({ label: fam.label, count });
+  }
+  return out.sort((a, b) => b.count - a.count);
 }
 
 /**

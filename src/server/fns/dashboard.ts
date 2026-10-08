@@ -19,6 +19,7 @@ import {
   accountStatus,
   canonicalEvents,
   deriveKpis,
+  eventCounts,
   pctDelta,
   type ClientEvent,
   type Totals,
@@ -710,6 +711,9 @@ export async function fetchCampaigns(
         resultLabel: rs.label,
         audience: summarizeTargeting(s.targeting) ?? s.name,
         adCount: adCountBySet.get(s.id) ?? 0,
+        // The same ad-set action sums the result count reads, so Registrations here can never
+        // disagree with a Registrations result on this row.
+        events: eventCounts((type) => setActions.get(`${s.id}:${type}`)),
         ads,
       };
     });
@@ -740,6 +744,7 @@ export async function fetchCampaigns(
         ? k.reach
         : resultCount(rs, (type) => campActions.get(`${c.id}:${type}`)),
       resultLabel: rs.label,
+      events: eventCounts((type) => campActions.get(`${c.id}:${type}`)),
       adSets,
     };
   });

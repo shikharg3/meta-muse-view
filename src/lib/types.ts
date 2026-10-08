@@ -1,4 +1,4 @@
-import type { ClientEvent } from "@/server/agg";
+import type { ClientEvent, EventCount } from "@/server/agg";
 
 export type AccountStatus = "ACTIVE" | "PAUSED" | "DISABLED" | "PENDING";
 export type CampaignObjective =
@@ -73,7 +73,7 @@ export interface Ad {
   /**
    * Every conversion and engagement the ad drove in the window (Leads, Registrations, Purchases…),
    * de-duplicated the way reports and the assistant count them. Only the ad-set drill-down
-   * (`getAdSetAds`) carries it; the campaign list omits it to stay light.
+   * (`getAdSetAds`) carries it; ads in the campaign list omit it to stay light.
    */
   events?: ClientEvent[];
   format: "Image" | "Video" | "Carousel" | "Collection";
@@ -93,6 +93,12 @@ export interface AdSet {
   frequency: number;
   /** Total ads in this ad set. `ads` is loaded on demand (drill-down), so it may be empty. */
   adCount: number;
+  /**
+   * Every event family the ad set fired (count > 0, busiest first), de-duplicated like `Ad.events`,
+   * so projects and clients can show Registrations and cost per registration without drilling into
+   * ads. Counts only: the campaign list reads per-type action sums, which carry no values.
+   */
+  events?: EventCount[];
   ads: Ad[];
 }
 export interface Campaign {
@@ -115,6 +121,8 @@ export interface Campaign {
   frequency: number;
   results: number;
   resultLabel: string;
+  /** The campaign's conversion events — see `AdSet.events`. */
+  events?: EventCount[];
   adSets: AdSet[];
 }
 export interface BreakdownRow {
