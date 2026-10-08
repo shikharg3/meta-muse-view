@@ -59,8 +59,8 @@ test("boardRows keeps page ids and each row's own status", () => {
       null,
     ]),
   ).toEqual([
-    { pageId: "p1", title: "Slots.lv", status: "Live", ownerIds: [] },
-    { pageId: "p2", title: "No status", status: null, ownerIds: [] },
+    { pageId: "p1", title: "Slots.lv", status: "Live", ownerIds: [], accountIds: [] },
+    { pageId: "p2", title: "No status", status: null, ownerIds: [], accountIds: [] },
   ]);
   expect(boardRows(null)).toEqual([]);
   expect(boardRows("not-an-array")).toEqual([]);
@@ -425,9 +425,10 @@ test("a row with no Owners cell parses to an empty owner list", () => {
   expect(row?.ownerIds).toEqual([]);
 });
 
-test("owner ids survive clubbing and the clients.raw round-trip", () => {
+test("owner ids and the row's own accounts survive clubbing and the clients.raw round-trip", () => {
   // clubClients output is written verbatim to clients.raw, and boardRows reads it back. If either
-  // side drops ownerIds the check-in silently prompts nobody.
+  // side drops ownerIds the check-in silently prompts nobody; if it drops accountIds a client's
+  // engagements can no longer say which of them a campaign ran under.
   const clubbed = clubClients(
     [
       {
@@ -448,14 +449,20 @@ test("owner ids survive clubbing and the clients.raw round-trip", () => {
 
   expect(clubbed[0].pages[0].ownerIds).toEqual([SHIKHAR]);
   expect(boardRows(clubbed[0].pages)).toEqual([
-    { pageId: "page-1", title: "Slots.lv", status: "Live", ownerIds: [SHIKHAR] },
+    {
+      pageId: "page-1",
+      title: "Slots.lv",
+      status: "Live",
+      ownerIds: [SHIKHAR],
+      accountIds: ["act_1"],
+    },
   ]);
 });
 
 test("boardRows tolerates rows stored before owners existed", () => {
   // Existing clients.raw rows have no ownerIds. They must read back as [] rather than undefined.
   expect(boardRows([{ pageId: "p", title: "t", status: "Live" }])).toEqual([
-    { pageId: "p", title: "t", status: "Live", ownerIds: [] },
+    { pageId: "p", title: "t", status: "Live", ownerIds: [], accountIds: [] },
   ]);
 });
 
@@ -482,12 +489,13 @@ test("boardRows keeps only string owner ids out of jsonb", () => {
   // ownerIds must degrade to [], never leak into the recipient list.
   expect(
     boardRows([{ pageId: "p", title: "t", status: "Live", ownerIds: [SHIKHAR, 7, null] }])[0],
-  ).toEqual({ pageId: "p", title: "t", status: "Live", ownerIds: [SHIKHAR] });
+  ).toEqual({ pageId: "p", title: "t", status: "Live", ownerIds: [SHIKHAR], accountIds: [] });
   expect(boardRows([{ pageId: "p", title: "t", status: "Live", ownerIds: SHIKHAR }])[0]).toEqual({
     pageId: "p",
     title: "t",
     status: "Live",
     ownerIds: [],
+    accountIds: [],
   });
 });
 
@@ -496,7 +504,7 @@ test("boardRows drops empty-string owner ids, exactly as peopleIds does on the w
   // must not be the more permissive one: an "" id is a recipient nobody can ever be matched to.
   expect(
     boardRows([{ pageId: "p", title: "t", status: "Live", ownerIds: ["", SHIKHAR] }])[0],
-  ).toEqual({ pageId: "p", title: "t", status: "Live", ownerIds: [SHIKHAR] });
+  ).toEqual({ pageId: "p", title: "t", status: "Live", ownerIds: [SHIKHAR], accountIds: [] });
 });
 
 test("boardRowsWithoutOwners returns exactly pageId, title and status", () => {

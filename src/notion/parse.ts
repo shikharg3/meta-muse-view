@@ -61,32 +61,45 @@ export function brandTitles(raw: unknown): string[] {
 }
 
 /**
- * The contributing Notion rows stored on `clients.raw`, with the page id and each row's OWN
- * `Account Status`. The clubbed client status is a DIFFERENT thing (the winning row's) and must not be
- * substituted for it: whether an override on a row is inert depends on that row's own value.
+ * The contributing Notion rows stored on `clients.raw`, with the page id, each row's OWN
+ * `Account Status` and each row's OWN ad accounts. The clubbed client status is a DIFFERENT thing
+ * (the winning row's) and must not be substituted for it: whether an override on a row is inert
+ * depends on that row's own value. Likewise the accounts: the client's are the union of its rows',
+ * and which row a campaign ran under is decided by the row's own list.
  */
-export function boardRows(
-  raw: unknown,
-): { pageId: string; title: string; status: string | null; ownerIds: string[] }[] {
+export interface BoardRow {
+  pageId: string;
+  title: string;
+  status: string | null;
+  ownerIds: string[];
+  accountIds: string[];
+}
+
+/**
+ * Only non-empty strings. The same test `peopleIds` applies on the way in: jsonb is the LESS trusted
+ * side, so it must not be the more permissive one.
+ */
+const strings = (value: unknown): string[] =>
+  Array.isArray(value)
+    ? value.filter((x): x is string => typeof x === "string" && x.length > 0)
+    : [];
+
+export function boardRows(raw: unknown): BoardRow[] {
   if (!Array.isArray(raw)) return [];
   const rows: unknown[] = raw;
-  const out: { pageId: string; title: string; status: string | null; ownerIds: string[] }[] = [];
+  const out: BoardRow[] = [];
   for (const p of rows) {
     if (!p || typeof p !== "object") continue;
     if (!("pageId" in p) || typeof p.pageId !== "string") continue;
     const title = "title" in p ? p.title : undefined;
     const status = "status" in p ? p.status : undefined;
-    const owners = "ownerIds" in p ? p.ownerIds : undefined;
     out.push({
       pageId: p.pageId,
       title: typeof title === "string" ? title : "",
       status: typeof status === "string" ? status : null,
-      // Rows stored before owners were captured have none; the next Notion sync fills them in. The
-      // id test is the same one `peopleIds` applies on the way in: jsonb is the LESS trusted side, so
-      // it must not be the more permissive one.
-      ownerIds: Array.isArray(owners)
-        ? owners.filter((x): x is string => typeof x === "string" && x.length > 0)
-        : [],
+      // Rows stored before owners were captured have none; the next Notion sync fills them in.
+      ownerIds: strings("ownerIds" in p ? p.ownerIds : undefined),
+      accountIds: strings("accountIds" in p ? p.accountIds : undefined),
     });
   }
   return out;

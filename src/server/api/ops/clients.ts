@@ -10,13 +10,14 @@ import {
   setCampaignClient,
   updateClientAccounts,
 } from "@/server/fns/clients";
+import { fetchClientProjects, fetchProjectMap } from "@/server/fns/client-projects";
 import { defineOp, scalarString } from "../registry";
 import { rangeSpec } from "../schemas";
 
 /**
  * Client-book ops.
  *
- * The six reads carry no authorisation check, matching today's behaviour — the cookie gate was the
+ * The reads carry no authorisation check, matching today's behaviour — the cookie gate was the
  * only thing in front of them. The two writes are admin-only, but the check lives in the delegates
  * and *returns* `{ok:false,error:"Admins only."}` rather than throwing; the UI renders that string,
  * so the op must not promote it to an HTTP error.
@@ -49,6 +50,32 @@ export const getClientDetail = defineOp({
   mode: "read",
   input: rangeSpec.extend({ id: z.string().min(1) }),
   handler: (input) => fetchClientDetail(input.id, resolveWindow(input)),
+});
+
+/**
+ * Campaigns filed under a project by hand, `campaignId → pageId`. They are stored by the Base44 app
+ * (its `ProjectAssignment` entity) and sent with each read; they only regroup a client's own
+ * campaigns between its own rows, so a caller can misfile nothing it could not already see.
+ */
+const placements = z
+  .record(z.string().min(1), z.string().min(1))
+  .default({})
+  .transform((value) => new Map(Object.entries(value)));
+
+/** A client's projects — one per Notion board row — each with its campaigns measured over its days. */
+export const getClientProjects = defineOp({
+  name: "getClientProjects",
+  mode: "read",
+  input: rangeSpec.extend({ id: z.string().min(1), placements }),
+  handler: (input) => fetchClientProjects(input.id, resolveWindow(input), input.placements),
+});
+
+/** Every client's projects and their campaigns, without figures — for filters, cards and chips. */
+export const getProjectMap = defineOp({
+  name: "getProjectMap",
+  mode: "read",
+  input: z.object({ placements }),
+  handler: (input) => fetchProjectMap(input.placements),
 });
 
 export const getClientBudgets = defineOp({
