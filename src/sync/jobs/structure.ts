@@ -171,6 +171,9 @@ export async function syncAccounts(client: InsightsClient, businessId: string): 
       createdTime: ts(a.created_time),
       raw: a,
       syncedAt: now(),
+      // Meta is the system of record: if enumeration now returns an account that was CSV-imported
+      // (the token gained access), the sync takes it over and keeps it current from here on.
+      source: "meta",
     };
     await db
       .insert(schema.accounts)

@@ -45,7 +45,7 @@ export const listActiveCampaigns: AgentTool = {
   definition: {
     name: "list_active_campaigns",
     description:
-      "Full breakdown of EVERY campaign that spent more than $0 over the window (default last 30 days), sorted by spend. Each row carries: owning ad account and its Meta account status (ACTIVE / PAUSED / DISABLED = suspended, with reason), owning client, campaign status, spend, dailyAvgSpend (spend ÷ days), dailyBudget (the daily TARGET budget in $ — campaign CBO budget or summed active ad-set budgets), impressions, clicks, CTR, CPC, objective results, and `events` (the FULL de-duplicated conversion breakdown: purchases, registrations, leads, …). Use this for ANY request to break down / summarize the active (spending) campaigns — it returns everything in ONE call. NEVER loop get_client_stats per client.",
+      "Full breakdown of EVERY campaign that spent more than $0 over the window (default last 30 days), sorted by spend. Each row carries: owning ad account and its Meta account status (ACTIVE / PAUSED / DISABLED = suspended, with reason; null when the account is CSV-imported and its delivery state is unknown), owning client, campaign status, spend, dailyAvgSpend (spend ÷ days), dailyBudget (the daily TARGET budget in $ — campaign CBO budget or summed active ad-set budgets), impressions, clicks, CTR, CPC, objective results, and `events` (the FULL de-duplicated conversion breakdown: purchases, registrations, leads, …). Use this for ANY request to break down / summarize the active (spending) campaigns — it returns everything in ONE call. NEVER loop get_client_stats per client.",
     input_schema: { type: "object", properties: { ...WINDOW_PROPS } },
   },
   run: async (input) => await fetchActiveCampaigns(toolWindow(input)),
@@ -71,7 +71,7 @@ export const listAccounts: AgentTool = {
   definition: {
     name: "list_accounts",
     description:
-      "Returns `{ mappingSyncedAt, unsyncedActiveAccounts, accounts }`. `accounts` lists EVERY ad account with its Meta status — ACTIVE, PAUSED, or DISABLED (DISABLED = suspended/disabled by Meta, with the disable reason and `disabledSince`) — the CURRENT client that owns it, that client's Notion board status, and `isActiveAccount`: TRUE only when the account is the client's designated Notion 'Active Account ID'. `unsyncedActiveAccounts` lists designated Active Account IDs our Meta token CANNOT see.",
+      "Returns `{ mappingSyncedAt, unsyncedActiveAccounts, accounts }`. `accounts` lists EVERY ad account with its Meta status — ACTIVE, PAUSED, or DISABLED (DISABLED = suspended/disabled by Meta, with the disable reason and `disabledSince`) — the CURRENT client that owns it, that client's Notion board status, and `isActiveAccount`: TRUE only when the account is the client's designated Notion 'Active Account ID'. `source` is 'meta' (synced live) or 'import' (loaded from a CSV export): an imported account's `status` is null because its delivery state is UNKNOWN — never call it active or disabled. `unsyncedActiveAccounts` lists designated Active Account IDs our Meta token CANNOT see.",
     input_schema: { type: "object", properties: {} },
   },
   run: async () => await fetchAccountDirectory(),

@@ -131,6 +131,11 @@ const RESULT_BY_CUSTOM_EVENT: Record<string, ResultSpec> = {
   SEARCH: fromFamily("Searches"),
 };
 
+/** Every ad-set optimisation event this module can label, with the result label it produces. */
+export const CUSTOM_EVENT_RESULTS: { event: string; label: string }[] = Object.entries(
+  RESULT_BY_CUSTOM_EVENT,
+).map(([event, spec]) => ({ event, label: spec.label }));
+
 /**
  * What counts as a "result" for a campaign: the event its ad sets optimise for when that is known,
  * else the objective's default, else purchases.

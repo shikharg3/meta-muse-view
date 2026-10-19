@@ -17,6 +17,7 @@ import { Route as ReportsRouteImport } from './routes/reports'
 import { Route as PortalRouteImport } from './routes/portal'
 import { Route as OverviewRouteImport } from './routes/overview'
 import { Route as LoginRouteImport } from './routes/login'
+import { Route as ImportRouteImport } from './routes/import'
 import { Route as FinanceRouteImport } from './routes/finance'
 import { Route as CreativesRouteImport } from './routes/creatives'
 import { Route as ChatHistoryRouteImport } from './routes/chat-history'
@@ -84,6 +85,11 @@ const OverviewRoute = OverviewRouteImport.update({
 const LoginRoute = LoginRouteImport.update({
   id: '/login',
   path: '/login',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ImportRoute = ImportRouteImport.update({
+  id: '/import',
+  path: '/import',
   getParentRoute: () => rootRouteImport,
 } as any)
 const FinanceRoute = FinanceRouteImport.update({
@@ -239,6 +245,7 @@ export interface FileRoutesByFullPath {
   '/chat-history': typeof ChatHistoryRoute
   '/creatives': typeof CreativesRoute
   '/finance': typeof FinanceRoute
+  '/import': typeof ImportRoute
   '/login': typeof LoginRoute
   '/overview': typeof OverviewRoute
   '/portal': typeof PortalRouteWithChildren
@@ -277,6 +284,7 @@ export interface FileRoutesByTo {
   '/chat-history': typeof ChatHistoryRoute
   '/creatives': typeof CreativesRoute
   '/finance': typeof FinanceRoute
+  '/import': typeof ImportRoute
   '/login': typeof LoginRoute
   '/overview': typeof OverviewRoute
   '/settings': typeof SettingsRoute
@@ -314,6 +322,7 @@ export interface FileRoutesById {
   '/chat-history': typeof ChatHistoryRoute
   '/creatives': typeof CreativesRoute
   '/finance': typeof FinanceRoute
+  '/import': typeof ImportRoute
   '/login': typeof LoginRoute
   '/overview': typeof OverviewRoute
   '/portal': typeof PortalRouteWithChildren
@@ -354,6 +363,7 @@ export interface FileRouteTypes {
     | '/chat-history'
     | '/creatives'
     | '/finance'
+    | '/import'
     | '/login'
     | '/overview'
     | '/portal'
@@ -392,6 +402,7 @@ export interface FileRouteTypes {
     | '/chat-history'
     | '/creatives'
     | '/finance'
+    | '/import'
     | '/login'
     | '/overview'
     | '/settings'
@@ -428,6 +439,7 @@ export interface FileRouteTypes {
     | '/chat-history'
     | '/creatives'
     | '/finance'
+    | '/import'
     | '/login'
     | '/overview'
     | '/portal'
@@ -467,6 +479,7 @@ export interface RootRouteChildren {
   ChatHistoryRoute: typeof ChatHistoryRoute
   CreativesRoute: typeof CreativesRoute
   FinanceRoute: typeof FinanceRoute
+  ImportRoute: typeof ImportRoute
   LoginRoute: typeof LoginRoute
   OverviewRoute: typeof OverviewRoute
   PortalRoute: typeof PortalRouteWithChildren
@@ -545,6 +558,13 @@ declare module '@tanstack/react-router' {
       path: '/login'
       fullPath: '/login'
       preLoaderRoute: typeof LoginRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/import': {
+      id: '/import'
+      path: '/import'
+      fullPath: '/import'
+      preLoaderRoute: typeof ImportRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/finance': {
@@ -789,6 +809,7 @@ const rootRouteChildren: RootRouteChildren = {
   ChatHistoryRoute: ChatHistoryRoute,
   CreativesRoute: CreativesRoute,
   FinanceRoute: FinanceRoute,
+  ImportRoute: ImportRoute,
   LoginRoute: LoginRoute,
   OverviewRoute: OverviewRoute,
   PortalRoute: PortalRouteWithChildren,

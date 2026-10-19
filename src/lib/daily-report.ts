@@ -40,6 +40,11 @@ export interface ReportAccount {
    */
   deliverable: boolean;
   disableReason: string | null;
+  /**
+   * CSV-imported, not synced from Meta. Its spend is real, but it carries no account status or cap,
+   * so `status`/`deliverable` are meaningless for it and it is left out of delivery health.
+   */
+  imported: boolean;
 }
 
 /** One campaign, already attributed to its owning Notion row (null = nobody owns it). */
@@ -202,6 +207,10 @@ const SEVERITY: Record<AccountStatus, number> = { DISABLED: 3, PENDING: 2, PAUSE
  *
  * An account id with no row (never enumerated) counts as PENDING, never as deliverable — a missing
  * account is an unknown, and letting an unknown mark an engagement live would hide a real gap.
+ *
+ * An IMPORTED account is skipped entirely: its status is not known at all (a CSV has none), and under
+ * any-active-wins letting it read as deliverable would hide a real DISABLED sibling. An engagement
+ * whose only accounts are imported therefore falls through to the no-accounts case below.
  */
 export function engagementDelivery(
   accountIds: Iterable<string>,
@@ -213,6 +222,7 @@ export function engagementDelivery(
   let seen = false;
   for (const id of accountIds) {
     const a = accounts.get(id);
+    if (a?.imported) continue;
     if (a?.deliverable) return { status: "ACTIVE", reason: null };
     seen = true;
     const status = a?.status ?? "PENDING";
@@ -223,8 +233,8 @@ export function engagementDelivery(
       reason = a?.disableReason ?? null;
     } else if (status === worst && reason === null) reason = a?.disableReason ?? null;
   }
-  // No accounts at all behind the engagement's campaigns. Nothing is known to be broken, and
-  // inventing a fault would be worse than saying nothing.
+  // No Meta-synced accounts behind the engagement's campaigns (none at all, or only imported ones).
+  // Nothing is known to be broken, and inventing a fault would be worse than saying nothing.
   if (!seen) return { status: "ACTIVE", reason: null };
   if (worst === "ACTIVE") return { status: outOfBudget ? "OUT_OF_BUDGET" : "ACTIVE", reason: null };
   return { status: worst, reason };

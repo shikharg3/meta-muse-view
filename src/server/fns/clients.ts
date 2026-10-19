@@ -715,8 +715,9 @@ export async function fetchClientCampaigns(
 export interface ActiveCampaign {
   name: string;
   account: string;
-  /** Meta account status — DISABLED = suspended/disabled by Meta (with reason). */
-  accountStatus: AccountStatus;
+  /** Meta account status — DISABLED = suspended/disabled by Meta (with reason). null = unknown: the
+   *  account is CSV-imported, which carries no status, so ACTIVE would be invented. */
+  accountStatus: AccountStatus | null;
   accountDisableReason: string | null;
   client: string | null;
   /** Campaign status (ACTIVE / PAUSED / …). */
@@ -757,6 +758,7 @@ export async function fetchActiveCampaigns(w: DateWindow): Promise<ActiveCampaig
         id: schema.accounts.id,
         status: schema.accounts.status,
         disableReason: schema.accounts.disableReason,
+        source: schema.accounts.source,
       })
       .from(schema.accounts)
       .where(inArray(schema.accounts.id, acctIds)),
@@ -819,7 +821,7 @@ export async function fetchActiveCampaigns(w: DateWindow): Promise<ActiveCampaig
   const round2 = (n: number) => Math.round(n * 100) / 100;
   return active.map((c) => {
     const acct = acctById.get(c.accountId);
-    const status = accountStatus(acct?.status);
+    const status = acct?.source === "import" ? null : accountStatus(acct?.status);
     const cents =
       campBudgetById.get(c.id) ?? (adsetSumById.has(c.id) ? adsetSumById.get(c.id) : null);
     return {
@@ -847,7 +849,11 @@ export async function fetchActiveCampaigns(w: DateWindow): Promise<ActiveCampaig
 export interface AccountDirectoryRow {
   id: string;
   name: string | null;
-  status: AccountStatus; // ACTIVE | PAUSED | DISABLED | PENDING (DISABLED = suspended by Meta)
+  // ACTIVE | PAUSED | DISABLED | PENDING (DISABLED = suspended by Meta). null = unknown: a
+  // CSV-imported account has no Meta status, and defaulting it to ACTIVE would be invented.
+  status: AccountStatus | null;
+  // "meta" = synced from Meta; "import" = loaded from a CSV export the token cannot read live.
+  source: "meta" | "import";
   disableReason: string | null;
   disabledSince: string | null; // date it flipped to DISABLED (YYYY-MM-DD), or null if not synced
   client: string | null; // client that owns this account, if mapped
@@ -881,6 +887,7 @@ export async function fetchAccountDirectory(): Promise<AccountDirectory> {
         name: schema.accounts.name,
         status: schema.accounts.status,
         disableReason: schema.accounts.disableReason,
+        source: schema.accounts.source,
       })
       .from(schema.accounts),
     db.select().from(schema.clients),
@@ -921,13 +928,15 @@ export async function fetchAccountDirectory(): Promise<AccountDirectory> {
   return {
     mappingSyncedAt: mappingSyncedAt?.toISOString() ?? null,
     unsyncedActiveAccounts,
-    accounts: accts.map((a) => {
-      const status = accountStatus(a.status);
+    accounts: accts.map((a): AccountDirectoryRow => {
+      const imported = a.source === "import";
+      const status = imported ? null : accountStatus(a.status);
       const o = owner.get(a.id);
       return {
         id: a.id,
         name: a.name,
         status,
+        source: imported ? "import" : "meta",
         disableReason: status === "DISABLED" ? disableReasonLabel(a.disableReason) : null,
         disabledSince: status === "DISABLED" ? (disabledSince.get(a.id) ?? null) : null,
         client: o?.name ?? null,

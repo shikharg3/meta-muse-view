@@ -72,6 +72,7 @@ export async function fetchDailyEngagementRows(
           disableReason: schema.accounts.disableReason,
           spendCap: schema.accounts.spendCap,
           amountSpent: schema.accounts.amountSpent,
+          source: schema.accounts.source,
         })
         .from(schema.accounts),
       // `insights_breakdown_daily` is the same spend split by dimension; summing it here would
@@ -126,6 +127,8 @@ export async function fetchDailyEngagementRows(
           amountSpent: a.amountSpent,
         }),
         disableReason: disableReasonLabel(a.disableReason),
+        // Kept in the map for its currency; `engagementDelivery` ignores it for health.
+        imported: a.source === "import",
       },
     ]),
   );

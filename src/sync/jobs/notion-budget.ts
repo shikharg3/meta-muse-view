@@ -840,6 +840,7 @@ export async function syncNotionDailyBudgets(
           status: schema.accounts.status,
           spendCap: schema.accounts.spendCap,
           amountSpent: schema.accounts.amountSpent,
+          source: schema.accounts.source,
         })
         .from(schema.accounts),
       db.select().from(schema.clients).where(isNull(schema.clients.removedAt)),
@@ -891,6 +892,9 @@ export async function syncNotionDailyBudgets(
   const currencyOf = new Map(accountRows.map((a) => [a.id, a.currency]));
   const deliverable = new Set(accountRows.filter((a) => canDeliver(a)).map((a) => a.id));
   const accountById = new Map(accountRows.map((a) => [a.id, a]));
+  // CSV-imported accounts carry spend but no account status or spend cap, so they count toward every
+  // money column yet must never feed a delivery-state verdict (status ladder, funded balance).
+  const imported = new Set(accountRows.filter((a) => a.source === "import").map((a) => a.id));
   const spendByCampaign = new Map(spendRows.map((r) => [r.entityId, Number(r.spend ?? 0)]));
   // sumDailyBudget assumes every ad set it is handed is live; the status ladder needs all of them.
   const activeAdSetRows = adSetRows.filter((s) => s.effectiveStatus === "ACTIVE");
@@ -1249,11 +1253,15 @@ export async function syncNotionDailyBudgets(
         }
         const mine = assigned.get(row.pageId) ?? [];
         // Derived for every live row, independent of whether any numeric column can be computed: a
-        // row whose budget is unresolvable still has a delivery state worth reporting.
+        // row whose budget is unresolvable still has a delivery state worth reporting. Imported
+        // accounts and their campaigns are left out: their null status would read as an ACTIVE,
+        // uncapped account and rescue a Disabled/Blocked row, and their frozen campaign statuses would
+        // write a stale Live/Paused. A row whose only accounts are imported derives nothing, exactly
+        // like a row whose accounts have not synced.
         const statusNext = statusForRow({
           accounts: row.accountIds.flatMap((a) => {
             const acct = accountById.get(a);
-            return acct
+            return acct && !imported.has(a)
               ? [
                   {
                     disabled: accountStatus(acct.status) === "DISABLED",
@@ -1262,7 +1270,9 @@ export async function syncNotionDailyBudgets(
                 ]
               : [];
           }),
-          campaigns: mine.map((c) => ({ id: c.id, active: c.active })),
+          campaigns: mine
+            .filter((c) => !imported.has(c.accountId))
+            .map((c) => ({ id: c.id, active: c.active })),
           adSets: ladderAdSets,
           ads: ladderAds,
           current: row.status,
@@ -1380,9 +1390,11 @@ export async function syncNotionDailyBudgets(
         // account's history exceeds the contract (wildcasino.ag: $10,350 contracted, $12,596 spent,
         // yet $3,720 still sitting in the accounts). `spend_cap − amount_spent` is ground truth,
         // synced hourly, and it is exactly what stops delivery when it hits zero.
+        // Imported accounts are skipped: they have no spend cap, which would read as "uncapped" and
+        // suppress the funds and end-date columns for the whole row.
         const funded = row.accountIds.flatMap((a) => {
           const acct = accountById.get(a);
-          return acct && canDeliver(acct) ? [acct] : [];
+          return acct && !imported.has(a) && canDeliver(acct) ? [acct] : [];
         });
         const uncapped = funded.some((a) => (a.spendCap ?? 0) <= 0);
         if (!uncapped && funded.length > 0) {

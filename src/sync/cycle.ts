@@ -371,7 +371,15 @@ export async function runCycle(opts: { full?: boolean; force?: boolean } = {}): 
         "[sync] account enumeration failed; using known DB accounts:",
         e instanceof Error ? e.message : e,
       );
-      owned = (await db.select({ id: schema.accounts.id }).from(schema.accounts)).map((r) => r.id);
+      // Only Meta-sourced accounts: CSV-imported accounts are ones the token CANNOT read, and
+      // calling Meta for them returns #100/33, whose field bisection would poison the shared
+      // meta_field_blocklist for every account.
+      owned = (
+        await db
+          .select({ id: schema.accounts.id })
+          .from(schema.accounts)
+          .where(eq(schema.accounts.source, "meta"))
+      ).map((r) => r.id);
     }
     const ids = creds.accountIds.length ? owned.filter((a) => creds.accountIds.includes(a)) : owned;
     const structured = await getStructuredAccountIds();
@@ -543,9 +551,12 @@ export async function runBackfillCycle(deadlineMs?: number): Promise<void> {
   if (!creds) return;
   const pacing = pacingFor(normalizeTier(await getStoredTier()));
   const client = buildClient(creds, new Limiter(pacing.backfill.http, pacing.backfill.intervalMs));
+  // Meta-sourced accounts only — an imported account is unreadable by the token (see the
+  // enumeration fallback in runCycle), and backfilling it would only advance empty checkpoints.
   const rows = await db
     .select({ id: schema.accounts.id, status: schema.accounts.status })
-    .from(schema.accounts);
+    .from(schema.accounts)
+    .where(eq(schema.accounts.source, "meta"));
   const structured = await getStructuredAccountIds();
   const disabled = new Set(
     rows.filter((a) => accountStatus(a.status) === "DISABLED").map((a) => a.id),

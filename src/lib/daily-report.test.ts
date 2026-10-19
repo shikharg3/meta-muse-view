@@ -18,6 +18,7 @@ const account = (id: string, over: Partial<ReportAccount> = {}): ReportAccount =
   status: "ACTIVE",
   deliverable: true,
   disableReason: null,
+  imported: false,
   ...over,
 });
 

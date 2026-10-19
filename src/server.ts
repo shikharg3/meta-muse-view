@@ -3,6 +3,8 @@ import "./lib/error-capture";
 import { consumeLastCapturedError } from "./lib/error-capture";
 import { renderErrorPage } from "./lib/error-page";
 import { handleAuth } from "./lib/auth/gate";
+import { env as appEnv } from "./lib/env";
+import { isImportHost } from "./lib/import-host";
 import { handleChatStream } from "./server/agent/stream";
 
 type ServerEntry = {
@@ -42,6 +44,17 @@ async function normalizeCatastrophicSsrResponse(response: Response): Promise<Res
 export default {
   async fetch(request: Request, env: unknown, ctx: unknown) {
     try {
+      const url = new URL(request.url);
+      // The CSV import exists only on IMPORT_HOSTS (the droplet's bare IP). Everywhere else it is a
+      // plain 404, before auth, so a domain does not even show that the page exists. Its server fns
+      // re-check the host themselves: client-side navigation never requests this path.
+      if (
+        (url.pathname === "/import" || url.pathname.startsWith("/import/")) &&
+        !isImportHost(url.host, appEnv().IMPORT_HOSTS)
+      ) {
+        return new Response("Not found", { status: 404 });
+      }
+
       // Auth gate: handles /auth/* and blocks unauthenticated access to everything
       // except the login/signup pages and static assets.
       const authResponse = await handleAuth(request);
@@ -49,7 +62,7 @@ export default {
 
       // Served here rather than as a server fn: server fns serialise one whole return value, and
       // this endpoint's entire purpose is to emit events while the turn is still running.
-      if (new URL(request.url).pathname === "/api/chat/stream") {
+      if (url.pathname === "/api/chat/stream") {
         return await handleChatStream(request);
       }
 

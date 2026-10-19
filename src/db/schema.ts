@@ -31,6 +31,12 @@ export const accounts = pgTable("accounts", {
   businessName: text("business_name"),
   createdTime: timestamp("created_time", { withTimezone: true }),
   raw: jsonb("raw"),
+  // Who maintains this account's rows. 'meta': the sync (the default, and what `syncAccounts`
+  // stamps). 'import': an account the system-user token cannot read, whose structure and daily
+  // insights are uploaded as an Ads Manager CSV export (`src/server/fns/meta-import.ts`). The sync
+  // never calls Meta for an imported account, and nothing that infers live delivery state (alerts,
+  // the Notion status ladder, daily-report health) reads it — a CSV carries no account status.
+  source: text("source").notNull().default("meta"),
   syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -188,6 +194,30 @@ export const insightsBreakdownDaily = pgTable(
     index("insights_breakdown_daily_date_idx").on(t.date),
     index("insights_breakdown_daily_account_date_idx").on(t.accountId, t.date),
   ],
+);
+
+/**
+ * One accepted CSV upload for an imported account (`accounts.source = 'import'`). The upload is
+ * authoritative for its whole date range: committing it replaces every insight row of that account
+ * dated `date_from..date_to`, at every level. Kept for the import page's history and as the audit
+ * trail's detail; the rows themselves live in the ordinary synced tables.
+ */
+export const importBatches = pgTable(
+  "import_batches",
+  {
+    id: text("id").primaryKey(),
+    accountId: text("account_id").notNull(),
+    fileName: text("file_name"),
+    fileSha256: text("file_sha256").notNull(),
+    dateFrom: date("date_from").notNull(),
+    dateTo: date("date_to").notNull(),
+    // Insight rows written per level, e.g. {"account": 14, "campaign": 28, "adset": 28, "ad": 56}.
+    rowsByLevel: jsonb("rows_by_level").notNull(),
+    spend: doublePrecision("spend").notNull(),
+    uploadedBy: text("uploaded_by").notNull(),
+    uploadedAt: timestamp("uploaded_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("import_batches_account_idx").on(t.accountId, t.uploadedAt)],
 );
 
 export const syncState = pgTable("sync_state", {

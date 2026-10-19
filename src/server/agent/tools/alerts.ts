@@ -183,7 +183,7 @@ export const getAccountHealth: AgentTool = {
       "Returns `problems` with three groups: `account_disabled` (suspended by Meta — carries `disableReason` and `disabledSince`, sorted by last-7-day spend so the ones that were actually earning come first), " +
       `\`low_funds\` (in-use accounts with $${ALERT_LOW_FUNDS_USD} or less prepaid budget left — carries \`remainingUsd\`, least headroom first; <= 0 means delivery has ALREADY stopped), and \`no_spend\` (in-use, ACTIVE, still-funded accounts that spent $0 yesterday — an unexplained stoppage). ` +
       "Every row carries `client`, `spend7d`, `spendYesterday`, `severity` and a plain-English `reason`; `counts` covers ALL matches even when a group is truncated, and `healthy` is how many checked accounts had no problem at all. " +
-      `Mind the scoping rules (also returned in \`thresholds\`): low_funds and no_spend only consider accounts that spent inside the last ${ALERT_IN_USE_DAYS} days, and a DISABLED account is reported ONLY as disabled because the disable already explains the silence. Accounts no current client owns are skipped and counted in \`unmappedAccountsSkipped\`. ` +
+      `Mind the scoping rules (also returned in \`thresholds\`): low_funds and no_spend only consider accounts that spent inside the last ${ALERT_IN_USE_DAYS} days, and a DISABLED account is reported ONLY as disabled because the disable already explains the silence. Accounts no current client owns are skipped and counted in \`unmappedAccountsSkipped\`; CSV-imported accounts have no known delivery state, so they are skipped and counted in \`importedAccountsSkipped\`. ` +
       "Use this for 'which accounts are in trouble / need a top-up / stopped spending / are suspended'. Use get_alerts instead for the history of what fired and when, and list_accounts for the full directory including healthy accounts. `asOf` is YESTERDAY — spend is measured on complete days only, so nothing that happened today is in here.",
     input_schema: {
       type: "object",
@@ -249,6 +249,7 @@ export const getAccountHealth: AgentTool = {
     const dirById = new Map(dir.accounts.map((a) => [a.id, a]));
 
     let unmapped = 0;
+    let imported = 0;
     const alerts: AccountAlert[] = [];
     const rowById = new Map<string, AccountAlertRow>();
     for (const a of dir.accounts) {
@@ -259,6 +260,12 @@ export const getAccountHealth: AgentTool = {
         continue;
       }
       if (clientQuery && !a.client.toLowerCase().includes(clientQuery)) continue;
+      // Same rule as the alert job: an imported account has no status or cap, so classifying it
+      // would report an uncapped ACTIVE account and invent a no-spend stoppage when the CSV lags.
+      if (a.source === "import") {
+        imported++;
+        continue;
+      }
       const f = fundsById.get(a.id);
       const s = spendById.get(a.id);
       const row: AccountAlertRow = {
@@ -275,7 +282,7 @@ export const getAccountHealth: AgentTool = {
       alerts.push(...classifyAccount(row, yesterday));
     }
 
-    if (clientQuery && rowById.size === 0)
+    if (clientQuery && rowById.size === 0 && imported === 0)
       return {
         error: `No ad accounts owned by a client matching "${String(input.client)}". Try list_clients or search_entities to get the exact name.`,
       };
@@ -336,6 +343,9 @@ export const getAccountHealth: AgentTool = {
         : "whole book",
       accountsChecked: rowById.size,
       unmappedAccountsSkipped: unmapped,
+      // Imported (CSV) accounts owned by a matching client: their delivery state is unknown, so
+      // they are neither healthy nor flagged.
+      importedAccountsSkipped: imported,
       counts,
       healthy: rowById.size - new Set(alerts.map((a) => a.accountId)).size,
       problems,

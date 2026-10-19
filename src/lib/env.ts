@@ -46,6 +46,17 @@ const schema = z.object({
         .map((x) => x.trim().toLowerCase())
         .filter(Boolean),
     ),
+  // Hosts (no port) that may serve the CSV import page, e.g. the droplet's bare IP. Unset = the
+  // import is unreachable everywhere. See src/lib/import-host.ts.
+  IMPORT_HOSTS: z
+    .string()
+    .default("")
+    .transform((s) =>
+      s
+        .split(",")
+        .map((x) => x.trim().toLowerCase())
+        .filter(Boolean),
+    ),
   // The Base44 creative mirror, asked after each sync to copy newly visible creatives into Base44's
   // own storage (`src/sync/jobs/creative-mirror.ts`). Both or neither: unset skips the step. The key
   // is shared with the `creatives` function's CREATIVE_MIRROR_KEY secret and gates only that call.
