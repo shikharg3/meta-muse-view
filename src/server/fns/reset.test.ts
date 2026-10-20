@@ -7,7 +7,7 @@ beforeEach(async () => {
   await db.execute(sql`
     truncate table
       accounts, campaigns, ad_sets, ads, insights_daily, insights_breakdown_daily, sync_state,
-      token_health, meta_credentials cascade
+      token_health, meta_credentials, import_batches cascade
   `);
 });
 
@@ -41,8 +41,19 @@ test("wipeSyncedData keeps CSV-imported accounts and their rows", async () => {
   // destroy it — while the Meta account beside it is still wiped as before.
   await db.insert(schema.accounts).values([
     { id: "act_meta", name: "Meta" },
-    { id: "act_imp", name: "Imported", source: "import" },
+    { id: "act_imp", name: "Imported" },
   ]);
+  // An upload is what makes an account imported; its `source` stays 'meta' like any other.
+  await db.insert(schema.importBatches).values({
+    id: "b1",
+    accountId: "act_imp",
+    fileSha256: "x",
+    dateFrom: "2026-06-01",
+    dateTo: "2026-06-01",
+    rowsByLevel: { account: 1, campaign: 0, adset: 0, ad: 0 },
+    spend: 42,
+    uploadedBy: "test",
+  });
   await db.insert(schema.campaigns).values([
     { id: "c_meta", accountId: "act_meta", name: "M" },
     { id: "c_imp", accountId: "act_imp", name: "I" },
@@ -55,7 +66,7 @@ test("wipeSyncedData keeps CSV-imported accounts and their rows", async () => {
   await wipeSyncedData();
 
   const accounts = await db.select().from(schema.accounts);
-  expect(accounts.map((a) => [a.id, a.source])).toEqual([["act_imp", "import"]]);
+  expect(accounts.map((a) => [a.id, a.source])).toEqual([["act_imp", "meta"]]);
   expect((await db.select().from(schema.campaigns)).map((c) => c.id)).toEqual(["c_imp"]);
   const insights = await db.select().from(schema.insightsDaily);
   expect(insights.map((i) => [i.entityId, i.spend])).toEqual([["act_imp", 42]]);

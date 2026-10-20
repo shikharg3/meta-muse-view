@@ -26,6 +26,20 @@ export async function getStructuredAccountIds(): Promise<Set<string>> {
   return new Set(rows.map((r) => r.id));
 }
 
+/**
+ * CSV-imported accounts (src/server/fns/meta-import.ts): those with at least one upload in
+ * `import_batches`. Their `accounts.source` stays 'meta' like every other account; the upload is
+ * the marker. The token cannot read them, so nothing may call Meta for them, and a CSV carries no
+ * account status or cap, so nothing that infers live delivery state may read them. Their spend
+ * counts everywhere.
+ */
+export async function getImportedAccountIds(): Promise<Set<string>> {
+  const rows = await db
+    .selectDistinct({ id: schema.importBatches.accountId })
+    .from(schema.importBatches);
+  return new Set(rows.map((r) => r.id));
+}
+
 export async function markSync(
   accountId: string,
   phase: Phase,

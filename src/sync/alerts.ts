@@ -34,15 +34,15 @@ interface DropRow {
  * account already flagged in the last 7 days is skipped, so a persistent collapse alerts once, not
  * every day. Returns the count of new alerts.
  *
- * CSV-imported accounts are excluded throughout, including from the as-of day: an import lands on
- * its own schedule, so a lagging (or ahead-of-sync) file is not a ban signal and must not move the
- * reference day the synced accounts are judged on.
+ * CSV-imported accounts (those with an upload in import_batches) are excluded throughout, including
+ * from the as-of day: an import lands on its own schedule, so a lagging (or ahead-of-sync) file is
+ * not a ban signal and must not move the reference day the synced accounts are judged on.
  */
 export async function detectSpendDropAlerts(): Promise<number> {
   const keep = 1 - ALERT_DROP_PCT;
   const result = await db.execute(sql`
     WITH imported AS (
-      SELECT id FROM accounts WHERE source = 'import'
+      SELECT DISTINCT account_id AS id FROM import_batches
     ),
     asof AS (
       SELECT max(date) AS d FROM insights_daily
@@ -267,10 +267,10 @@ interface RawAccountAlertRow {
 
 /**
  * Detect disabled accounts, accounts nearly out of prepaid budget, and active accounts that stopped
- * spending. Only accounts mapped to a CURRENT client are considered, and only Meta-sourced ones: a
- * CSV-imported account has no status/cap/amount-spent, which `classifyAccount` would read as an
- * uncapped ACTIVE account and fire no_spend whenever the import lags. Excluding them in the query
- * also keeps them out of `recovered`, so they can neither raise nor clear a disabled alert.
+ * spending. Only accounts mapped to a CURRENT client are considered, and never CSV-imported ones
+ * (an upload in import_batches): an import has no status/cap/amount-spent, which `classifyAccount`
+ * would read as an uncapped ACTIVE account and fire no_spend whenever the import lags. Excluding
+ * them in the query also keeps them out of `recovered`, so they can neither raise nor clear an alert.
  *
  * `silent` records a kind's current state without notifying. Used once on rollout: the book of
  * business already contains 74 disabled and 10 nearly-drained accounts, and delivering that history
@@ -311,7 +311,7 @@ export async function detectAccountAlerts(
     JOIN owner o ON o.acct = a.id
     LEFT JOIN s7 ON s7.entity_id = a.id
     LEFT JOIN sy ON sy.entity_id = a.id
-    WHERE a.source = 'meta'
+    WHERE a.id NOT IN (SELECT account_id FROM import_batches)
   `);
   const rows = result as unknown as RawAccountAlertRow[];
 

@@ -31,11 +31,8 @@ export const accounts = pgTable("accounts", {
   businessName: text("business_name"),
   createdTime: timestamp("created_time", { withTimezone: true }),
   raw: jsonb("raw"),
-  // Who maintains this account's rows. 'meta': the sync (the default, and what `syncAccounts`
-  // stamps). 'import': an account the system-user token cannot read, whose structure and daily
-  // insights are uploaded as an Ads Manager CSV export (`src/server/fns/meta-import.ts`). The sync
-  // never calls Meta for an imported account, and nothing that infers live delivery state (alerts,
-  // the Notion status ladder, daily-report health) reads it — a CSV carries no account status.
+  // Who maintains this account's rows. 'meta' for every account, CSV-imported ones included: an
+  // imported account is identified by its uploads in `import_batches`, not by this column.
   source: text("source").notNull().default("meta"),
   syncedAt: timestamp("synced_at", { withTimezone: true }).notNull().defaultNow(),
 });
@@ -197,10 +194,11 @@ export const insightsBreakdownDaily = pgTable(
 );
 
 /**
- * One accepted CSV upload for an imported account (`accounts.source = 'import'`). The upload is
- * authoritative for its whole date range: committing it replaces every insight row of that account
- * dated `date_from..date_to`, at every level. Kept for the import page's history and as the audit
- * trail's detail; the rows themselves live in the ordinary synced tables.
+ * One accepted CSV upload for an imported account. An account with at least one batch IS an
+ * imported account (`getImportedAccountIds` in src/sync/state.ts): the sync never calls Meta for it,
+ * and alerts and delivery-health checks skip it. The upload is authoritative for its whole date
+ * range: committing it replaces every insight row of that account dated `date_from..date_to`, at
+ * every level. The rows themselves live in the ordinary synced tables.
  */
 export const importBatches = pgTable(
   "import_batches",

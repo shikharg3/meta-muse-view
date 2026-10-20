@@ -1,3 +1,4 @@
+import { inArray } from "drizzle-orm";
 import { db, schema } from "@/db/client";
 import type { GraphNode, InsightsClient } from "@/meta/types";
 import { NODE_FIELDS } from "@/meta/fieldsets";
@@ -171,14 +172,16 @@ export async function syncAccounts(client: InsightsClient, businessId: string): 
       createdTime: ts(a.created_time),
       raw: a,
       syncedAt: now(),
-      // Meta is the system of record: if enumeration now returns an account that was CSV-imported
-      // (the token gained access), the sync takes it over and keeps it current from here on.
-      source: "meta",
     };
     await db
       .insert(schema.accounts)
       .values(vals)
       .onConflictDoUpdate({ target: schema.accounts.id, set: vals });
   }
+  // Meta is the system of record: an account it now enumerates (the token gained access) stops
+  // being a CSV import. Dropping its upload records releases the import guards, so the refresh and
+  // backfill take it over and replace the imported rows with Meta's own.
+  if (ids.length)
+    await db.delete(schema.importBatches).where(inArray(schema.importBatches.accountId, ids));
   return ids;
 }

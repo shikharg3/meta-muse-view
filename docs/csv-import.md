@@ -53,16 +53,19 @@ total includes it. Import yesterday before 10:00 Berlin for it to be in that day
 
 ## What the sync does with an imported account
 
-`accounts.source = 'import'` marks it. The sync never calls Meta for it (the backfill and the
-enumeration fallback read `source = 'meta'` only); calling Meta for an account the token cannot read
-returns #100/33, whose field bisection would poison the shared `meta_field_blocklist`. Its spend
-counts everywhere, but it is left out of everything that infers live delivery state, because a CSV
-carries no account status or spend cap: spend-drop and account alerts, the Notion 🤖 Account Status
-ladder and funds columns, daily-update delivery health, and sync coverage. Reset & resync keeps
-imported rows. If Meta's enumeration ever returns the account, the sync takes it over
-(`syncAccounts` stamps `source = 'meta'`) and the import page refuses it from then on.
+An account with at least one upload in `import_batches` is an imported account; its
+`accounts.source` stays `meta` like every other account. The sync never calls Meta for it (the
+backfill and the enumeration fallback skip accounts with uploads); calling Meta for an account the
+token cannot read returns #100/33, whose field bisection would poison the shared
+`meta_field_blocklist`. Its spend counts in every total, but it is left out of everything that
+infers live delivery state, because a CSV carries no account status or spend cap: spend-drop and
+account alerts, the Notion 🤖 Account Status ladder and funds columns, daily-update delivery health,
+and sync coverage. Reset & resync keeps imported rows. If Meta's enumeration ever returns the
+account, the sync takes it over (`syncAccounts` deletes its uploads, which lifts the guards) and the
+import page refuses it from then on.
 
 ## Schema
 
 `deploy/ddl/2026-10-19-csv-import.sql` (applied explicitly; see the file for why not `drizzle-kit
-push`): `accounts.source`, and `import_batches`, one row per accepted upload for the page's history.
+push`): `accounts.source` (always `meta`), and `import_batches`, one row per accepted upload, which
+both marks the account as imported and feeds the page's history.

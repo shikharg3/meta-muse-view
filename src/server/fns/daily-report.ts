@@ -1,5 +1,6 @@
 import { and, eq, gte, lte, sql } from "drizzle-orm";
 import { db, schema } from "@/db/client";
+import { getImportedAccountIds } from "@/sync/state";
 import { accountStatus } from "@/server/agg";
 import { disableReasonLabel } from "@/lib/format";
 import { addDays, windowFromDates, type DateWindow } from "@/lib/range";
@@ -54,63 +55,71 @@ export async function fetchDailyEngagementRows(
   accounts: Map<string, ReportAccount>;
   context: EngagementContext;
 }> {
-  const [campaignRows, accountRows, spendRows, trailingRows, clientRows, results, ownership] =
-    await Promise.all([
-      db
-        .select({
-          id: schema.campaigns.id,
-          name: schema.campaigns.name,
-          accountId: schema.campaigns.accountId,
-          effectiveStatus: schema.campaigns.effectiveStatus,
-        })
-        .from(schema.campaigns),
-      db
-        .select({
-          id: schema.accounts.id,
-          currency: schema.accounts.currency,
-          status: schema.accounts.status,
-          disableReason: schema.accounts.disableReason,
-          spendCap: schema.accounts.spendCap,
-          amountSpent: schema.accounts.amountSpent,
-          source: schema.accounts.source,
-        })
-        .from(schema.accounts),
-      // `insights_breakdown_daily` is the same spend split by dimension; summing it here would
-      // double-count every campaign that carries any breakdown.
-      db
-        .select({
-          entityId: schema.insightsDaily.entityId,
-          spend: sql<number>`coalesce(sum(${schema.insightsDaily.spend}),0)`,
-        })
-        .from(schema.insightsDaily)
-        .where(
-          and(
-            eq(schema.insightsDaily.level, "campaign"),
-            gte(schema.insightsDaily.date, w.since),
-            lte(schema.insightsDaily.date, w.until),
-          ),
-        )
-        .groupBy(schema.insightsDaily.entityId),
-      // Trailing spend for the membership rule. A SECOND grouped query rather than a wider window on
-      // the first: the report must still display yesterday alone.
-      db
-        .select({
-          entityId: schema.insightsDaily.entityId,
-          spend: sql<number>`coalesce(sum(${schema.insightsDaily.spend}),0)`,
-        })
-        .from(schema.insightsDaily)
-        .where(
-          and(
-            eq(schema.insightsDaily.level, "campaign"),
-            gte(schema.insightsDaily.date, trailing.since),
-            lte(schema.insightsDaily.date, trailing.until),
-          ),
-        )
-        .groupBy(schema.insightsDaily.entityId),
-      db.select({ id: schema.clients.id, status: schema.clients.status }).from(schema.clients),
-      objectiveResults(w),
-      loadCampaignOwnership(),
-    ]);
+  const [
+    campaignRows,
+    accountRows,
+    spendRows,
+    trailingRows,
+    clientRows,
+    results,
+    ownership,
+    imported,
+  ] = await Promise.all([
+    db
+      .select({
+        id: schema.campaigns.id,
+        name: schema.campaigns.name,
+        accountId: schema.campaigns.accountId,
+        effectiveStatus: schema.campaigns.effectiveStatus,
+      })
+      .from(schema.campaigns),
+    db
+      .select({
+        id: schema.accounts.id,
+        currency: schema.accounts.currency,
+        status: schema.accounts.status,
+        disableReason: schema.accounts.disableReason,
+        spendCap: schema.accounts.spendCap,
+        amountSpent: schema.accounts.amountSpent,
+      })
+      .from(schema.accounts),
+    // `insights_breakdown_daily` is the same spend split by dimension; summing it here would
+    // double-count every campaign that carries any breakdown.
+    db
+      .select({
+        entityId: schema.insightsDaily.entityId,
+        spend: sql<number>`coalesce(sum(${schema.insightsDaily.spend}),0)`,
+      })
+      .from(schema.insightsDaily)
+      .where(
+        and(
+          eq(schema.insightsDaily.level, "campaign"),
+          gte(schema.insightsDaily.date, w.since),
+          lte(schema.insightsDaily.date, w.until),
+        ),
+      )
+      .groupBy(schema.insightsDaily.entityId),
+    // Trailing spend for the membership rule. A SECOND grouped query rather than a wider window on
+    // the first: the report must still display yesterday alone.
+    db
+      .select({
+        entityId: schema.insightsDaily.entityId,
+        spend: sql<number>`coalesce(sum(${schema.insightsDaily.spend}),0)`,
+      })
+      .from(schema.insightsDaily)
+      .where(
+        and(
+          eq(schema.insightsDaily.level, "campaign"),
+          gte(schema.insightsDaily.date, trailing.since),
+          lte(schema.insightsDaily.date, trailing.until),
+        ),
+      )
+      .groupBy(schema.insightsDaily.entityId),
+    db.select({ id: schema.clients.id, status: schema.clients.status }).from(schema.clients),
+    objectiveResults(w),
+    loadCampaignOwnership(),
+    getImportedAccountIds(),
+  ]);
 
   const accounts = new Map<string, ReportAccount>(
     accountRows.map((a) => [
@@ -128,7 +137,7 @@ export async function fetchDailyEngagementRows(
         }),
         disableReason: disableReasonLabel(a.disableReason),
         // Kept in the map for its currency; `engagementDelivery` ignores it for health.
-        imported: a.source === "import",
+        imported: imported.has(a.id),
       },
     ]),
   );

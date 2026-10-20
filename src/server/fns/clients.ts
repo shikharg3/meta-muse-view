@@ -1,5 +1,6 @@
 import { and, eq, gte, inArray, lte, notInArray, sql } from "drizzle-orm";
 import { db, schema } from "@/db/client";
+import { getImportedAccountIds } from "@/sync/state";
 import {
   deriveKpis,
   windowStart,
@@ -751,46 +752,47 @@ export async function fetchActiveCampaigns(w: DateWindow): Promise<ActiveCampaig
   if (active.length === 0) return [];
   const ids = active.map((c) => c.id);
   const acctIds = [...new Set(active.map((c) => c.accountId))];
-  const [clientRows, acctRows, insightRows, campBudgets, adsetBudgets] = await Promise.all([
-    db.select().from(schema.clients),
-    db
-      .select({
-        id: schema.accounts.id,
-        status: schema.accounts.status,
-        disableReason: schema.accounts.disableReason,
-        source: schema.accounts.source,
-      })
-      .from(schema.accounts)
-      .where(inArray(schema.accounts.id, acctIds)),
-    db
-      .select({
-        entityId: schema.insightsDaily.entityId,
-        clicks: schema.insightsDaily.clicks,
-        actions: schema.insightsDaily.actions,
-        actionValues: schema.insightsDaily.actionValues,
-      })
-      .from(schema.insightsDaily)
-      .where(
-        and(
-          eq(schema.insightsDaily.level, "campaign"),
-          inArray(schema.insightsDaily.entityId, ids),
-          gte(schema.insightsDaily.date, w.since),
-          lte(schema.insightsDaily.date, w.until),
+  const [clientRows, acctRows, insightRows, campBudgets, adsetBudgets, imported] =
+    await Promise.all([
+      db.select().from(schema.clients),
+      db
+        .select({
+          id: schema.accounts.id,
+          status: schema.accounts.status,
+          disableReason: schema.accounts.disableReason,
+        })
+        .from(schema.accounts)
+        .where(inArray(schema.accounts.id, acctIds)),
+      db
+        .select({
+          entityId: schema.insightsDaily.entityId,
+          clicks: schema.insightsDaily.clicks,
+          actions: schema.insightsDaily.actions,
+          actionValues: schema.insightsDaily.actionValues,
+        })
+        .from(schema.insightsDaily)
+        .where(
+          and(
+            eq(schema.insightsDaily.level, "campaign"),
+            inArray(schema.insightsDaily.entityId, ids),
+            gte(schema.insightsDaily.date, w.since),
+            lte(schema.insightsDaily.date, w.until),
+          ),
         ),
-      ),
-    db
-      .select({ id: schema.campaigns.id, dailyBudget: schema.campaigns.dailyBudget })
-      .from(schema.campaigns)
-      .where(inArray(schema.campaigns.id, ids)),
-    db
-      .select({
-        campaignId: schema.adSets.campaignId,
-        dailyBudget: schema.adSets.dailyBudget,
-        effectiveStatus: schema.adSets.effectiveStatus,
-      })
-      .from(schema.adSets)
-      .where(inArray(schema.adSets.campaignId, ids)),
-  ]);
+      db
+        .select({ id: schema.campaigns.id, dailyBudget: schema.campaigns.dailyBudget })
+        .from(schema.campaigns)
+        .where(inArray(schema.campaigns.id, ids)),
+      db
+        .select({
+          campaignId: schema.adSets.campaignId,
+          dailyBudget: schema.adSets.dailyBudget,
+          effectiveStatus: schema.adSets.effectiveStatus,
+        })
+        .from(schema.adSets)
+        .where(inArray(schema.adSets.campaignId, ids)),
+      getImportedAccountIds(),
+    ]);
   // An account reused across clients over time is claimed by several current clients, so a campaign
   // must be attributed by NAME there — "first claimant wins" would credit it to the wrong client.
   // The one shared ownership ladder (override -> name -> sole ACTIVE claimant -> nobody). This used
@@ -821,7 +823,7 @@ export async function fetchActiveCampaigns(w: DateWindow): Promise<ActiveCampaig
   const round2 = (n: number) => Math.round(n * 100) / 100;
   return active.map((c) => {
     const acct = acctById.get(c.accountId);
-    const status = acct?.source === "import" ? null : accountStatus(acct?.status);
+    const status = imported.has(c.accountId) ? null : accountStatus(acct?.status);
     const cents =
       campBudgetById.get(c.id) ?? (adsetSumById.has(c.id) ? adsetSumById.get(c.id) : null);
     return {
@@ -880,17 +882,17 @@ export interface AccountDirectory {
  * `mappingSyncedAt` exposes how fresh the Notion mapping is so a just-made board edit can be flagged.
  */
 export async function fetchAccountDirectory(): Promise<AccountDirectory> {
-  const [accts, clients] = await Promise.all([
+  const [accts, clients, importedIds] = await Promise.all([
     db
       .select({
         id: schema.accounts.id,
         name: schema.accounts.name,
         status: schema.accounts.status,
         disableReason: schema.accounts.disableReason,
-        source: schema.accounts.source,
       })
       .from(schema.accounts),
     db.select().from(schema.clients),
+    getImportedAccountIds(),
   ]);
   // Only CURRENT clients own accounts; a removed ghost row must not mask the live owner's status.
   const live = clients.filter((c) => c.removedAt == null);
@@ -929,7 +931,7 @@ export async function fetchAccountDirectory(): Promise<AccountDirectory> {
     mappingSyncedAt: mappingSyncedAt?.toISOString() ?? null,
     unsyncedActiveAccounts,
     accounts: accts.map((a): AccountDirectoryRow => {
-      const imported = a.source === "import";
+      const imported = importedIds.has(a.id);
       const status = imported ? null : accountStatus(a.status);
       const o = owner.get(a.id);
       return {

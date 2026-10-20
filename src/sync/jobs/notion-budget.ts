@@ -1,6 +1,7 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { and, eq, gte, inArray, isNull, lte, sql } from "drizzle-orm";
 import { db, schema } from "@/db/client";
+import { getImportedAccountIds } from "../state";
 import { getNotionCredentials } from "@/lib/credentials";
 import {
   NotionClient,
@@ -840,7 +841,6 @@ export async function syncNotionDailyBudgets(
           status: schema.accounts.status,
           spendCap: schema.accounts.spendCap,
           amountSpent: schema.accounts.amountSpent,
-          source: schema.accounts.source,
         })
         .from(schema.accounts),
       db.select().from(schema.clients).where(isNull(schema.clients.removedAt)),
@@ -894,7 +894,7 @@ export async function syncNotionDailyBudgets(
   const accountById = new Map(accountRows.map((a) => [a.id, a]));
   // CSV-imported accounts carry spend but no account status or spend cap, so they count toward every
   // money column yet must never feed a delivery-state verdict (status ladder, funded balance).
-  const imported = new Set(accountRows.filter((a) => a.source === "import").map((a) => a.id));
+  const imported = await getImportedAccountIds();
   const spendByCampaign = new Map(spendRows.map((r) => [r.entityId, Number(r.spend ?? 0)]));
   // sumDailyBudget assumes every ad set it is handed is live; the status ladder needs all of them.
   const activeAdSetRows = adSetRows.filter((s) => s.effectiveStatus === "ACTIVE");

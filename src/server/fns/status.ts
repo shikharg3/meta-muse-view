@@ -90,13 +90,13 @@ export async function backfillProgress(
 export async function fetchSyncStatus(): Promise<SyncStatusView> {
   await requireAdmin();
 
-  // Coverage is of the accounts the SYNC owns. CSV-imported accounts are never structured or
-  // insight-synced, so counting them would leave "structured < total" open forever; the state
-  // counts exclude them too in case one was imported after Meta had synced it.
+  // Coverage is of the accounts the SYNC owns. CSV-imported accounts (an upload in import_batches)
+  // are never structured or insight-synced, so counting them would leave "structured < total" open
+  // forever; the state counts exclude them too in case one was imported after Meta had synced it.
   const cov = (await db.execute(sql`
-    WITH imported AS (SELECT id FROM accounts WHERE source = 'import')
+    WITH imported AS (SELECT DISTINCT account_id AS id FROM import_batches)
     SELECT
-      (SELECT count(*) FROM accounts WHERE source = 'meta')::int AS total,
+      (SELECT count(*) FROM accounts WHERE id NOT IN (SELECT id FROM imported))::int AS total,
       (SELECT count(*) FROM sync_state WHERE last_structure_sync IS NOT NULL
          AND account_id NOT IN (SELECT id FROM imported))::int AS structured,
       (SELECT count(*) FROM sync_state WHERE last_insights_sync IS NOT NULL

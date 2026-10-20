@@ -124,17 +124,25 @@ function chunks<T>(xs: T[]): T[][] {
 }
 
 /**
- * The checks that need the database: the account must not be one the sync owns, no imported id may
- * already belong to another account, and what a commit would replace.
+ * The checks that need the database: the account must not be one the sync owns (it exists with no
+ * upload behind it), no imported id may already belong to another account, and what a commit would
+ * replace.
  */
 async function checkAgainstDb(q: Tx, plan: ImportPlan) {
   const errors: ImportIssue[] = [];
   const accountId = plan.accountId!;
   const [existing] = await q
-    .select({ name: schema.accounts.name, source: schema.accounts.source })
+    .select({ name: schema.accounts.name })
     .from(schema.accounts)
     .where(eq(schema.accounts.id, accountId));
-  if (existing && existing.source !== "import")
+  const [batch] = existing
+    ? await q
+        .select({ id: schema.importBatches.id })
+        .from(schema.importBatches)
+        .where(eq(schema.importBatches.accountId, accountId))
+        .limit(1)
+    : [];
+  if (existing && !batch)
     errors.push({
       row: null,
       message: `${accountId} is synced from Meta, which is its system of record. It cannot be imported.`,
@@ -173,7 +181,7 @@ async function checkAgainstDb(q: Tx, plan: ImportPlan) {
   );
 
   let replaces: ImportPreview["replaces"] = null;
-  if (existing?.source === "import" && plan.dateFrom && plan.dateTo) {
+  if (batch && plan.dateFrom && plan.dateTo) {
     const [r] = await q
       .select({
         rows: sql<number>`count(*)::int`,
@@ -300,12 +308,13 @@ export async function commitMetaImport(input: ImportOptions): Promise<ImportComm
 
     await tx
       .insert(schema.accounts)
-      .values({ id: accountId, name, currency: plan.currency, source: "import", syncedAt: now })
+      .values({ id: accountId, name, currency: plan.currency, syncedAt: now })
       .onConflictDoUpdate({
         target: schema.accounts.id,
         set: { name, currency: plan.currency, syncedAt: now },
-        // Belt and braces with the check above: never rewrite an account the sync owns.
-        setWhere: sql`${schema.accounts.source} = 'import'`,
+        // Belt and braces with the check above: never rewrite an account the sync owns, i.e. one
+        // with no earlier upload behind it.
+        setWhere: sql`exists (select 1 from ${schema.importBatches} where ${schema.importBatches.accountId} = ${schema.accounts.id})`,
       });
     for (const part of chunks(plan.campaigns)) {
       await tx
@@ -416,7 +425,12 @@ export async function fetchImportPage(): Promise<ImportPageData> {
       currency: schema.accounts.currency,
     })
     .from(schema.accounts)
-    .where(eq(schema.accounts.source, "import"))
+    .where(
+      inArray(
+        schema.accounts.id,
+        db.select({ id: schema.importBatches.accountId }).from(schema.importBatches),
+      ),
+    )
     .orderBy(schema.accounts.name);
   const ids = accounts.map((a) => a.id);
   const coverage = ids.length
@@ -494,11 +508,16 @@ export async function deleteImportedAccount(
     .parse(accountId);
   const insightRows = await db.transaction(async (tx) => {
     const [acct] = await tx
-      .select({ source: schema.accounts.source })
+      .select({ id: schema.accounts.id })
       .from(schema.accounts)
       .where(eq(schema.accounts.id, accountId));
     if (!acct) throw new Error(`${accountId} is not in the database.`);
-    if (acct.source !== "import")
+    const [batch] = await tx
+      .select({ id: schema.importBatches.id })
+      .from(schema.importBatches)
+      .where(eq(schema.importBatches.accountId, accountId))
+      .limit(1);
+    if (!batch)
       throw new Error(
         `${accountId} is synced from Meta; only imported accounts can be deleted here.`,
       );
