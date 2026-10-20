@@ -1,0 +1,11 @@
+[Unit]
+Description=Renew the bare-IP certificate for the CSV import (isolated certbot, see deploy/159.65.110.111.conf)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Its own config dir, so the domains' apt-certbot lineages are never touched. The deploy hook
+# (systemctl reload nginx) is stored in the lineage's renewal config by the original `certonly`.
+# Certbot >= 4 renews a certificate under 10 days old at half its lifetime, i.e. ~every 3 days here.
+ExecStart=/opt/certbot-ip/bin/certbot renew --quiet --config-dir /etc/letsencrypt-ip --work-dir /var/lib/letsencrypt-ip --logs-dir /var/log/letsencrypt-ip

@@ -15,7 +15,9 @@ feature off everywhere.
 This hides the page; it is not the security boundary. The Host header is client-controlled, and
 admin sign-in is what protects the import. The IP must be served over HTTPS: the session cookie is
 `Secure`, so a browser drops it on plain `http://` and login silently bounces back to `/login`.
-nginx: `deploy/159.65.110.111.conf`.
+nginx: `deploy/159.65.110.111.conf`. The certificate is a 6-day Let's Encrypt IP certificate from
+an isolated certbot (`/opt/certbot-ip`, config in `/etc/letsencrypt-ip`), renewed by
+`deploy/certbot-ip.{service,timer}`; the domains' apt certbot is untouched.
 
 ## Exporting from Ads Manager
 
