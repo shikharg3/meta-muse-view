@@ -90,12 +90,17 @@ export function normalizeInsightRow(
 }
 
 /**
- * A row Meta zeroed (`SPEND_CORRUPTING_METRICS`): no spend, yet a CPM, CPC or CTR that can only have been
- * computed from spend, impressions and clicks that were there. A day an ad did not deliver — a late lead
- * credited to it, say — carries no ratios, so it never matches.
+ * A row Meta zeroed (`SPEND_CORRUPTING_METRICS`): no spend and no impressions, yet a CPM, CPC or CTR
+ * that can only have been computed from spend, impressions and clicks that were there. A day an ad did
+ * not deliver (a late lead credited to it, say) carries no ratios, and a sub-cent day Meta rounds to
+ * spend "0" still counts its impressions, so neither matches.
  */
 export function isZeroedInsightRow(row: InsightRow): boolean {
-  return n(row.spend) === 0 && (n(row.cpm) > 0 || n(row.cpc) > 0 || n(row.ctr) > 0);
+  return (
+    n(row.spend) === 0 &&
+    n(row.impressions) === 0 &&
+    (n(row.cpm) > 0 || n(row.cpc) > 0 || n(row.ctr) > 0)
+  );
 }
 
 /** Map a Graph object id to its insights level. */

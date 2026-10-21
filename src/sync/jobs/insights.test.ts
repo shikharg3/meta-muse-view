@@ -122,7 +122,7 @@ test("a zeroed row the re-request cannot repair never overwrites the stored figu
   expect(row.impressions).toBe(2307);
 });
 
-test("undamaged rows cost no extra request, and a delivery-free day keeps its late lead", async () => {
+test("undamaged rows cost no extra request and are stored as Meta sent them", async () => {
   // A lead credited to a day the ad did not run: zero spend and no ratios, so not damage.
   const lateLead = {
     date_start: day,
@@ -133,10 +133,20 @@ test("undamaged rows cost no extra request, and a delivery-free day keeps its la
     clicks: "0",
     actions: [{ action_type: "lead", value: "1" }],
   } as InsightRow;
+  // A sub-cent day: Meta rounds spend to "0" but counts the impressions, so not damage either.
+  const subCent = {
+    date_start: day,
+    date_stop: day,
+    campaign_id: "c3",
+    spend: "0",
+    impressions: "3",
+    clicks: "0",
+    cpm: "1.333333",
+  } as InsightRow;
   let calls = 0;
   const client = fake(async () => {
     calls++;
-    return [{ ...correct, inline_link_clicks: "46" }, lateLead];
+    return [{ ...correct, inline_link_clicks: "46" }, lateLead, subCent];
   });
   await syncInsightsRange(client, "act_1", "campaign", day, day, false, false, [CORE_METRICS]);
   expect(calls).toBe(1);
@@ -144,4 +154,5 @@ test("undamaged rows cost no extra request, and a delivery-free day keeps its la
   const lead = rows.find((r) => r.entityId === "c2");
   expect(lead?.spend).toBe(0);
   expect(lead?.actions).toEqual([{ action_type: "lead", value: "1" }]);
+  expect(rows.find((r) => r.entityId === "c3")?.impressions).toBe(3);
 });
