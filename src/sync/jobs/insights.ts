@@ -1,7 +1,12 @@
 import { db, schema } from "@/db/client";
 import type { InsightRow, InsightsClient } from "@/meta/types";
-import { normalizeInsightRow } from "@/meta/insights";
-import { INSIGHT_METRIC_GROUPS, ATTRIBUTION_WINDOWS } from "@/meta/fieldsets";
+import { isZeroedInsightRow, normalizeInsightRow } from "@/meta/insights";
+import {
+  ATTRIBUTION_WINDOWS,
+  CORE_METRICS,
+  INSIGHT_METRIC_GROUPS,
+  SPEND_CORRUPTING_METRICS,
+} from "@/meta/fieldsets";
 import { MetaAuthError, MetaCircuitOpenError } from "@/meta/client";
 import { accountIsExcludedOnly, loadExclusions } from "../exclusions";
 
@@ -82,24 +87,29 @@ export async function syncInsightsRange(
     // Request every metric in compatible groups, merged by (entity, date) so each daily row carries
     // the full metric set. The merged row is stored in `raw`; high-value metrics are promoted.
     const byKey = new Map<string, InsightRow>();
+    const keyOf = (r: InsightRow): string =>
+      `${level === "account" ? accountId : String(r[ID_FIELD[level]] ?? accountId)}:${String(r.date_start)}`;
+    const request = (fields: string[]): Promise<InsightRow[]> => {
+      const params = {
+        level,
+        time_range: { since: window.since, until: window.until },
+        time_increment: 1,
+        // De-dupe: the metric groups already include the id fields, so appending them again
+        // would trigger Meta error 2500 ("Field account_id specified more than once").
+        fields: [...new Set([...fields, "account_id", "campaign_id", "adset_id", "ad_id"])],
+        use_unified_attribution_setting: true,
+      };
+      return useAsync
+        ? client.runAsyncInsights(accountId, params, { memoKey: `insights:${level}:` })
+        : client.getInsights(accountId, params);
+    };
     // Fetch every metric group concurrently. The client's Limiter still caps real HTTP concurrency,
     // but firing them together overlaps the async reports' 5s poll latency instead of serializing it
     // — 15 groups × 4 levels run serially was the backfill bottleneck.
     const groupRows = await Promise.all(
       groups.map(async (group) => {
-        const params = {
-          level,
-          time_range: { since: window.since, until: window.until },
-          time_increment: 1,
-          // De-dupe: the metric groups already include the id fields, so appending them again
-          // would trigger Meta error 2500 ("Field account_id specified more than once").
-          fields: [...new Set([...group, "account_id", "campaign_id", "adset_id", "ad_id"])],
-          use_unified_attribution_setting: true,
-        };
         try {
-          return useAsync
-            ? await client.runAsyncInsights(accountId, params, { memoKey: `insights:${level}:` })
-            : await client.getInsights(accountId, params);
+          return await request(group);
         } catch (e) {
           // A dead token, or Meta failing every call, must abort — not be logged as a skipped group
           // and retried across every remaining account.
@@ -114,12 +124,51 @@ export async function syncInsightsRange(
     );
     for (const rows of groupRows) {
       for (const r of rows) {
-        const entityId = level === "account" ? accountId : String(r[ID_FIELD[level]] ?? accountId);
-        const key = `${entityId}:${String(r.date_start)}`;
+        const key = keyOf(r);
         const merged = byKey.get(key) ?? ({ date_start: String(r.date_start) } as InsightRow);
         Object.assign(merged, r);
         byKey.set(key, merged);
       }
+    }
+    // Rows Meta zeroed because the request also asked for action metrics (`SPEND_CORRUPTING_METRICS`)
+    // get their figures from one more request for the rest of CORE without those fields, which Meta
+    // answers correctly. Only a window that shows the damage pays for it. A damaged row that request
+    // cannot repair is not written: the stored figures beat a zero that never happened.
+    const zeroed = [...byKey].filter(([, row]) => isZeroedInsightRow(row));
+    const unrepaired = new Set<string>();
+    if (zeroed.length > 0) {
+      const requested = new Set(groups.flat());
+      const repairFields = CORE_METRICS.filter(
+        (m) => requested.has(m) && !SPEND_CORRUPTING_METRICS.includes(m),
+      );
+      let fixes = new Map<string, InsightRow>();
+      try {
+        fixes = new Map((await request(repairFields)).map((r) => [keyOf(r), r]));
+      } catch (e) {
+        if (e instanceof MetaAuthError || e instanceof MetaCircuitOpenError) throw e;
+        console.error(
+          `[insights] ${level} zeroed-row re-request failed:`,
+          e instanceof Error ? e.message : e,
+        );
+      }
+      for (const [key, row] of zeroed) {
+        const fix = fixes.get(key);
+        if (!fix) {
+          unrepaired.add(key);
+          continue;
+        }
+        for (const m of repairFields) if (fix[m] !== undefined) row[m] = fix[m];
+        // Meta's link_click action is the same count (matched row for row at every level), and the
+        // action list survives the damage, so it stands in for the zeroed inline_link_clicks.
+        if (requested.has("inline_link_clicks")) {
+          const linkClicks = row.actions?.find((a) => a.action_type === "link_click")?.value;
+          row.inline_link_clicks = linkClicks ?? "0";
+        }
+      }
+      console.warn(
+        `[insights] ${accountId} ${level} ${window.since}..${window.until}: ${zeroed.length} rows zeroed by Meta, ` +
+          `${zeroed.length - unrepaired.size} repaired, ${unrepaired.size} left as stored`,
+      );
     }
     // Optionally capture conversions split by attribution window — a dedicated request stored in a
     // separate column, so the dashboards' unified-attribution conversion numbers are unchanged.
@@ -143,9 +192,7 @@ export async function syncInsightsRange(
           action_attribution_windows: ATTRIBUTION_WINDOWS,
         });
         for (const r of winRows) {
-          const entityId =
-            level === "account" ? accountId : String(r[ID_FIELD[level]] ?? accountId);
-          winMap.set(`${entityId}:${String(r.date_start)}`, {
+          winMap.set(keyOf(r), {
             actions: r.actions ?? null,
             action_values: r.action_values ?? null,
           });
@@ -157,12 +204,13 @@ export async function syncInsightsRange(
         );
       }
     }
-    for (const merged of byKey.values()) {
+    for (const [key, merged] of byKey) {
+      if (unrepaired.has(key)) continue;
       const entityId =
         level === "account" ? accountId : String(merged[ID_FIELD[level]] ?? accountId);
       if (isExcludedRow(merged, entityId)) continue;
       const base = normalizeInsightRow(merged, level, entityId, accountId);
-      const win = attributionWindows ? winMap.get(`${entityId}:${base.date}`) : undefined;
+      const win = attributionWindows ? winMap.get(key) : undefined;
       // When not capturing windows (backfill), omit the columns so an older chunk never nulls out
       // the windowed data a recent refresh wrote for overlapping dates.
       const values = attributionWindows

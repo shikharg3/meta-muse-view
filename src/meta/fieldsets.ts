@@ -528,6 +528,16 @@ export const CORE_METRICS = [
   "purchase_roas",
 ];
 
+/**
+ * The CORE metrics that make Meta zero a row's `spend`, `impressions`, `clicks` and
+ * `inline_link_clicks` when requested with them in a day-split range of two or more days. Seen first on
+ * 2026-10-21 on eight ad accounts, on Graph API v23–v25 alike; a single day, a range total, or the same
+ * range without these fields comes back correct, and the ratios and the actions themselves stay right.
+ * The insights sync re-requests the rest of CORE without them when it sees the damage
+ * (`isZeroedInsightRow`).
+ */
+export const SPEND_CORRUPTING_METRICS = ["actions", "action_values", "inline_link_clicks"];
+
 /** Core first, then the long tail in small groups (Meta #2s on large/heavy metric combinations). */
 export const INSIGHT_METRIC_GROUPS: string[][] = [
   CORE_METRICS,

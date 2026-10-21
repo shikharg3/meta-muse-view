@@ -89,6 +89,15 @@ export function normalizeInsightRow(
   };
 }
 
+/**
+ * A row Meta zeroed (`SPEND_CORRUPTING_METRICS`): no spend, yet a CPM, CPC or CTR that can only have been
+ * computed from spend, impressions and clicks that were there. A day an ad did not deliver — a late lead
+ * credited to it, say — carries no ratios, so it never matches.
+ */
+export function isZeroedInsightRow(row: InsightRow): boolean {
+  return n(row.spend) === 0 && (n(row.cpm) > 0 || n(row.cpc) > 0 || n(row.ctr) > 0);
+}
+
 /** Map a Graph object id to its insights level. */
 export function levelForId(id: string): "account" | "campaign" | "adset" | "ad" {
   if (id.startsWith("act_")) return "account";
