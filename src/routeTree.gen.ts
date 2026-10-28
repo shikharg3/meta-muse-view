@@ -24,6 +24,7 @@ import { Route as ChatHistoryRouteImport } from './routes/chat-history'
 import { Route as CampaignsRouteImport } from './routes/campaigns'
 import { Route as AudiencesRouteImport } from './routes/audiences'
 import { Route as AlertsRouteImport } from './routes/alerts'
+import { Route as AdsetReportsRouteImport } from './routes/adset-reports'
 import { Route as ActivityRouteImport } from './routes/activity'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ReportsIndexRouteImport } from './routes/reports.index'
@@ -120,6 +121,11 @@ const AudiencesRoute = AudiencesRouteImport.update({
 const AlertsRoute = AlertsRouteImport.update({
   id: '/alerts',
   path: '/alerts',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AdsetReportsRoute = AdsetReportsRouteImport.update({
+  id: '/adset-reports',
+  path: '/adset-reports',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ActivityRoute = ActivityRouteImport.update({
@@ -239,6 +245,7 @@ const InfrastructureBusinessManagersIdRoute =
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/activity': typeof ActivityRoute
+  '/adset-reports': typeof AdsetReportsRoute
   '/alerts': typeof AlertsRoute
   '/audiences': typeof AudiencesRoute
   '/campaigns': typeof CampaignsRoute
@@ -278,6 +285,7 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/activity': typeof ActivityRoute
+  '/adset-reports': typeof AdsetReportsRoute
   '/alerts': typeof AlertsRoute
   '/audiences': typeof AudiencesRoute
   '/campaigns': typeof CampaignsRoute
@@ -316,6 +324,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/activity': typeof ActivityRoute
+  '/adset-reports': typeof AdsetReportsRoute
   '/alerts': typeof AlertsRoute
   '/audiences': typeof AudiencesRoute
   '/campaigns': typeof CampaignsRoute
@@ -357,6 +366,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/activity'
+    | '/adset-reports'
     | '/alerts'
     | '/audiences'
     | '/campaigns'
@@ -396,6 +406,7 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/activity'
+    | '/adset-reports'
     | '/alerts'
     | '/audiences'
     | '/campaigns'
@@ -433,6 +444,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/activity'
+    | '/adset-reports'
     | '/alerts'
     | '/audiences'
     | '/campaigns'
@@ -473,6 +485,7 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   ActivityRoute: typeof ActivityRoute
+  AdsetReportsRoute: typeof AdsetReportsRoute
   AlertsRoute: typeof AlertsRoute
   AudiencesRoute: typeof AudiencesRoute
   CampaignsRoute: typeof CampaignsRoute
@@ -607,6 +620,13 @@ declare module '@tanstack/react-router' {
       path: '/alerts'
       fullPath: '/alerts'
       preLoaderRoute: typeof AlertsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/adset-reports': {
+      id: '/adset-reports'
+      path: '/adset-reports'
+      fullPath: '/adset-reports'
+      preLoaderRoute: typeof AdsetReportsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/activity': {
@@ -803,6 +823,7 @@ const ReportsRouteWithChildren =
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ActivityRoute: ActivityRoute,
+  AdsetReportsRoute: AdsetReportsRoute,
   AlertsRoute: AlertsRoute,
   AudiencesRoute: AudiencesRoute,
   CampaignsRoute: CampaignsRoute,

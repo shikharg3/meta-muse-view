@@ -94,15 +94,15 @@ export function plainCell(value: string | number | null, kind: ReportColumnKind)
 const plainRow = (cells: (string | number | null)[], columns: ReportDocColumn[]): string[] =>
   cells.map((v, i) => plainCell(v, columns[i].kind));
 
+/** The CSV matrix: header, rows, then the totals row when there is one. */
+export const reportCsvRows = (d: ReportDoc): string[][] => [
+  d.columns.map((c) => c.label),
+  ...d.rows.map((r) => plainRow(r, d.columns)),
+  ...(d.totals ? [plainRow(d.totals, d.columns)] : []),
+];
+
 export function downloadReportCsv(d: ReportDoc): void {
-  downloadCsvRows(
-    [
-      d.columns.map((c) => c.label),
-      ...d.rows.map((r) => plainRow(r, d.columns)),
-      ...(d.totals ? [plainRow(d.totals, d.columns)] : []),
-    ],
-    `${d.filename}.csv`,
-  );
+  downloadCsvRows(reportCsvRows(d), `${d.filename}.csv`);
 }
 
 // ------------------------------------------------------------------ chartable metrics

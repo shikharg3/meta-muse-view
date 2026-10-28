@@ -10,7 +10,7 @@ the daily update read them exactly like synced data.
 Only on the hosts in `IMPORT_HOSTS` (the droplet `.env`: `IMPORT_HOSTS=159.65.110.111`). Anywhere
 else `/import` is a 404 before auth (`src/server.ts`), and every server fn behind the page re-checks
 the host and requires an admin (`src/server/fns/meta-import.ts`). Unset `IMPORT_HOSTS` turns the
-feature off everywhere.
+feature off everywhere — and the daily ad-set reports page with it (`docs/adset-reports.md`).
 
 This hides the page; it is not the security boundary. The Host header is client-controlled, and
 admin sign-in is what protects the import. The IP must be served over HTTPS: the session cookie is

@@ -1,7 +1,9 @@
-// Minimal Telegram Bot API client (no SDK; four methods, fetch is enough).
+// Minimal Telegram Bot API client (no SDK; a handful of methods, fetch is enough).
 // Mirrors NotionClient: injectable fetchImpl for tests, and it NEVER throws — every failure comes
 // back as data, because a check-in send failure must not take down the sync worker's loop.
 const BASE = "https://api.telegram.org";
+/** Telegram's ceiling for a media caption; longer is rejected outright. */
+const CAPTION_LIMIT = 1024;
 
 export interface InlineButton {
   text: string;
@@ -84,12 +86,17 @@ export class TelegramClient {
     private fetchImpl: typeof fetch = fetch,
   ) {}
 
-  private async call(method: string, payload: Record<string, unknown>): Promise<CallResult> {
+  /** JSON for every method except uploads, which go as multipart — fetch sets that boundary itself. */
+  private async call(
+    method: string,
+    payload: Record<string, unknown> | FormData,
+  ): Promise<CallResult> {
     try {
       const res = await this.fetchImpl(`${BASE}/bot${this.token}/${method}`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        ...(payload instanceof FormData
+          ? { body: payload }
+          : { headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) }),
       });
       // Every field is optional, so a non-conforming body degrades to "request failed" rather than
       // to a lie about a shape we never checked. `?? {}` covers both an unparseable body (a proxy's
@@ -127,6 +134,26 @@ export class TelegramClient {
     else if (input.forceReply) payload.reply_markup = { force_reply: true, selective: true };
 
     const r = await this.call("sendMessage", payload);
+    if (!r.ok) return { ok: false, error: r.error, retryAfter: r.retryAfter };
+    return { ok: true, messageId: messageIdOf(r.result) };
+  }
+
+  /**
+   * Upload a file (e.g. a CSV report) to a chat. `caption` is plain text and Telegram caps it at
+   * 1024 characters, so it is cut there rather than having the whole upload rejected.
+   */
+  async sendDocument(input: {
+    chatId: string;
+    filename: string;
+    content: string;
+    mimeType: string;
+    caption?: string;
+  }): Promise<SendResult> {
+    const form = new FormData();
+    form.set("chat_id", input.chatId);
+    form.set("document", new Blob([input.content], { type: input.mimeType }), input.filename);
+    if (input.caption) form.set("caption", input.caption.slice(0, CAPTION_LIMIT));
+    const r = await this.call("sendDocument", form);
     if (!r.ok) return { ok: false, error: r.error, retryAfter: r.retryAfter };
     return { ok: true, messageId: messageIdOf(r.result) };
   }

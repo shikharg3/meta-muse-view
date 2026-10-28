@@ -13,11 +13,11 @@ export function downloadBlob(content: BlobPart, type: string, filename: string):
 /** Quote a CSV cell only when it contains a delimiter, quote, or newline. */
 export const csvCell = (s: string): string => (/[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s);
 
+/** Serialize a matrix to CSV text. Usable on the server as well (no DOM). */
+export const csvText = (rows: string[][]): string =>
+  rows.map((r) => r.map(csvCell).join(",")).join("\n");
+
 /** Serialize a matrix to CSV and download it. */
 export function downloadCsvRows(rows: string[][], filename: string): void {
-  downloadBlob(
-    rows.map((r) => r.map(csvCell).join(",")).join("\n"),
-    "text/csv;charset=utf-8",
-    filename,
-  );
+  downloadBlob(csvText(rows), "text/csv;charset=utf-8", filename);
 }

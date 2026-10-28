@@ -11,6 +11,9 @@ type ServerEntry = {
   fetch: (request: Request, env: unknown, ctx: unknown) => Promise<Response> | Response;
 };
 
+/** Pages served only on IMPORT_HOSTS. Keep in step with the map in deploy/159.65.110.111.conf. */
+const IP_ONLY_PATHS = ["/import", "/adset-reports"];
+
 let serverEntryPromise: Promise<ServerEntry> | undefined;
 
 async function getServerEntry(): Promise<ServerEntry> {
@@ -45,11 +48,12 @@ export default {
   async fetch(request: Request, env: unknown, ctx: unknown) {
     try {
       const url = new URL(request.url);
-      // The CSV import exists only on IMPORT_HOSTS (the droplet's bare IP). Everywhere else it is a
-      // plain 404, before auth, so a domain does not even show that the page exists. Its server fns
-      // re-check the host themselves: client-side navigation never requests this path.
+      // The CSV import and the ad-set reports exist only on IMPORT_HOSTS (the droplet's bare IP).
+      // Everywhere else they are a plain 404, before auth, so a domain does not even show that the
+      // pages exist. Their server fns re-check the host themselves: client-side navigation never
+      // requests these paths.
       if (
-        (url.pathname === "/import" || url.pathname.startsWith("/import/")) &&
+        IP_ONLY_PATHS.some((p) => url.pathname === p || url.pathname.startsWith(`${p}/`)) &&
         !isImportHost(url.host, appEnv().IMPORT_HOSTS)
       ) {
         return new Response("Not found", { status: 404 });

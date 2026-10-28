@@ -896,3 +896,33 @@ export const reportRuns = pgTable(
     index("report_runs_client_idx").on(t.clientId, t.exportedAt),
   ],
 );
+
+/**
+ * A client's daily ad-set CSV, sent to one Telegram chat by the worker (`src/sync/jobs/adset-reports.ts`).
+ * Managed only from the IP-only page `/adset-reports`; see docs/adset-reports.md.
+ *
+ * `run_date` is the REPORTED day (the Berlin day before the send) last claimed. The worker claims it
+ * with a conditional update BEFORE building and sending; `sent_at` stays null on failure and
+ * `attempts` counts tries, so the 30s loop retries a transient Telegram failure a bounded number of
+ * times — the same trade as `daily_report_runs`.
+ *
+ * RESTRICT on client_id, like report_runs: clients are soft-deleted via removed_at, never deleted.
+ * DDL: deploy/ddl/2026-10-28-adset-reports.sql (applied by hand).
+ */
+export const adsetReportSchedules = pgTable("adset_report_schedules", {
+  id: text("id").primaryKey(), // crypto.randomUUID()
+  clientId: text("client_id")
+    .notNull()
+    .references(() => clients.id, { onDelete: "restrict" }),
+  chatId: text("chat_id").notNull(), // Telegram ids exceed 32-bit, hence text
+  hour: integer("hour").notNull().default(10), // Berlin wall clock
+  minute: integer("minute").notNull().default(0),
+  active: boolean("active").notNull().default(true),
+  runDate: date("run_date"),
+  sentAt: timestamp("sent_at", { withTimezone: true }),
+  attempts: integer("attempts").notNull().default(0),
+  lastError: text("last_error"),
+  createdBy: text("created_by"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
