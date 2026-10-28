@@ -292,6 +292,8 @@ export interface BuildSpec {
   markup?: number;
   /** Restrict rows to these campaign ids (empty/undefined = all campaigns). */
   campaignIds?: string[];
+  /** Row cap; default MAX_ROWS, which suits an on-screen card. A file export can ask for more. */
+  maxRows?: number;
 }
 
 /** Supplies a report's rows for one account. Injected so buildReport stays pure and unit-testable. */
@@ -732,7 +734,9 @@ export async function buildReport(
   // Drop buckets Meta returned with nothing in them — a campaign that was live but silent that day
   // is noise in a client report. Filtered BEFORE the cap, or 500 empty rows could crowd out the
   // ones that matter.
-  const limited = order.filter((k) => aggByKey.get(k)!.deliveringRows > 0).slice(0, MAX_ROWS);
+  const delivering = order.filter((k) => aggByKey.get(k)!.deliveringRows > 0);
+  const cap = spec.maxRows ?? MAX_ROWS;
+  const limited = delivering.slice(0, cap);
 
   // Date and dimension are two facts, so they are two columns: one sorts and pivots as a date, the
   // other as a name. They used to share a cell, which made both useless in a spreadsheet.
@@ -796,6 +800,9 @@ export async function buildReport(
     contributors < spec.accountIds.length
       ? `${contributors} of ${spec.accountIds.length} accounts have data in this range.`
       : null,
+    delivering.length > cap
+      ? `Showing the first ${cap} of ${delivering.length} rows; the totals cover all of them.`
+      : null,
     withheld
       ? `${dedupCols.map((k) => metric(k)!.label).join(", ")} withheld where a row covers more than ` +
         `one of Meta's own rows: Meta counts distinct people per day and per account, so these cannot ` +
@@ -841,7 +848,7 @@ export interface ReportArgs {
 }
 
 /** Load campaign_id → objective for the given accounts (for objective-aware results). */
-async function objectiveMap(accountIds: string[]): Promise<Record<string, string>> {
+export async function objectiveMap(accountIds: string[]): Promise<Record<string, string>> {
   if (accountIds.length === 0) return {};
   const rows = await db
     .select({ id: schema.campaigns.id, objective: schema.campaigns.objective })
@@ -859,7 +866,7 @@ async function objectiveMap(accountIds: string[]): Promise<Record<string, string
  * and a website registration (reported as `complete_registration`, never as `lead`). Without this the
  * report counts an action type that does not exist for the campaign and shows a confident zero.
  */
-async function customEventMap(accountIds: string[]): Promise<Record<string, string>> {
+export async function customEventMap(accountIds: string[]): Promise<Record<string, string>> {
   if (accountIds.length === 0) return {};
   const rows = await db
     .select({

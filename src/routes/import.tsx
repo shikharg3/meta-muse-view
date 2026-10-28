@@ -140,10 +140,10 @@ function ImportPage() {
           description="For ad accounts MetaConsole's Business Manager cannot read. An Ads Manager export lands under the account's real IDs and counts in dashboards, reports and the daily update like synced data."
         >
           <a
-            href="/adset-reports"
+            href="/scheduled-reports"
             className="inline-flex h-9 items-center gap-1.5 rounded-md border border-border px-3 text-xs font-medium hover:bg-accent"
           >
-            Ad-set reports
+            Scheduled reports
           </a>
           <a
             href="/auth/logout"

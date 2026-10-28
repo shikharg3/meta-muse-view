@@ -182,7 +182,7 @@ function RootComponent() {
   const { queryClient } = Route.useRouteContext();
   const { user, business, accounts, filterClients } = Route.useLoaderData();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
-  // The client portal, the auth screens and the IP-only pages (CSV import, ad-set reports) bring
+  // The client portal, the auth screens and the IP-only pages (CSV import, scheduled reports) bring
   // their own full-page chrome. The IP serves nothing else, so the dashboard shell's links would
   // lead nowhere there.
   const bare =
@@ -190,7 +190,7 @@ function RootComponent() {
     pathname === "/signup" ||
     pathname.startsWith("/portal") ||
     pathname === "/import" ||
-    pathname === "/adset-reports";
+    pathname === "/scheduled-reports";
 
   return (
     <QueryClientProvider client={queryClient}>

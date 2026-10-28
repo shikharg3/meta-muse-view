@@ -1,4 +1,5 @@
--- Daily ad-set CSV reports delivered to Telegram (src/sync/jobs/adset-reports.ts, docs/adset-reports.md).
+-- Daily ad-set CSV reports delivered to Telegram. Renamed and generalised the same day by
+-- 2026-10-28-scheduled-reports.sql (docs/scheduled-reports.md); apply both, in order.
 -- Additive only. Apply explicitly rather than with `drizzle-kit push` (see 2026-10-19-csv-import.sql):
 --
 --   ssh root@159.65.110.111 "sudo -u postgres psql -d meta -v ON_ERROR_STOP=1 -1 -f -" < deploy/ddl/2026-10-28-adset-reports.sql

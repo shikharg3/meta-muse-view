@@ -13,6 +13,7 @@ import { Route as UsersRouteImport } from './routes/users'
 import { Route as SyncRouteImport } from './routes/sync'
 import { Route as SignupRouteImport } from './routes/signup'
 import { Route as SettingsRouteImport } from './routes/settings'
+import { Route as ScheduledReportsRouteImport } from './routes/scheduled-reports'
 import { Route as ReportsRouteImport } from './routes/reports'
 import { Route as PortalRouteImport } from './routes/portal'
 import { Route as OverviewRouteImport } from './routes/overview'
@@ -24,7 +25,6 @@ import { Route as ChatHistoryRouteImport } from './routes/chat-history'
 import { Route as CampaignsRouteImport } from './routes/campaigns'
 import { Route as AudiencesRouteImport } from './routes/audiences'
 import { Route as AlertsRouteImport } from './routes/alerts'
-import { Route as AdsetReportsRouteImport } from './routes/adset-reports'
 import { Route as ActivityRouteImport } from './routes/activity'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ReportsIndexRouteImport } from './routes/reports.index'
@@ -66,6 +66,11 @@ const SignupRoute = SignupRouteImport.update({
 const SettingsRoute = SettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ScheduledReportsRoute = ScheduledReportsRouteImport.update({
+  id: '/scheduled-reports',
+  path: '/scheduled-reports',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ReportsRoute = ReportsRouteImport.update({
@@ -121,11 +126,6 @@ const AudiencesRoute = AudiencesRouteImport.update({
 const AlertsRoute = AlertsRouteImport.update({
   id: '/alerts',
   path: '/alerts',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const AdsetReportsRoute = AdsetReportsRouteImport.update({
-  id: '/adset-reports',
-  path: '/adset-reports',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ActivityRoute = ActivityRouteImport.update({
@@ -245,7 +245,6 @@ const InfrastructureBusinessManagersIdRoute =
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/activity': typeof ActivityRoute
-  '/adset-reports': typeof AdsetReportsRoute
   '/alerts': typeof AlertsRoute
   '/audiences': typeof AudiencesRoute
   '/campaigns': typeof CampaignsRoute
@@ -257,6 +256,7 @@ export interface FileRoutesByFullPath {
   '/overview': typeof OverviewRoute
   '/portal': typeof PortalRouteWithChildren
   '/reports': typeof ReportsRouteWithChildren
+  '/scheduled-reports': typeof ScheduledReportsRoute
   '/settings': typeof SettingsRoute
   '/signup': typeof SignupRoute
   '/sync': typeof SyncRoute
@@ -285,7 +285,6 @@ export interface FileRoutesByFullPath {
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/activity': typeof ActivityRoute
-  '/adset-reports': typeof AdsetReportsRoute
   '/alerts': typeof AlertsRoute
   '/audiences': typeof AudiencesRoute
   '/campaigns': typeof CampaignsRoute
@@ -295,6 +294,7 @@ export interface FileRoutesByTo {
   '/import': typeof ImportRoute
   '/login': typeof LoginRoute
   '/overview': typeof OverviewRoute
+  '/scheduled-reports': typeof ScheduledReportsRoute
   '/settings': typeof SettingsRoute
   '/signup': typeof SignupRoute
   '/sync': typeof SyncRoute
@@ -324,7 +324,6 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
   '/activity': typeof ActivityRoute
-  '/adset-reports': typeof AdsetReportsRoute
   '/alerts': typeof AlertsRoute
   '/audiences': typeof AudiencesRoute
   '/campaigns': typeof CampaignsRoute
@@ -336,6 +335,7 @@ export interface FileRoutesById {
   '/overview': typeof OverviewRoute
   '/portal': typeof PortalRouteWithChildren
   '/reports': typeof ReportsRouteWithChildren
+  '/scheduled-reports': typeof ScheduledReportsRoute
   '/settings': typeof SettingsRoute
   '/signup': typeof SignupRoute
   '/sync': typeof SyncRoute
@@ -366,7 +366,6 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/activity'
-    | '/adset-reports'
     | '/alerts'
     | '/audiences'
     | '/campaigns'
@@ -378,6 +377,7 @@ export interface FileRouteTypes {
     | '/overview'
     | '/portal'
     | '/reports'
+    | '/scheduled-reports'
     | '/settings'
     | '/signup'
     | '/sync'
@@ -406,7 +406,6 @@ export interface FileRouteTypes {
   to:
     | '/'
     | '/activity'
-    | '/adset-reports'
     | '/alerts'
     | '/audiences'
     | '/campaigns'
@@ -416,6 +415,7 @@ export interface FileRouteTypes {
     | '/import'
     | '/login'
     | '/overview'
+    | '/scheduled-reports'
     | '/settings'
     | '/signup'
     | '/sync'
@@ -444,7 +444,6 @@ export interface FileRouteTypes {
     | '__root__'
     | '/'
     | '/activity'
-    | '/adset-reports'
     | '/alerts'
     | '/audiences'
     | '/campaigns'
@@ -456,6 +455,7 @@ export interface FileRouteTypes {
     | '/overview'
     | '/portal'
     | '/reports'
+    | '/scheduled-reports'
     | '/settings'
     | '/signup'
     | '/sync'
@@ -485,7 +485,6 @@ export interface FileRouteTypes {
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   ActivityRoute: typeof ActivityRoute
-  AdsetReportsRoute: typeof AdsetReportsRoute
   AlertsRoute: typeof AlertsRoute
   AudiencesRoute: typeof AudiencesRoute
   CampaignsRoute: typeof CampaignsRoute
@@ -497,6 +496,7 @@ export interface RootRouteChildren {
   OverviewRoute: typeof OverviewRoute
   PortalRoute: typeof PortalRouteWithChildren
   ReportsRoute: typeof ReportsRouteWithChildren
+  ScheduledReportsRoute: typeof ScheduledReportsRoute
   SettingsRoute: typeof SettingsRoute
   SignupRoute: typeof SignupRoute
   SyncRoute: typeof SyncRoute
@@ -543,6 +543,13 @@ declare module '@tanstack/react-router' {
       path: '/settings'
       fullPath: '/settings'
       preLoaderRoute: typeof SettingsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/scheduled-reports': {
+      id: '/scheduled-reports'
+      path: '/scheduled-reports'
+      fullPath: '/scheduled-reports'
+      preLoaderRoute: typeof ScheduledReportsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/reports': {
@@ -620,13 +627,6 @@ declare module '@tanstack/react-router' {
       path: '/alerts'
       fullPath: '/alerts'
       preLoaderRoute: typeof AlertsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/adset-reports': {
-      id: '/adset-reports'
-      path: '/adset-reports'
-      fullPath: '/adset-reports'
-      preLoaderRoute: typeof AdsetReportsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/activity': {
@@ -823,7 +823,6 @@ const ReportsRouteWithChildren =
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   ActivityRoute: ActivityRoute,
-  AdsetReportsRoute: AdsetReportsRoute,
   AlertsRoute: AlertsRoute,
   AudiencesRoute: AudiencesRoute,
   CampaignsRoute: CampaignsRoute,
@@ -835,6 +834,7 @@ const rootRouteChildren: RootRouteChildren = {
   OverviewRoute: OverviewRoute,
   PortalRoute: PortalRouteWithChildren,
   ReportsRoute: ReportsRouteWithChildren,
+  ScheduledReportsRoute: ScheduledReportsRoute,
   SettingsRoute: SettingsRoute,
   SignupRoute: SignupRoute,
   SyncRoute: SyncRoute,

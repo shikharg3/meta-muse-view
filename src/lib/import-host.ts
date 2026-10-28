@@ -1,5 +1,5 @@
 /**
- * Whether a request's Host may reach the IP-only pages (`/import`, `/adset-reports`). Fails closed:
+ * Whether a request's Host may reach the IP-only pages (`/import`, `/scheduled-reports`). Fails closed:
  * an empty allow-list (IMPORT_HOSTS unset) turns them off on every host.
  *
  * This scopes the pages to the droplet's bare IP; it is not the security boundary. The Host header

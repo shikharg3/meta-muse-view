@@ -46,8 +46,8 @@ const schema = z.object({
         .map((x) => x.trim().toLowerCase())
         .filter(Boolean),
     ),
-  // Hosts (no port) that may serve the IP-only pages — the CSV import and the ad-set reports — e.g.
-  // the droplet's bare IP. Unset = both are unreachable everywhere. See src/lib/import-host.ts.
+  // Hosts (no port) that may serve the IP-only pages — the CSV import and the scheduled reports —
+  // e.g. the droplet's bare IP. Unset = both are unreachable everywhere. See src/lib/import-host.ts.
   IMPORT_HOSTS: z
     .string()
     .default("")

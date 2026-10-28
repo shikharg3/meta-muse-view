@@ -898,23 +898,35 @@ export const reportRuns = pgTable(
 );
 
 /**
- * A client's daily ad-set CSV, sent to one Telegram chat by the worker (`src/sync/jobs/adset-reports.ts`).
- * Managed only from the IP-only page `/adset-reports`; see docs/adset-reports.md.
+ * A saved report recipe sent as CSV to one Telegram chat on a cadence, by the worker
+ * (`src/sync/jobs/telegram-reports.ts`). Managed only from the IP-only page `/scheduled-reports`;
+ * see docs/scheduled-reports.md. The recipe columns mirror `ReportRecipe` (`src/lib/scheduled-report.ts`).
  *
- * `run_date` is the REPORTED day (the Berlin day before the send) last claimed. The worker claims it
- * with a conditional update BEFORE building and sending; `sent_at` stays null on failure and
- * `attempts` counts tries, so the 30s loop retries a transient Telegram failure a bounded number of
- * times — the same trade as `daily_report_runs`.
+ * `run_date` is the Berlin date of the last claimed send. The worker claims it with a conditional
+ * update BEFORE building and sending; `sent_at` stays null on failure and `attempts` counts tries, so
+ * the 30s loop retries a transient Telegram failure a bounded number of times — the same trade as
+ * `daily_report_runs`.
  *
  * RESTRICT on client_id, like report_runs: clients are soft-deleted via removed_at, never deleted.
- * DDL: deploy/ddl/2026-10-28-adset-reports.sql (applied by hand).
+ * DDL: deploy/ddl/2026-10-28-adset-reports.sql, then 2026-10-28-scheduled-reports.sql (by hand).
  */
-export const adsetReportSchedules = pgTable("adset_report_schedules", {
+export const telegramReportSchedules = pgTable("telegram_report_schedules", {
   id: text("id").primaryKey(), // crypto.randomUUID()
+  name: text("name").notNull(),
   clientId: text("client_id")
     .notNull()
     .references(() => clients.id, { onDelete: "restrict" }),
+  brands: jsonb("brands").notNull().default([]), // string[] brand keys; [] = whole client
+  campaignIds: jsonb("campaign_ids").notNull().default([]), // string[]; [] = every campaign in scope
+  columns: jsonb("columns").notNull(), // string[] catalog keys, IN USER ORDER
+  breakdown: text("breakdown").notNull().default("adset"),
+  timeIncrement: text("time_increment").notNull().default("1"), // Meta's time_increment verbatim
+  rangePreset: text("range_preset").notNull().default("yesterday"), // a DATE_PRESETS key
+  markup: doublePrecision("markup"),
   chatId: text("chat_id").notNull(), // Telegram ids exceed 32-bit, hence text
+  cadence: text("cadence").notNull().default("daily"), // daily | weekdays | weekly | monthly
+  weekday: integer("weekday"), // 1 = Monday, for weekly
+  monthDay: integer("month_day"), // 1-28, for monthly
   hour: integer("hour").notNull().default(10), // Berlin wall clock
   minute: integer("minute").notNull().default(0),
   active: boolean("active").notNull().default(true),

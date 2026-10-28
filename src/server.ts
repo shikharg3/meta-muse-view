@@ -12,7 +12,7 @@ type ServerEntry = {
 };
 
 /** Pages served only on IMPORT_HOSTS. Keep in step with the map in deploy/159.65.110.111.conf. */
-const IP_ONLY_PATHS = ["/import", "/adset-reports"];
+const IP_ONLY_PATHS = ["/import", "/scheduled-reports"];
 
 let serverEntryPromise: Promise<ServerEntry> | undefined;
 

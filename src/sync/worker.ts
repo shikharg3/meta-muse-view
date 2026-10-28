@@ -12,7 +12,7 @@ import {
 } from "./jobs/checkin";
 import { sendDailyPerformanceReport } from "./jobs/daily-report";
 import { runDueSchedules } from "./jobs/ask-schedules";
-import { runDueAdsetReports } from "./jobs/adset-reports";
+import { runDueReports } from "./jobs/telegram-reports";
 import { pruneReportDrafts } from "@/server/fns/reports";
 import { atOrAfter, berlinNow } from "@/lib/berlin-time";
 import { FIRST_PROMPT_AT, REMINDER_AT, FINAL_NOTICE_AT } from "@/lib/checkin";
@@ -146,13 +146,13 @@ async function notificationsLoop(): Promise<void> {
         );
       }
 
-      // Daily ad-set CSVs (/adset-reports). Each schedule claims its reported day before sending,
-      // so this is a no-op on every tick after a schedule's send.
-      for (const run of await runDueAdsetReports(now)) {
+      // Scheduled report CSVs (/scheduled-reports). Each schedule claims its send date before
+      // running, so this is a no-op on every tick after a schedule's send.
+      for (const run of await runDueReports(now)) {
         console.log(
           run.result.ok
-            ? `[adset-report] sent ${run.clientId} ${run.date}: ${run.result.adSets} ad set(s)`
-            : `[adset-report] FAILED ${run.clientId} ${run.date}: ${run.result.error}`,
+            ? `[telegram-report] sent "${run.name}": ${run.result.rows} row(s)`
+            : `[telegram-report] FAILED "${run.name}": ${run.result.error}`,
         );
       }
 
