@@ -122,8 +122,9 @@ function ScheduledReportsPage() {
   const blankDelivery: Delivery = {
     id: null,
     name: "",
-    chatId:
-      data.chats.find((c) => !c.chatId.startsWith("-"))?.chatId ?? data.chats[0]?.chatId ?? "",
+    // The chat an existing schedule already uses, or none: guessing a recent chat could send a
+    // client's figures to the wrong person.
+    chatId: data.schedules[0]?.chatId ?? "",
     cadence: "daily",
     weekday: 1,
     monthDay: 1,
@@ -440,8 +441,12 @@ function ScheduledReportsPage() {
               />
               {["campaign", "adset", "ad"].includes(recipe.breakdown) && (
                 <p className="mt-1 text-[11px] text-muted-foreground">
-                  One row per {breakdownLabel(recipe.breakdown).toLowerCase()} ID, with account and
-                  campaign columns{scope && scope.brands.length > 1 ? " and a Brand column" : ""}.
+                  One row per {breakdownLabel(recipe.breakdown).replace(/^By /, "").toLowerCase()}{" "}
+                  ID, with account and campaign columns
+                  {scope && scope.brands.length > 1 && recipe.brands.length !== 1
+                    ? " and a Brand column"
+                    : ""}
+                  .
                 </p>
               )}
             </Field>
@@ -504,12 +509,16 @@ function ScheduledReportsPage() {
                   onChange={(e) => setDelivery({ ...delivery, chatId: e.target.value })}
                   className={control}
                 >
+                  <option value="" disabled>
+                    {delivery.chatId
+                      ? "Typed chat id (below)"
+                      : "Choose a chat, or type an id below…"}
+                  </option>
                   {data.chats.map((c) => (
                     <option key={c.chatId} value={c.chatId}>
                       {c.label}
                     </option>
                   ))}
-                  <option value="">Other chat id…</option>
                 </select>
                 <input
                   value={delivery.chatId}
@@ -851,7 +860,8 @@ function CampaignPicker({
               <span className="min-w-0 flex-1">
                 <span className="block truncate">{c.name}</span>
                 <span className="text-muted-foreground">
-                  {c.brand ? brandTitle(c.brand) : "no brand (shared account, name unmatched)"}
+                  {c.brand ? brandTitle(c.brand) : "no brand (shared account, name unmatched)"} ·{" "}
+                  <span className="font-mono">{c.id}</span>
                 </span>
               </span>
             </label>
