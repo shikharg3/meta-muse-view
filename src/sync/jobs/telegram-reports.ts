@@ -30,6 +30,7 @@ export function scheduleRecipe(s: ScheduleRow): ReportRecipe {
     timeIncrement: resolveTimeIncrement(s.timeIncrement),
     markup: s.markup,
     range: { preset: s.rangePreset },
+    modeled: s.modeled,
   };
 }
 
@@ -63,7 +64,10 @@ export async function deliverReport(
           filename: `${report.filename}.csv`,
           content: reportCsv(report),
           mimeType: "text/csv",
-          caption: `${head}\n${report.rowCount} row${report.rowCount === 1 ? "" : "s"}${headline(report)}`,
+          // The note goes along: on a modeled report it is what says these are estimates.
+          caption:
+            `${head}\n${report.rowCount} row${report.rowCount === 1 ? "" : "s"}${headline(report)}` +
+            (report.note ? `\n\n${report.note}` : ""),
         });
   return sent.ok
     ? { ok: true, rows: report.rowCount }

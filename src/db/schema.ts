@@ -923,6 +923,7 @@ export const telegramReportSchedules = pgTable("telegram_report_schedules", {
   timeIncrement: text("time_increment").notNull().default("1"), // Meta's time_increment verbatim
   rangePreset: text("range_preset").notNull().default("yesterday"), // a DATE_PRESETS key
   markup: doublePrecision("markup"),
+  modeled: boolean("modeled").notNull().default(false), // interrupted days replaced by an estimate
   chatId: text("chat_id").notNull(), // Telegram ids exceed 32-bit, hence text
   cadence: text("cadence").notNull().default("daily"), // daily | weekdays | weekly | monthly
   weekday: integer("weekday"), // 1 = Monday, for weekly

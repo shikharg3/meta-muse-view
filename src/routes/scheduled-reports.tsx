@@ -481,6 +481,25 @@ function ScheduledReportsPage() {
               </p>
             </Field>
 
+            <Field label="Data modeling">
+              <label className="flex items-start gap-2 text-xs cursor-pointer">
+                <input
+                  type="checkbox"
+                  className="mt-0.5"
+                  checked={recipe.modeled}
+                  onChange={(e) => patch({ modeled: e.target.checked })}
+                />
+                <span>Model interrupted days (estimate of uninterrupted delivery)</span>
+              </label>
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                A day with no spend, or under 25% of the median of its active days within ±5 days
+                (the previous 7 when nothing later has data, e.g. yesterday), is replaced by the
+                mean of those days, ±15% per metric. The report is titled “(modeled)”, the note and
+                Telegram caption list every modeled day, and daily rows carry a Modeled column. For
+                estimates only — actual figures go out without this.
+              </p>
+            </Field>
+
             <button
               onClick={() => void preview()}
               disabled={previewing || !recipe.clientId || recipe.columns.length === 0}
@@ -709,6 +728,11 @@ function Schedules({
                     {TIME_INCREMENTS.find((t) => t.key === s.recipe.timeIncrement)?.label} ·{" "}
                     {rangeLabel(s.recipe.range)} · {s.recipe.columns.length} columns
                     {s.recipe.markup ? ` · +${Math.round(s.recipe.markup * 100)}%` : ""}
+                    {s.recipe.modeled && (
+                      <span className="ml-1 rounded bg-amber-500/15 px-1 text-amber-500">
+                        modeled
+                      </span>
+                    )}
                   </td>
                   <td className="py-2 pr-3">
                     <div className="font-mono">{cadenceLabel(s)}</div>

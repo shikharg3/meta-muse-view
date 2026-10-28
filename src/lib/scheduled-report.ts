@@ -25,6 +25,11 @@ export interface ReportRecipe {
   markup: number | null;
   /** A DATE_PRESETS key, resolved on the day the report runs; or explicit dates (previews only). */
   range: { preset: string } | { since: string; until: string };
+  /**
+   * Replace interrupted days with an estimate of uninterrupted delivery (`src/server/modeling.ts`).
+   * The result is marked as modeled throughout; actual reporting is the default.
+   */
+  modeled: boolean;
 }
 
 /** The original OneAgency ad-set report, and the builder's starting point. */
@@ -36,6 +41,7 @@ export const DEFAULT_RECIPE: Omit<ReportRecipe, "clientId"> = {
   timeIncrement: "1",
   markup: null,
   range: { preset: "yesterday" },
+  modeled: false,
 };
 
 export type Cadence = "daily" | "weekdays" | "weekly" | "monthly";

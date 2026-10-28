@@ -14,17 +14,18 @@ not ops, on purpose: ops are also served on `/api/v1`, which would put them on t
 
 ## The builder
 
-| Control     | Notes                                                                                                                                 |
-| ----------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| Template    | Seeds the builder from a Report Builder template (`report_templates`).                                                                |
-| Client      | Any client on the Notion board.                                                                                                       |
-| Brands      | The client's board-row titles. None picked = the whole client.                                                                        |
-| Campaigns   | Campaigns in the client/brand scope, searchable, each labelled with its brand. None picked = all.                                     |
-| Date range  | The Report Builder's 19 presets, or custom dates (preview and "Send once" only).                                                      |
-| Columns     | The full report catalog via the Report Builder's column picker; order is column order. Metrics with no data in the window are dimmed. |
-| Breakdown   | All 24 Report Builder dimensions.                                                                                                     |
-| Granularity | Whole range, daily, weekly, 4-weekly, monthly.                                                                                        |
-| Markup      | Inflates spend and cost metrics, as in the Report Builder.                                                                            |
+| Control       | Notes                                                                                                                                 |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Template      | Seeds the builder from a Report Builder template (`report_templates`).                                                                |
+| Client        | Any client on the Notion board.                                                                                                       |
+| Brands        | The client's board-row titles. None picked = the whole client.                                                                        |
+| Campaigns     | Campaigns in the client/brand scope, searchable, each labelled with its brand. None picked = all.                                     |
+| Date range    | The Report Builder's 19 presets, or custom dates (preview and "Send once" only).                                                      |
+| Columns       | The full report catalog via the Report Builder's column picker; order is column order. Metrics with no data in the window are dimmed. |
+| Breakdown     | All 24 Report Builder dimensions.                                                                                                     |
+| Granularity   | Whole range, daily, weekly, 4-weekly, monthly.                                                                                        |
+| Markup        | Inflates spend and cost metrics, as in the Report Builder.                                                                            |
+| Data modeling | Replaces interrupted days with an estimate of uninterrupted delivery — see [Modeled reports](#modeled-reports).                       |
 
 The preview is the CSV: sortable columns, totals row, CSV and PDF downloads in the on-screen order.
 "Send once now" sends the current builder to the chosen chat without saving it.
@@ -82,7 +83,33 @@ send for yesterday can find no rows yet; the message says so.
 Uses the alert bot (`TELEGRAM_BOT_TOKEN`). The target chat must have sent `/start` to the bot, or the
 bot must be in the group; saving and "Send once" check this with `getChat`.
 
+## Modeled reports
+
+For estimating how a campaign would have performed had delivery not been interrupted. Actual
+figures reach clients through DOT Analytics; a modeled report is an estimate and is labelled as
+one: "(modeled)" in the title and file name, a note — also in the Telegram caption — listing every
+modeled day with its actual spend and the median it was judged against, and on daily rows a
+Modeled column (`yes` on modeled days).
+
+Rules (`src/server/modeling.ts`, defaults in `MODELING_DEFAULTS`):
+
+- A day is judged on the whole report scope's spend (client, brands and campaigns as picked). It is
+  **interrupted** when spend is zero or under **25%** of the median spend of its reference days.
+- **Reference days** are the active days within **±5 days**. When no later day has data yet — a
+  "Yesterday" report — they are the active days in the **previous 7**. Low days are never
+  references, so neighbouring dead days are modeled from live ones, not from each other.
+- Each report entity (campaign, ad set, ad, country, …) on an interrupted day becomes the mean of
+  its reference days (a day it did not run counts as zero) times a factor in **[0.85, 1.15]**,
+  independent per metric. The factor is seeded by day, entity and metric, so a report always shows
+  the same estimate; one action array (all conversion types) shares one factor, so synonymous types
+  stay equal. Counts are whole numbers, money keeps cents.
+- Days before the first delivery within reach are not interruptions (the campaign had not
+  started). A day with fewer than 2 active reference days is left actual and named in the note.
+- Because the variance is drawn per entity, the same window's modeled total differs slightly
+  between breakdowns (e.g. by campaign vs by country).
+
 ## Schema
 
 `telegram_report_schedules`, one row per schedule, holding the recipe and the delivery. DDL, applied
-by hand in order: `deploy/ddl/2026-10-28-adset-reports.sql`, `deploy/ddl/2026-10-28-scheduled-reports.sql`.
+by hand in order: `deploy/ddl/2026-10-28-adset-reports.sql`,
+`deploy/ddl/2026-10-28-scheduled-reports.sql`, `deploy/ddl/2026-10-28-report-modeling.sql`.

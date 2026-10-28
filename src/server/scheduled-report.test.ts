@@ -1,7 +1,12 @@
 import { expect, test } from "bun:test";
 import type { InsightRow } from "@/meta/types";
 import type { TimeIncrement } from "@/lib/time-increment";
-import { composeEntityReport, reportCsv, type EntityMeta } from "./scheduled-report";
+import {
+  annotateModeled,
+  composeEntityReport,
+  reportCsv,
+  type EntityMeta,
+} from "./scheduled-report";
 
 const D1 = "2026-10-26";
 const D2 = "2026-10-27";
@@ -191,4 +196,37 @@ test("the CSV quotes names with commas and starts with a UTF-8 BOM for Excel", a
   );
   expect(lines[1]).toBe(`${D2},Account act_1,Campaign c1,"US, ""Static""",s1,12.50,1000,20,0.63`);
   expect(lines[2]).toBe("Total,,,,,12.50,1000,20,0.63");
+});
+
+test("a modeled report says so: title, filename, note, and a Modeled flag on the modeled day", async () => {
+  const r = await composeEntityReport({
+    level: "campaign",
+    subject: "OneAgency",
+    spec: spec(["spend"], "1", D1, ["act_1"]),
+    rows: [
+      { accountId: "act_1", entityId: "c1", row: insight(D1, 100) },
+      { accountId: "act_1", entityId: "c1", row: insight(D2, 97) },
+    ],
+    meta: new Map([["c1", meta("One", "c1")]]),
+    whitelist: null,
+    brandOf: null,
+  });
+  const m = annotateModeled(
+    { ...r, title: "OneAgency — by campaign", filename: "oneagency_x" },
+    {
+      rows: [],
+      modeled: [{ date: D2, actualSpend: 0, referenceMedian: 100, referenceDays: [D1] }],
+      skipped: [],
+    },
+  );
+  expect(m.title).toBe("OneAgency — by campaign (modeled)");
+  expect(m.filename).toBe("oneagency_x_modeled");
+  expect(m.note).toStartWith("MODELED ESTIMATE, not actual delivery. 1 interrupted day");
+  expect(m.note).toContain(`${D2} (actual spend $0 vs $100 median of 1 active days)`);
+  expect(m.columns.slice(0, 2).map((c) => c.label)).toEqual(["Date", "Modeled"]);
+  expect(m.rows.map((row) => [row[0], row[1]])).toEqual([
+    [D1, ""],
+    [D2, "yes"],
+  ]);
+  expect(m.totals?.slice(0, 2)).toEqual(["Total", ""]);
 });

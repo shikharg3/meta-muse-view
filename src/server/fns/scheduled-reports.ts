@@ -184,6 +184,7 @@ const recipeSchema = z.object({
   breakdown: z.string().refine((b) => b === "none" || b in REPORT_DIMS, "Unknown breakdown."),
   timeIncrement: z.string().refine(isTimeIncrement, "Unknown granularity."),
   markup: z.number().min(0).max(5).nullable(),
+  modeled: z.boolean(),
   range: z.union([
     z.object({ preset: presetKey }),
     z
@@ -260,6 +261,7 @@ export async function saveScheduledReport(input: unknown): Promise<{ id: string 
     timeIncrement: recipe.timeIncrement,
     rangePreset: recipe.range.preset,
     markup: recipe.markup,
+    modeled: recipe.modeled,
     chatId: v.chatId,
     cadence: v.cadence,
     weekday: v.cadence === "weekly" ? v.weekday : null,

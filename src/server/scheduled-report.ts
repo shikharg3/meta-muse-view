@@ -10,10 +10,14 @@
  *   ad sets called "Georgia - Static" into one row.
  * - Scope can be narrowed to brands (`report-scope.ts`), and a client with several brands gets a
  *   Brand column on those breakdowns.
+ *
+ * A recipe may also ask for interrupted days to be modeled (`modeling.ts`); such a report is marked
+ * as an estimate throughout (`annotateModeled`).
  */
 import { and, gte, inArray, lte, eq } from "drizzle-orm";
 import { db, schema } from "@/db/client";
 import { resolvePreset } from "@/lib/date-presets";
+import { addDays } from "@/lib/range";
 import { csvText } from "@/lib/download";
 import { reportCsvRows } from "@/lib/report-export";
 import type { ReportRecipe } from "@/lib/scheduled-report";
@@ -30,7 +34,14 @@ import {
   type BuildSpec,
   type ReportColumn,
   type ReportPayload,
+  type ReportRowSource,
 } from "@/server/agent/report";
+import {
+  MODELING_DEFAULTS,
+  modelInterruptedDays,
+  type KeyedRow,
+  type ModelingResult,
+} from "@/server/modeling";
 import { loadClientScope, narrowScope } from "@/server/report-scope";
 import { getClientRow } from "@/sync/jobs/clients";
 
@@ -233,6 +244,9 @@ const slug = (s: string): string =>
 /**
  * Run a recipe. `today` is the date presets resolve against (the Berlin date of the send, or of the
  * preview). An empty result is a payload with no rows, not an error; the caller says so.
+ *
+ * With `recipe.modeled`, interrupted days are replaced by an estimate (`modeling.ts`) and the report
+ * says so everywhere it can: title, filename, note and — on daily rows — a Modeled column.
  */
 export async function buildRecipeReport(
   recipe: ReportRecipe,
@@ -270,14 +284,37 @@ export async function buildRecipeReport(
     markup: recipe.markup ?? undefined,
     maxRows,
   };
-  const named = (p: ReportPayload): ReportPayload => ({
-    ...p,
-    title:
-      breakdown === "none"
-        ? `${n.subject} — totals`
-        : `${n.subject} — by ${REPORT_DIMS[breakdown].label.toLowerCase()}`,
-    filename: `${slug(n.subject)}_${range.since}_${range.until}_by_${breakdown}`,
-  });
+  // Modeling needs the days around the range too: back far enough for the fallback window, forward
+  // as far as synced data goes. Without modeling the fetch is exactly the range.
+  const lastDay = addDays(today, -1);
+  const later = (a: string, b: string) => (a > b ? a : b);
+  const ahead = addDays(range.until, MODELING_DEFAULTS.window);
+  const fetch = recipe.modeled
+    ? {
+        since: addDays(
+          range.since,
+          -Math.max(MODELING_DEFAULTS.window, MODELING_DEFAULTS.fallbackBack),
+        ),
+        until: later(range.until, ahead < lastDay ? ahead : lastDay),
+      }
+    : range;
+  const modeling: { result: ModelingResult | null } = { result: null };
+  const model = (rows: KeyedRow[]): KeyedRow[] => {
+    if (!recipe.modeled) return rows;
+    modeling.result = modelInterruptedDays(rows, range, lastDay);
+    return modeling.result.rows;
+  };
+  const finish = (p: ReportPayload): ReportPayload => {
+    const named: ReportPayload = {
+      ...p,
+      title:
+        breakdown === "none"
+          ? `${n.subject} — totals`
+          : `${n.subject} — by ${REPORT_DIMS[breakdown].label.toLowerCase()}`,
+      filename: `${slug(n.subject)}_${range.since}_${range.until}_by_${breakdown}`,
+    };
+    return modeling.result ? annotateModeled(named, modeling.result) : named;
+  };
 
   const def = breakdown === "none" ? null : REPORT_DIMS[breakdown];
   if (def?.source === "entity") {
@@ -291,24 +328,32 @@ export async function buildRecipeReport(
           and(
             eq(schema.insightsDaily.level, level),
             inArray(schema.insightsDaily.accountId, n.accountIds),
-            gte(schema.insightsDaily.date, range.since),
-            lte(schema.insightsDaily.date, range.until),
+            gte(schema.insightsDaily.date, fetch.since),
+            lte(schema.insightsDaily.date, fetch.until),
           ),
         ),
     ]);
+    const whitelist = n.campaignIds ? new Set(n.campaignIds) : null;
+    const campaignOf = (id: string) => (level === "campaign" ? id : meta.get(id)?.campaignId);
+    // Scope before modeling: another client's campaigns on a shared account must not decide
+    // which of this client's days count as interrupted.
+    const keyed = model(
+      insights
+        .filter((r) => {
+          const c = campaignOf(r.entityId);
+          return !whitelist || (c !== undefined && whitelist.has(c));
+        })
+        .map((r) => ({ accountId: r.accountId, key: r.entityId, row: insightRowFrom(r) })),
+    );
     const multiBrand = scope.brands.length > 1 && recipe.brands.length !== 1;
-    return named(
+    return finish(
       await composeEntityReport({
         level,
         subject: n.subject,
         spec,
-        rows: insights.map((r) => ({
-          accountId: r.accountId,
-          entityId: r.entityId,
-          row: insightRowFrom(r),
-        })),
+        rows: keyed.map((r) => ({ accountId: r.accountId, entityId: r.key, row: r.row })),
         meta,
-        whitelist: n.campaignIds ? new Set(n.campaignIds) : null,
+        whitelist,
         brandOf: multiBrand ? n.brandOf : null,
       }),
     );
@@ -316,8 +361,21 @@ export async function buildRecipeReport(
 
   const full: BuildSpec = { ...spec, breakdown, campaignIds: n.campaignIds ?? undefined };
   // An empty whitelist means "nothing in scope"; the engine reads an empty list as "everything".
-  const source = n.campaignIds?.length === 0 ? async () => [] : dbRowSource(full);
-  const payload = named(await buildReport(source, full, n.subject));
+  let source: ReportRowSource = n.campaignIds?.length === 0 ? async () => [] : dbRowSource(full);
+  if (recipe.modeled && n.campaignIds?.length !== 0) {
+    const wide = dbRowSource({ ...full, since: fetch.since, until: fetch.until });
+    const all: KeyedRow[] = [];
+    for (const accountId of n.accountIds)
+      for (const row of await wide(accountId).catch(() => []))
+        all.push({
+          accountId,
+          key: `${row.campaign_id ?? ""}|${String(row[DIM_VALUE_KEY] ?? "")}`,
+          row,
+        });
+    const kept = model(all);
+    source = async (accountId) => kept.filter((r) => r.accountId === accountId).map((r) => r.row);
+  }
+  const payload = finish(await buildReport(source, full, n.subject));
   if (payload.rowCount === 0 && def?.source === "meta")
     return {
       ...payload,
@@ -326,6 +384,56 @@ export async function buildRecipeReport(
         `a recent day can have campaign data but no breakdown rows.`,
     };
   return payload;
+}
+
+/**
+ * Mark a report as a modeled estimate: "(modeled)" in the title and filename, the modeled days and
+ * their basis first in the note, and on daily rows a Modeled column after the date.
+ */
+export function annotateModeled(p: ReportPayload, m: ModelingResult): ReportPayload {
+  const money = (x: number) => `$${Math.round(x).toLocaleString("en-US")}`;
+  const days = m.modeled.map(
+    (d) =>
+      `${d.date} (actual spend ${money(d.actualSpend)} vs ${money(d.referenceMedian)} median of ` +
+      `${d.referenceDays.length} active days)`,
+  );
+  const basis =
+    `each is the mean of the active days within ±${MODELING_DEFAULTS.window} days (the previous ` +
+    `${MODELING_DEFAULTS.fallbackBack} when no later day has data yet), ` +
+    `±${Math.round(MODELING_DEFAULTS.variance * 100)}% per metric`;
+  const head =
+    m.modeled.length === 0
+      ? "Modeled report: no interrupted days in this window, so every figure is actual."
+      : `MODELED ESTIMATE, not actual delivery. ${m.modeled.length} interrupted day` +
+        `${m.modeled.length === 1 ? "" : "s"} replaced by an estimate — ${days.join("; ")}; ${basis}.`;
+  const skipped = m.skipped.length
+    ? ` Left actual: ${m.skipped.map((s) => `${s.date} (${s.reason})`).join("; ")}.`
+    : "";
+  const modeledDates = new Set(m.modeled.map((d) => d.date));
+  const daily =
+    p.columns[0]?.key === "_period" &&
+    p.rows.every((r) => /^\d{4}-\d{2}-\d{2}$/.test(String(r[0])));
+  return {
+    ...p,
+    title: `${p.title} (modeled)`,
+    filename: `${p.filename}_modeled`,
+    note: [head + skipped, p.note].filter(Boolean).join(" "),
+    ...(daily
+      ? {
+          columns: [
+            p.columns[0],
+            { key: "_modeled", label: "Modeled", kind: "text" },
+            ...p.columns.slice(1),
+          ],
+          rows: p.rows.map((r) => [
+            r[0],
+            modeledDates.has(String(r[0])) ? "yes" : "",
+            ...r.slice(1),
+          ]),
+          totals: p.totals ? [p.totals[0], "", ...p.totals.slice(1)] : null,
+        }
+      : {}),
+  };
 }
 
 /** The CSV as sent. The BOM makes Excel read UTF-8; without it Cyrillic or fullwidth names garble. */
