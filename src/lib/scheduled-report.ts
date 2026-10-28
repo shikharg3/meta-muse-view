@@ -33,7 +33,67 @@ export interface ReportRecipe {
    * The result is marked as modeled throughout; actual reporting is the default.
    */
   modeled: boolean;
+  adjustments: ReportAdjustments;
 }
+
+/** How the file presents and divides the data, applied after the figures are computed. */
+export interface ReportAdjustments {
+  /** Campaign name as synced → name shown. Matched exactly, applied to every row. */
+  campaignNames: Record<string, string>;
+  /** Ad set name as synced → name shown. */
+  adSetNames: Record<string, string>;
+  /** Column key (metric or `dim:`) → header shown. */
+  columnLabels: Record<string, string>;
+  /**
+   * Move `percent`% of every row into a campaign called `campaign` (`src/server/split.ts`). Only on
+   * campaign, ad set and ad breakdowns, which have a Campaign column to show it in.
+   */
+  split: { percent: number; campaign: string } | null;
+}
+
+export const NO_ADJUSTMENTS: ReportAdjustments = {
+  campaignNames: {},
+  adSetNames: {},
+  columnLabels: {},
+  split: null,
+};
+
+const nameMap = (v: unknown): Record<string, string> =>
+  v && typeof v === "object" && !Array.isArray(v)
+    ? Object.fromEntries(
+        Object.entries(v).filter(
+          (e): e is [string, string] => typeof e[1] === "string" && e[1].trim() !== "",
+        ),
+      )
+    : {};
+
+/** Adjustments as stored (jsonb): anything malformed reads as "no adjustment", never as an error. */
+export function adjustmentsFrom(v: unknown): ReportAdjustments {
+  if (!v || typeof v !== "object") return NO_ADJUSTMENTS;
+  const o = v as Record<string, unknown>;
+  const s = o.split as { percent?: unknown; campaign?: unknown } | null | undefined;
+  const split =
+    s &&
+    typeof s.percent === "number" &&
+    s.percent > 0 &&
+    s.percent < 100 &&
+    typeof s.campaign === "string" &&
+    s.campaign.trim()
+      ? { percent: s.percent, campaign: s.campaign.trim() }
+      : null;
+  return {
+    campaignNames: nameMap(o.campaignNames),
+    adSetNames: nameMap(o.adSetNames),
+    columnLabels: nameMap(o.columnLabels),
+    split,
+  };
+}
+
+/** Breakdowns whose rows carry a campaign, so a split has somewhere to show. */
+export const SPLITTABLE_BREAKDOWNS = ["campaign", "adset", "ad"];
+
+/** The only metrics a file shows with decimals; every other figure is a whole number. */
+export const DECIMAL_METRICS = ["spend", "ctr", "cpc", "cpm"];
 
 /**
  * Identity columns a report can carry besides metrics. `payloadKey` is the engine's column key.
@@ -129,6 +189,7 @@ export const DEFAULT_RECIPE: Omit<ReportRecipe, "clientId"> = {
   markup: null,
   range: { preset: "yesterday" },
   modeled: false,
+  adjustments: NO_ADJUSTMENTS,
 };
 
 /** Placeholders a schedule's file name may use; each is replaced by a YYYY-MM-DD date. */

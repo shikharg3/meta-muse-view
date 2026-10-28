@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { asc, desc, eq, isNull, sql } from "drizzle-orm";
+import { asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { getRequestHost } from "@tanstack/react-start/server";
 import { z } from "zod";
 import { db, schema } from "@/db/client";
@@ -8,7 +8,13 @@ import { DATE_PRESETS } from "@/lib/date-presets";
 import { env } from "@/lib/env";
 import { isImportHost } from "@/lib/import-host";
 import { metric } from "@/lib/report-catalog";
-import { CHAT_ID_PATTERN, IDENTITY_COLUMNS, type ReportRecipe } from "@/lib/scheduled-report";
+import {
+  CHAT_ID_PATTERN,
+  IDENTITY_COLUMNS,
+  NO_ADJUSTMENTS,
+  SPLITTABLE_BREAKDOWNS,
+  type ReportRecipe,
+} from "@/lib/scheduled-report";
 import { isTimeIncrement, resolveTimeIncrement } from "@/lib/time-increment";
 import { REPORT_DIMS, type ReportPayload } from "@/server/agent/report";
 import { loadClientScope } from "@/server/report-scope";
@@ -66,6 +72,8 @@ export interface ScheduledReportsPageData {
 export interface ScopeView {
   brands: { key: string; title: string; status: string | null; accountCount: number }[];
   campaigns: { id: string; name: string; brand: string | null }[];
+  /** Distinct ad set names in the client's campaigns, for the rename picker. */
+  adSetNames: string[];
 }
 
 /** Host first, so a domain answers "Not found" whoever is signed in. */
@@ -136,15 +144,7 @@ export async function fetchScheduledReportsPage(): Promise<ScheduledReportsPageD
     templates: templates.flatMap((t) => {
       // A template saved under an older recipe shape is skipped rather than loaded half-broken.
       const r = recipeSchema.safeParse(t.recipe);
-      return r.success
-        ? [
-            {
-              id: t.id,
-              name: t.name,
-              recipe: { ...r.data, timeIncrement: resolveTimeIncrement(r.data.timeIncrement) },
-            },
-          ]
-        : [];
+      return r.success ? [{ id: t.id, name: t.name, recipe: toRecipe(r.data) }] : [];
     }),
     today: today(),
     botConfigured: tg !== null,
@@ -160,6 +160,13 @@ export async function fetchReportScope(input: unknown): Promise<ScopeView> {
   const client = await getClientRow(clientId);
   if (!client) throw new Error("Unknown client.");
   const scope = await loadClientScope(client);
+  const inScope = new Set(scope.campaigns.map((c) => c.id));
+  const sets = scope.accountIds.length
+    ? await db
+        .select({ name: schema.adSets.name, campaignId: schema.adSets.campaignId })
+        .from(schema.adSets)
+        .where(inArray(schema.adSets.accountId, scope.accountIds))
+    : [];
   return {
     brands: scope.brands.map((b) => ({
       key: b.key,
@@ -168,6 +175,9 @@ export async function fetchReportScope(input: unknown): Promise<ScopeView> {
       accountCount: b.accountIds.length,
     })),
     campaigns: scope.campaigns.map((c) => ({ id: c.id, name: c.name, brand: c.brand })),
+    adSetNames: [...new Set(sets.filter((s) => inScope.has(s.campaignId)).map((s) => s.name))].sort(
+      (a, b) => a.localeCompare(b),
+    ),
   };
 }
 
@@ -176,37 +186,66 @@ const presetKey = z
   .string()
   .refine((k) => DATE_PRESETS.some((p) => p.key === k), "Unknown date range.");
 
-const recipeSchema = z.object({
-  clientId: z.string().min(1).max(200),
-  brands: z.array(z.string().max(300)).max(100),
-  campaignIds: z.array(z.string().max(40)).max(2000),
-  columns: z
-    .array(
-      z
-        .string()
-        .refine(
-          (k) => metric(k) !== undefined || IDENTITY_COLUMNS.some((c) => c.key === k),
-          "Unknown column.",
-        ),
-    )
-    .max(150)
-    .refine((ks) => ks.some((k) => metric(k) !== undefined), "Pick at least one metric column."),
-  breakdown: z.string().refine((b) => b === "none" || b in REPORT_DIMS, "Unknown breakdown."),
-  timeIncrement: z.string().refine(isTimeIncrement, "Unknown granularity."),
-  markup: z.number().min(0).max(5).nullable(),
-  modeled: z.boolean(),
-  range: z.union([
-    z.object({ preset: presetKey }),
-    z
-      .object({ since: ymd, until: ymd })
-      .refine((r) => r.since <= r.until, "The range ends before it starts."),
-  ]),
+const names = z
+  .record(z.string().max(300), z.string().trim().max(200))
+  .refine((m) => Object.keys(m).length <= 2000, "Too many renames.");
+
+const adjustmentsSchema = z.object({
+  campaignNames: names,
+  adSetNames: names,
+  columnLabels: names,
+  split: z
+    .object({
+      percent: z.number().gt(0, "Split more than 0%.").lt(100, "Split less than 100%."),
+      campaign: z.string().trim().min(1, "Name the campaign the split goes to.").max(200),
+    })
+    .nullable(),
 });
 
-const parseRecipe = (v: unknown): ReportRecipe => {
-  const r = recipeSchema.parse(v);
-  return { ...r, timeIncrement: resolveTimeIncrement(r.timeIncrement) };
-};
+const recipeSchema = z
+  .object({
+    clientId: z.string().min(1).max(200),
+    brands: z.array(z.string().max(300)).max(100),
+    campaignIds: z.array(z.string().max(40)).max(2000),
+    columns: z
+      .array(
+        z
+          .string()
+          .refine(
+            (k) => metric(k) !== undefined || IDENTITY_COLUMNS.some((c) => c.key === k),
+            "Unknown column.",
+          ),
+      )
+      .max(150)
+      .refine((ks) => ks.some((k) => metric(k) !== undefined), "Pick at least one metric column."),
+    breakdown: z.string().refine((b) => b === "none" || b in REPORT_DIMS, "Unknown breakdown."),
+    timeIncrement: z.string().refine(isTimeIncrement, "Unknown granularity."),
+    markup: z.number().min(0).max(5).nullable(),
+    modeled: z.boolean(),
+    range: z.union([
+      z.object({ preset: presetKey }),
+      z
+        .object({ since: ymd, until: ymd })
+        .refine((r) => r.since <= r.until, "The range ends before it starts."),
+    ]),
+    // Templates saved before adjustments existed have none.
+    adjustments: adjustmentsSchema.default(NO_ADJUSTMENTS),
+  })
+  .refine(
+    (r) => !r.adjustments.split || SPLITTABLE_BREAKDOWNS.includes(r.breakdown),
+    "A split needs a campaign, ad set or ad breakdown.",
+  )
+  .refine(
+    (r) => !r.adjustments.split || r.columns.includes("dim:campaign"),
+    "A split needs the Campaign column, or its rows cannot be told apart.",
+  );
+
+const toRecipe = (r: z.infer<typeof recipeSchema>): ReportRecipe => ({
+  ...r,
+  timeIncrement: resolveTimeIncrement(r.timeIncrement),
+});
+
+const parseRecipe = (v: unknown): ReportRecipe => toRecipe(recipeSchema.parse(v));
 
 /** A file name as typed: blank = generated. Tokens and sanitising are `reportFilename`'s. */
 const filenameInput = z
@@ -284,6 +323,7 @@ export async function saveScheduledReport(input: unknown): Promise<{ id: string 
     rangePreset: recipe.range.preset,
     markup: recipe.markup,
     modeled: recipe.modeled,
+    adjustments: recipe.adjustments,
     filename: v.filename,
     chatId: v.chatId,
     cadence: v.cadence,

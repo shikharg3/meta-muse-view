@@ -5,7 +5,9 @@ import {
   annotateModeled,
   composeEntityReport,
   projectColumns,
+  renameEntities,
   reportCsv,
+  wholeNumbers,
   type EntityMeta,
 } from "./scheduled-report";
 
@@ -269,4 +271,100 @@ test("the file carries exactly the picked columns, in the picked order", async (
   expect(p.rows).toEqual([[20, "Broad", "act_1", 10]]);
   // "Total" goes in the first text column kept, wherever it is.
   expect(p.totals).toEqual([20, "Total", "", 10]);
+});
+
+test("a split moves the share of every row under the new campaign, with no IDs, totals unchanged", async () => {
+  const input = {
+    level: "adset" as const,
+    subject: "OneAgency",
+    spec: spec(["spend", "clicks", "cpc"], "1", D2, ["act_1"]),
+    rows: [
+      { accountId: "act_1", entityId: "s1", row: insight(D2, 100) },
+      { accountId: "act_1", entityId: "s2", row: insight(D2, 50) },
+    ],
+    meta: new Map([
+      ["s1", meta("Georgia", "c1")],
+      ["s2", meta("Ohio", "c1")],
+    ]),
+    whitelist: null,
+    brandOf: null,
+  };
+  const whole = await composeEntityReport(input);
+  const r = projectColumns(
+    await composeEntityReport({ ...input, split: { share: 0.2, campaign: "Name#2" } }),
+    ["dim:campaign", "dim:campaign_id", "dim:adset", "dim:adset_id", "spend", "clicks", "cpc"],
+  );
+  expect(r.rows).toEqual([
+    ["Campaign c1", "c1", "Georgia", "s1", 80, 16, 5],
+    ["Campaign c1", "c1", "Ohio", "s2", 40, 16, 2.5],
+    ["Name#2", "", "Georgia", "", 20, 4, 5],
+    ["Name#2", "", "Ohio", "", 10, 4, 2.5],
+  ]);
+  // Every metric of the whole report is unchanged by the split.
+  const spendAt = whole.columns.findIndex((c) => c.key === "spend");
+  expect(r.totals?.[4]).toBe(whole.totals?.[spendAt]);
+  expect(r.totals?.[5]).toBe(40);
+});
+
+test("renames match exact names in every row; headers can be renamed per column", async () => {
+  const r = await composeEntityReport({
+    level: "adset",
+    subject: "OneAgency",
+    spec: spec(["spend"], "1", D2, ["act_1"]),
+    rows: [
+      { accountId: "act_1", entityId: "s1", row: insight(D2, 10) },
+      { accountId: "act_1", entityId: "s2", row: insight(D2, 5) },
+    ],
+    meta: new Map([
+      ["s1", meta("Name#1", "c1")],
+      ["s2", meta("Name#1 copy", "c1")],
+    ]),
+    whitelist: null,
+    brandOf: null,
+  });
+  const renamed = projectColumns(
+    renameEntities(r, {
+      campaignNames: { "Campaign c1": "Spring promo" },
+      adSetNames: { "Name#1": "Name#2" },
+      columnLabels: {},
+      split: null,
+    }),
+    ["dim:campaign", "dim:adset", "spend"],
+    { "dim:adset": "Audience", spend: "Amount spent (USD)" },
+  );
+  expect(renamed.columns.map((c) => c.label)).toEqual([
+    "Campaign",
+    "Audience",
+    "Amount spent (USD)",
+  ]);
+  expect(renamed.rows).toEqual([
+    ["Spring promo", "Name#2", 10],
+    ["Spring promo", "Name#1 copy", 5], // exact match only
+  ]);
+});
+
+test("only spend, CTR, CPC and CPM keep decimals; every other figure is whole", async () => {
+  const r = await composeEntityReport({
+    level: "campaign",
+    subject: "OneAgency",
+    spec: spec(["spend", "ctr", "cpc", "cpm", "cost_per_registration", "frequency"], "all_days"),
+    rows: [
+      {
+        accountId: "act_1",
+        entityId: "c1",
+        row: insight(D2, 10, {
+          reach: "300",
+          actions: [{ action_type: "complete_registration", value: "3" }],
+        }),
+      },
+    ],
+    meta: new Map([["c1", meta("One", "c1")]]),
+    whitelist: null,
+    brandOf: null,
+  });
+  const w = wholeNumbers(
+    projectColumns(r, ["spend", "ctr", "cpc", "cpm", "cost_per_registration", "frequency"]),
+  );
+  expect(w.rows[0]).toEqual([10, 2, 0.5, 10, 3, 3]); // 10/3 = 3.33 and 1000/300 = 3.33 → 3
+  expect(w.columns.map((c) => c.kind)).toEqual(["money", "pct", "money", "money", "int", "int"]);
 });

@@ -21,6 +21,14 @@
  */
 import type { InsightRow } from "@/meta/types";
 import { addDays } from "@/lib/range";
+import {
+  decimalsFor,
+  isActionArray,
+  isIdentity,
+  isNumeric,
+  num,
+  roundTo as round,
+} from "./insight-fields";
 
 export interface ModelingOptions {
   threshold: number;
@@ -60,31 +68,6 @@ export interface ModelingResult {
   /** Interrupted days left actual, with why. */
   skipped: { date: string; reason: string }[];
 }
-
-type Action = { action_type: string; value: string };
-
-const num = (v: unknown): number => {
-  const n = typeof v === "number" ? v : typeof v === "string" ? Number(v) : NaN;
-  return Number.isFinite(n) ? n : 0;
-};
-
-const isActionArray = (v: unknown): v is Action[] =>
-  Array.isArray(v) &&
-  v.every((e) => e !== null && typeof e === "object" && "action_type" in e && "value" in e);
-
-const isNumeric = (v: unknown): boolean =>
-  typeof v === "number" || (typeof v === "string" && v.trim() !== "" && Number.isFinite(Number(v)));
-
-/** Identity and dimension fields are copied, never averaged. */
-const isIdentity = (key: string): boolean =>
-  key === "date_start" || key === "date_stop" || key.endsWith("_id") || key.startsWith("__");
-
-/** Money, rates and values keep cents; everything else is a count and stays whole. */
-const decimalsFor = (key: string): number =>
-  /spend|value|roas|cpc|cpm|cpp|ctr|cost|rate|frequency/.test(key) ? 2 : 0;
-
-const round = (n: number, decimals: number): string =>
-  decimals === 0 ? String(Math.round(n)) : n.toFixed(decimals);
 
 /** FNV-1a: a stable [0, 1) per string, so an estimate never changes between runs. */
 function unit(s: string): number {

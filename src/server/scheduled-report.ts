@@ -21,7 +21,14 @@ import { addDays } from "@/lib/range";
 import { csvText } from "@/lib/download";
 import { reportCsvRows } from "@/lib/report-export";
 import { metric } from "@/lib/report-catalog";
-import { IDENTITY_COLUMNS, reportFilename, type ReportRecipe } from "@/lib/scheduled-report";
+import {
+  DECIMAL_METRICS,
+  IDENTITY_COLUMNS,
+  reportFilename,
+  SPLITTABLE_BREAKDOWNS,
+  type ReportAdjustments,
+  type ReportRecipe,
+} from "@/lib/scheduled-report";
 import type { InsightRow } from "@/meta/types";
 import {
   buildReport,
@@ -44,6 +51,7 @@ import {
   type ModelingResult,
 } from "@/server/modeling";
 import { loadClientScope, narrowScope } from "@/server/report-scope";
+import { isSplitId, SPLIT_SUFFIX, splitRow, unsplitId } from "@/server/split";
 import { getClientRow } from "@/sync/jobs/clients";
 
 export type EntityLevel = "campaign" | "adset" | "ad";
@@ -96,12 +104,29 @@ const CONTEXT: Record<EntityLevel, ReportColumn[]> = {
   ],
 };
 
-function contextCells(level: EntityLevel, id: string, m: EntityMeta | undefined): string[] {
+/**
+ * Identity cells for one row. A split copy (`splitCampaign` set) shows under that campaign name and
+ * carries no IDs: it is not a Meta object.
+ */
+function contextCells(
+  level: EntityLevel,
+  id: string,
+  m: EntityMeta | undefined,
+  splitCampaign: string | null,
+): string[] {
+  const ids = (x: string) => (splitCampaign === null ? x : "");
   const account = [m?.accountName ?? "", m?.accountId ?? ""];
-  if (level === "campaign") return [...account, m?.name ?? id, id];
-  const campaign = [m?.campaignName ?? "", m?.campaignId ?? ""];
-  if (level === "adset") return [...account, ...campaign, m?.name ?? id, id];
-  return [...account, ...campaign, m?.adSetName ?? "", m?.adSetId ?? "", m?.name ?? id, id];
+  if (level === "campaign") return [...account, splitCampaign ?? m?.name ?? id, ids(id)];
+  const campaign = [splitCampaign ?? m?.campaignName ?? "", ids(m?.campaignId ?? "")];
+  if (level === "adset") return [...account, ...campaign, m?.name ?? id, ids(id)];
+  return [
+    ...account,
+    ...campaign,
+    m?.adSetName ?? "",
+    ids(m?.adSetId ?? ""),
+    m?.name ?? id,
+    ids(id),
+  ];
 }
 
 /** Report-file rows cap: far beyond a screen, well inside Telegram's 50 MB upload limit. */
@@ -123,16 +148,31 @@ export async function composeEntityReport(input: {
   meta: Map<string, EntityMeta>;
   whitelist: Set<string> | null;
   brandOf: Map<string, string> | null;
+  /** Move `share` (0–1) of every row into a campaign named `campaign`; see `split.ts`. */
+  split?: { share: number; campaign: string } | null;
 }): Promise<ReportPayload> {
-  const { level, meta, whitelist, brandOf } = input;
-  const campaignOf = (id: string) => (level === "campaign" ? id : meta.get(id)?.campaignId);
+  const { level, meta, whitelist, brandOf, split } = input;
+  const campaignOf = (id: string) => {
+    const base = unsplitId(id);
+    return level === "campaign" ? base : meta.get(base)?.campaignId;
+  };
   const byAccount = new Map<string, InsightRow[]>();
+  const add = (accountId: string, entityId: string, row: InsightRow) => {
+    const list = byAccount.get(accountId) ?? [];
+    // The split copy keeps its real campaign id for objective-aware results; only its label moves.
+    list.push({ ...row, campaign_id: campaignOf(entityId), [DIM_VALUE_KEY]: entityId });
+    byAccount.set(accountId, list);
+  };
   for (const r of input.rows) {
     const campaignId = campaignOf(r.entityId);
     if (whitelist && (!campaignId || !whitelist.has(campaignId))) continue;
-    const list = byAccount.get(r.accountId) ?? [];
-    list.push({ ...r.row, campaign_id: campaignId, [DIM_VALUE_KEY]: r.entityId });
-    byAccount.set(r.accountId, list);
+    if (!split) {
+      add(r.accountId, r.entityId, r.row);
+      continue;
+    }
+    const [kept, moved] = splitRow(r.row, split.share);
+    add(r.accountId, r.entityId, kept);
+    add(r.accountId, `${r.entityId}${SPLIT_SUFFIX}`, moved);
   }
 
   const payload = await buildReport(
@@ -158,7 +198,12 @@ export async function composeEntityReport(input: {
       return [
         ...(hasPeriod ? [cells[0]] : []),
         ...(brandOf ? [(campaignId && brandOf.get(campaignId)) || ""] : []),
-        ...contextCells(level, id, meta.get(id)),
+        ...contextCells(
+          level,
+          unsplitId(id),
+          meta.get(unsplitId(id)),
+          isSplitId(id) ? (split?.campaign ?? "") : null,
+        ),
         ...cells.slice(engineLead),
       ];
     })
@@ -264,27 +309,70 @@ export function recipeRange(
 }
 
 /**
- * Keep exactly the recipe's columns, in its order. Identity keys (`dim:…`) map to the engine's
- * column keys; a key the breakdown cannot fill is skipped. The totals row is labelled in the first
- * text column kept.
+ * Keep exactly the recipe's columns, in its order, under any header the recipe renames them to.
+ * Identity keys (`dim:…`) map to the engine's column keys; a key the breakdown cannot fill is
+ * skipped. The totals row is labelled in the first text column kept.
  */
-export function projectColumns(p: ReportPayload, keys: string[]): ReportPayload {
+export function projectColumns(
+  p: ReportPayload,
+  keys: string[],
+  labels: Record<string, string> = {},
+): ReportPayload {
   const payloadKey = new Map(IDENTITY_COLUMNS.map((c) => [c.key, c.payloadKey]));
   const at = new Map(p.columns.map((c, i) => [c.key, i]));
-  const idx = keys
-    .map((k) => at.get(payloadKey.get(k) ?? k))
-    .filter((i): i is number => i !== undefined);
-  const columns = idx.map((i) => p.columns[i]);
+  const picked = keys.flatMap((k) => {
+    const i = at.get(payloadKey.get(k) ?? k);
+    return i === undefined ? [] : [{ key: k, i }];
+  });
+  const columns = picked.map(({ key, i }) => ({
+    ...p.columns[i],
+    label: labels[key]?.trim() || p.columns[i].label,
+  }));
   const firstText = columns.findIndex((c) => c.kind === "text");
   return {
     ...p,
     columns,
-    rows: p.rows.map((r) => idx.map((i) => r[i])),
+    rows: p.rows.map((r) => picked.map(({ i }) => r[i])),
     totals: p.totals
-      ? idx.map((i, j) =>
+      ? picked.map(({ i }, j) =>
           columns[j].kind !== "text" ? p.totals![i] : j === firstText ? "Total" : "",
         )
       : null,
+  };
+}
+
+/** Show campaign and ad set names as the recipe renames them; exact matches, every row. */
+export function renameEntities(p: ReportPayload, a: ReportAdjustments): ReportPayload {
+  const maps = new Map<number, Record<string, string>>();
+  p.columns.forEach((c, i) => {
+    if (c.key === "_campaign") maps.set(i, a.campaignNames);
+    if (c.key === "_adset") maps.set(i, a.adSetNames);
+  });
+  if (maps.size === 0) return p;
+  return {
+    ...p,
+    rows: p.rows.map((r) =>
+      r.map((v, i) => {
+        const to = typeof v === "string" ? maps.get(i)?.[v]?.trim() : undefined;
+        return to || v;
+      }),
+    ),
+  };
+}
+
+/**
+ * Whole numbers everywhere except spend, CTR, CPC and CPM (`DECIMAL_METRICS`): a column of any other
+ * metric — counts, cost per result, ROAS, conversion value — is rounded and printed as an integer.
+ */
+export function wholeNumbers(p: ReportPayload): ReportPayload {
+  const whole = p.columns.map((c) => c.kind !== "text" && !DECIMAL_METRICS.includes(c.key));
+  const fix = (cells: (string | number | null)[]) =>
+    cells.map((v, i) => (whole[i] && typeof v === "number" ? Math.round(v) : v));
+  return {
+    ...p,
+    columns: p.columns.map((c, i) => (whole[i] ? { ...c, kind: "int" as const } : c)),
+    rows: p.rows.map(fix),
+    totals: p.totals ? fix(p.totals) : null,
   };
 }
 
@@ -309,6 +397,9 @@ export async function buildRecipeReport(
   const breakdown = recipe.breakdown as Breakdown;
   if (breakdown !== "none" && !(breakdown in REPORT_DIMS))
     return { error: `Unknown breakdown "${recipe.breakdown}".` };
+  const split = recipe.adjustments.split;
+  if (split && !SPLITTABLE_BREAKDOWNS.includes(breakdown))
+    return { error: "A split needs a campaign, ad set or ad breakdown." };
 
   const scope = await loadClientScope(client);
   const n = narrowScope(scope, recipe.brands, recipe.campaignIds);
@@ -358,16 +449,33 @@ export async function buildRecipeReport(
       filename: `${slug(n.subject)}_${range.since}_${range.until}_by_${breakdown}`,
     };
     const labelled = modeling.result ? annotateModeled(named, modeling.result) : named;
-    return projectColumns(
-      {
-        ...labelled,
-        filename: reportFilename(filename, labelled.filename, {
-          ...range,
-          today,
-          modeled: recipe.modeled,
-        }),
-      },
-      recipe.columns,
+    const noted: ReportPayload = split
+      ? {
+          ...labelled,
+          note: [
+            `Split: ${split.percent}% of every row is shown under the campaign “${split.campaign}”.`,
+            labelled.note,
+          ]
+            .filter(Boolean)
+            .join(" "),
+        }
+      : labelled;
+    return wholeNumbers(
+      projectColumns(
+        renameEntities(
+          {
+            ...noted,
+            filename: reportFilename(filename, noted.filename, {
+              ...range,
+              today,
+              modeled: recipe.modeled,
+            }),
+          },
+          recipe.adjustments,
+        ),
+        recipe.columns,
+        recipe.adjustments.columnLabels,
+      ),
     );
   };
 
@@ -410,6 +518,7 @@ export async function buildRecipeReport(
         meta,
         whitelist,
         brandOf: n.brandOf,
+        split: split ? { share: split.percent / 100, campaign: split.campaign } : null,
       }),
     );
   }

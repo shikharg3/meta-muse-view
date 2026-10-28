@@ -924,6 +924,8 @@ export const telegramReportSchedules = pgTable("telegram_report_schedules", {
   rangePreset: text("range_preset").notNull().default("yesterday"), // a DATE_PRESETS key
   markup: doublePrecision("markup"),
   modeled: boolean("modeled").notNull().default(false), // interrupted days replaced by an estimate
+  // Renames, column headers and the split (`ReportAdjustments`); {} = none.
+  adjustments: jsonb("adjustments").notNull().default({}),
   // The sent file's name without extension; {since}, {until}, {today} are filled. Null = generated.
   filename: text("filename"),
   chatId: text("chat_id").notNull(), // Telegram ids exceed 32-bit, hence text

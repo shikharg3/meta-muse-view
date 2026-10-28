@@ -7,7 +7,7 @@ import { and, eq, lt, isNull, ne, or, sql } from "drizzle-orm";
 import { db, schema } from "@/db/client";
 import { berlinNow } from "@/lib/berlin-time";
 import { MAX_ATTEMPTS } from "@/lib/daily-report";
-import { isScheduleDue, type ReportRecipe } from "@/lib/scheduled-report";
+import { adjustmentsFrom, isScheduleDue, type ReportRecipe } from "@/lib/scheduled-report";
 import { showCell } from "@/lib/report-export";
 import { resolveTimeIncrement } from "@/lib/time-increment";
 import { buildRecipeReport, FILE_MAX_ROWS, reportCsv } from "@/server/scheduled-report";
@@ -31,6 +31,7 @@ export function scheduleRecipe(s: ScheduleRow): ReportRecipe {
     markup: s.markup,
     range: { preset: s.rangePreset },
     modeled: s.modeled,
+    adjustments: adjustmentsFrom(s.adjustments),
   };
 }
 

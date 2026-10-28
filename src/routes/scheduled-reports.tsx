@@ -1,5 +1,5 @@
 import { createFileRoute, notFound, useRouter } from "@tanstack/react-router";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import {
   ArrowDown,
   ArrowUp,
@@ -62,8 +62,10 @@ import {
   IDENTITY_COLUMNS,
   identityColumnsFor,
   isIdentityColumn,
+  SPLITTABLE_BREAKDOWNS,
   WEEKDAYS,
   type Cadence,
+  type ReportAdjustments,
   type ReportRecipe,
 } from "@/lib/scheduled-report";
 import { TIME_INCREMENTS, type TimeIncrement } from "@/lib/time-increment";
@@ -174,7 +176,7 @@ function ScheduledReportsPage() {
           campaignIds: r.campaignIds.filter((id) => s.campaigns.some((c) => c.id === id)),
         }));
       })
-      .catch(() => !cancelled && setScope({ brands: [], campaigns: [] }));
+      .catch(() => !cancelled && setScope({ brands: [], campaigns: [], adSetNames: [] }));
     return () => {
       cancelled = true;
     };
@@ -327,13 +329,18 @@ function ScheduledReportsPage() {
   const multiBrand = !!scope && scope.brands.length > 1 && recipe.brands.length !== 1;
   /** A new breakdown gets its own identity columns; the metrics are kept as ordered. */
   const setBreakdown = (breakdown: string) =>
-    patch({
+    setRecipe((r) => ({
+      ...r,
       breakdown,
       columns: [
-        ...defaultIdentityColumns(breakdown, recipe.timeIncrement, multiBrand),
-        ...recipe.columns.filter((k) => !isIdentityColumn(k)),
+        ...defaultIdentityColumns(breakdown, r.timeIncrement, multiBrand),
+        ...r.columns.filter((k) => !isIdentityColumn(k)),
       ],
-    });
+      // A split lives in the Campaign column; a breakdown without one cannot carry it.
+      adjustments: SPLITTABLE_BREAKDOWNS.includes(breakdown)
+        ? r.adjustments
+        : { ...r.adjustments, split: null },
+    }));
   /** A time axis brings its Date column; dropping the axis drops it. */
   const setGranularity = (timeIncrement: TimeIncrement) => {
     const rest = recipe.columns.filter((k) => k !== "dim:period");
@@ -354,6 +361,35 @@ function ScheduledReportsPage() {
             .replace(/^./, (c) => c.toUpperCase())
         : (IDENTITY_COLUMNS.find((c) => c.key === key)?.label ?? key),
   }));
+
+  const adjust = (a: Partial<ReportAdjustments>) =>
+    setRecipe((r) => ({ ...r, adjustments: { ...r.adjustments, ...a } }));
+  /**
+   * Set the split's percent or campaign name (null = leave as is); 0% removes it. A split is shown
+   * under the Campaign column, so the report gets one if it has none.
+   */
+  const setSplit = (percent: number | null, campaign: string | null) => {
+    const cur = recipe.adjustments.split;
+    const p = percent ?? cur?.percent ?? 0;
+    if (p <= 0) return adjust({ split: null });
+    const split = { percent: Math.min(p, 99), campaign: campaign ?? cur?.campaign ?? "" };
+    const columns = [...recipe.columns];
+    if (!columns.includes("dim:campaign")) {
+      const at = columns.findIndex((k) => k !== "dim:period" && k !== "dim:brand");
+      columns.splice(at === -1 ? columns.length : at, 0, "dim:campaign");
+    }
+    setRecipe((r) => ({ ...r, columns, adjustments: { ...r.adjustments, split } }));
+  };
+  const campaignNameOptions = [
+    ...new Set(
+      (scope?.campaigns ?? [])
+        .filter(
+          (c) =>
+            recipe.brands.length === 0 || (c.brand !== null && recipe.brands.includes(c.brand)),
+        )
+        .map((c) => c.name),
+    ),
+  ];
 
   return (
     <div className="min-h-screen bg-background">
@@ -558,6 +594,8 @@ function ScheduledReportsPage() {
               columns={recipe.columns}
               availableKeys={availableKeys}
               identity={identityOptions}
+              labels={recipe.adjustments.columnLabels}
+              onLabelsChange={(columnLabels) => adjust({ columnLabels })}
               onChange={(columns) => patch({ columns })}
             />
 
@@ -611,6 +649,64 @@ function ScheduledReportsPage() {
                 figures go out without this.
               </p>
             </Field>
+
+            <Field label="Split into a new campaign">
+              {SPLITTABLE_BREAKDOWNS.includes(recipe.breakdown) ? (
+                <>
+                  <div className="grid grid-cols-[90px_1fr] gap-2">
+                    <div className="relative">
+                      <input
+                        type="number"
+                        min={0}
+                        max={99}
+                        step="any"
+                        value={recipe.adjustments.split?.percent ?? ""}
+                        placeholder="0"
+                        onChange={(e) => setSplit(Number(e.target.value) || 0, null)}
+                        className={cn(control, "pr-6")}
+                      />
+                      <span className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">
+                        %
+                      </span>
+                    </div>
+                    <input
+                      value={recipe.adjustments.split?.campaign ?? ""}
+                      placeholder="New campaign name"
+                      disabled={!recipe.adjustments.split}
+                      onChange={(e) => setSplit(null, e.target.value)}
+                      className={control}
+                    />
+                  </div>
+                  {recipe.adjustments.split && !recipe.adjustments.split.campaign.trim() && (
+                    <p className="mt-1 text-[11px] text-amber-500">
+                      Name the campaign the {recipe.adjustments.split.percent}% goes to.
+                    </p>
+                  )}
+                  <p className="mt-1 text-[11px] text-muted-foreground">
+                    Every row keeps {100 - (recipe.adjustments.split?.percent ?? 0)}% of its figures
+                    and a copy with the rest appears under the new campaign (no IDs). Totals do not
+                    change; counts stay whole numbers.
+                  </p>
+                </>
+              ) : (
+                <p className="text-[11px] text-muted-foreground">
+                  Needs a campaign, ad set or ad breakdown.
+                </p>
+              )}
+            </Field>
+
+            <RenameField
+              label="Rename campaigns"
+              options={campaignNameOptions}
+              value={recipe.adjustments.campaignNames}
+              onChange={(campaignNames) => adjust({ campaignNames })}
+            />
+            <RenameField
+              label="Rename ad sets"
+              options={scope?.adSetNames ?? []}
+              value={recipe.adjustments.adSetNames}
+              onChange={(adSetNames) => adjust({ adSetNames })}
+            />
 
             <button
               onClick={() => void preview()}
@@ -854,6 +950,9 @@ function Schedules({
                     {TIME_INCREMENTS.find((t) => t.key === s.recipe.timeIncrement)?.label} ·{" "}
                     {rangeLabel(s.recipe.range)} · {s.recipe.columns.length} columns
                     {s.recipe.markup ? ` · +${Math.round(s.recipe.markup * 100)}%` : ""}
+                    {s.recipe.adjustments.split
+                      ? ` · split ${s.recipe.adjustments.split.percent}% → ${s.recipe.adjustments.split.campaign}`
+                      : ""}
                     {s.recipe.modeled && (
                       <span className="ml-1 rounded bg-amber-500/15 px-1 text-amber-500">
                         modeled
@@ -1027,12 +1126,17 @@ function ColumnsField({
   columns,
   availableKeys,
   identity,
+  labels,
+  onLabelsChange,
   onChange,
 }: {
   columns: string[];
   availableKeys: string[] | null;
   /** The identity columns this breakdown and granularity can fill, with their labels. */
   identity: { key: string; label: string }[];
+  /** Column key → header the file shows instead of the default. */
+  labels: Record<string, string>;
+  onLabelsChange: (labels: Record<string, string>) => void;
   onChange: (keys: string[]) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -1074,6 +1178,37 @@ function ColumnsField({
           );
         })}
       </div>
+      <details className="mt-1.5">
+        <summary className="cursor-pointer text-[11px] text-muted-foreground">
+          Column headers
+          {Object.keys(labels).length > 0 && ` (${Object.keys(labels).length} renamed)`}
+        </summary>
+        <div className="mt-1.5 space-y-1">
+          {columns.map((k) => {
+            const fallback =
+              identityLabel.get(k) ??
+              IDENTITY_COLUMNS.find((c) => c.key === k)?.label ??
+              metric(k)?.label ??
+              k;
+            return (
+              <div key={k} className="grid grid-cols-[1fr_1fr] items-center gap-1.5">
+                <span className="truncate text-[11px] text-muted-foreground">{fallback}</span>
+                <input
+                  value={labels[k] ?? ""}
+                  placeholder={fallback}
+                  onChange={(e) => {
+                    const rest = Object.fromEntries(
+                      Object.entries(labels).filter(([key]) => key !== k),
+                    );
+                    onLabelsChange(e.target.value ? { ...rest, [k]: e.target.value } : rest);
+                  }}
+                  className={cn(control, "h-7")}
+                />
+              </div>
+            );
+          })}
+        </div>
+      </details>
       <ColumnPickerDialog
         open={open}
         onOpenChange={setOpen}
@@ -1082,6 +1217,84 @@ function ColumnsField({
         availableKeys={availableKeys}
         extraColumns={{ label: "Report columns", columns: identity }}
       />
+    </Field>
+  );
+}
+
+/** Exact-name renames: "name in the report → name shown", with the client's names to pick from. */
+function RenameField({
+  label,
+  options,
+  value,
+  onChange,
+}: {
+  label: string;
+  options: string[];
+  value: Record<string, string>;
+  onChange: (v: Record<string, string>) => void;
+}) {
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const listId = useId();
+  const entries = Object.entries(value);
+  const without = (key: string) => Object.fromEntries(entries.filter(([k]) => k !== key));
+  return (
+    <Field label={`${label}${entries.length ? ` (${entries.length})` : ""}`}>
+      <div className="space-y-1.5">
+        {entries.map(([f, t]) => (
+          <div key={f} className="grid grid-cols-[1fr_1fr_auto] items-center gap-1.5">
+            <span className="truncate text-[11px] text-muted-foreground" title={f}>
+              {f}
+            </span>
+            <input
+              value={t}
+              onChange={(e) => onChange({ ...value, [f]: e.target.value })}
+              className={cn(control, "h-8")}
+            />
+            <button
+              onClick={() => onChange(without(f))}
+              className={cn(smallButton, "px-2")}
+              title="Remove rename"
+            >
+              <Trash2 className="size-3.5" />
+            </button>
+          </div>
+        ))}
+        <div className="grid grid-cols-[1fr_1fr_auto] gap-1.5">
+          <input
+            list={listId}
+            value={from}
+            placeholder="Name in the report"
+            onChange={(e) => setFrom(e.target.value)}
+            className={cn(control, "h-8")}
+          />
+          <input
+            value={to}
+            placeholder="Show as"
+            onChange={(e) => setTo(e.target.value)}
+            className={cn(control, "h-8")}
+          />
+          <button
+            disabled={!from.trim() || !to.trim()}
+            onClick={() => {
+              onChange({ ...value, [from.trim()]: to.trim() });
+              setFrom("");
+              setTo("");
+            }}
+            className={smallButton}
+          >
+            Add
+          </button>
+        </div>
+        <datalist id={listId}>
+          {options.map((o) => (
+            <option key={o} value={o} />
+          ))}
+        </datalist>
+        <p className="text-[11px] text-muted-foreground">
+          Matches the exact name and renames it in every row.
+        </p>
+      </div>
     </Field>
   );
 }
