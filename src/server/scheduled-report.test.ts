@@ -4,6 +4,7 @@ import type { TimeIncrement } from "@/lib/time-increment";
 import {
   annotateModeled,
   composeEntityReport,
+  projectColumns,
   reportCsv,
   type EntityMeta,
 } from "./scheduled-report";
@@ -26,6 +27,7 @@ const meta = (name: string, campaignId: string, accountId = "act_1"): EntityMeta
   accountName: `Account ${accountId}`,
   campaignId,
   campaignName: `Campaign ${campaignId}`,
+  adSetId: "set_1",
   adSetName: "Set",
 });
 
@@ -72,7 +74,9 @@ test("ad sets sharing a name stay separate rows, keyed by id, with their context
   expect(r.columns.map((c) => c.label)).toEqual([
     "Date",
     "Account",
+    "Account ID",
     "Campaign",
+    "Campaign ID",
     "Ad set",
     "Ad set ID",
     "Spend",
@@ -84,11 +88,11 @@ test("ad sets sharing a name stay separate rows, keyed by id, with their context
     "Registrations",
     "Purchases",
   ]);
-  expect(r.rows.map((row) => row.slice(0, 5))).toEqual([
-    [D2, "Account act_2", "Campaign c2", "Georgia - Static", "s2"],
-    [D2, "Account act_1", "Campaign c1", "Georgia - Static", "s1"],
+  expect(r.rows.map((row) => [row[0], row[3], row[5], row[6]])).toEqual([
+    [D2, "Campaign c2", "Georgia - Static", "s2"],
+    [D2, "Campaign c1", "Georgia - Static", "s1"],
   ]);
-  expect(r.totals?.slice(0, 6)).toEqual(["Total", "", "", "", "", 400]);
+  expect(r.totals?.slice(0, 8)).toEqual(["Total", "", "", "", "", "", "", 400]);
 });
 
 test("costs and rates derive from the row's sums; conversions count once per event", async () => {
@@ -143,16 +147,30 @@ test("the whitelist drops other campaigns and unplaced rows; Brand comes from th
     whitelist: new Set(["c_mine"]),
     brandOf: new Map([["c_mine", "Lucky Rebel"]]),
   });
-  expect(r.columns.slice(0, 6).map((c) => c.label)).toEqual([
+  expect(r.columns.slice(0, 9).map((c) => c.label)).toEqual([
     "Brand",
     "Account",
+    "Account ID",
     "Campaign",
+    "Campaign ID",
     "Ad set",
+    "Ad set ID",
     "Ad",
     "Ad ID",
   ]);
   expect(r.rows).toEqual([
-    ["Lucky Rebel", "Account act_1", "Campaign c_mine", "Set", "Ad one", "a1", 10],
+    [
+      "Lucky Rebel",
+      "Account act_1",
+      "act_1",
+      "Campaign c_mine",
+      "c_mine",
+      "Set",
+      "set_1",
+      "Ad one",
+      "a1",
+      10,
+    ],
   ]);
 });
 
@@ -173,7 +191,8 @@ test("daily rows run in date order, biggest spend first within a day", async () 
     whitelist: null,
     brandOf: null,
   });
-  expect(r.rows.map((row) => [row[0], row[3], row[4]])).toEqual([
+  // Date, Account, Account ID, Campaign, Campaign ID, Spend.
+  expect(r.rows.map((row) => [row[0], row[4], row[5]])).toEqual([
     [D1, "c1", 7],
     [D2, "c2", 50],
     [D2, "c1", 5],
@@ -190,15 +209,23 @@ test("the CSV quotes names with commas and starts with a UTF-8 BOM for Excel", a
     whitelist: null,
     brandOf: null,
   });
-  const lines = reportCsv(r).split("\n");
-  expect(lines[0]).toBe(
-    "\uFEFFDate,Account,Campaign,Ad set,Ad set ID,Spend,Impressions,Clicks,CPC",
-  );
-  expect(lines[1]).toBe(`${D2},Account act_1,Campaign c1,"US, ""Static""",s1,12.50,1000,20,0.63`);
-  expect(lines[2]).toBe("Total,,,,,12.50,1000,20,0.63");
+  const file = projectColumns(r, [
+    "dim:period",
+    "dim:campaign",
+    "dim:adset",
+    "dim:adset_id",
+    "spend",
+    "impressions",
+    "clicks",
+    "cpc",
+  ]);
+  const lines = reportCsv(file).split("\n");
+  expect(lines[0]).toBe("\uFEFFDate,Campaign,Ad set,Ad set ID,Spend,Impressions,Clicks,CPC");
+  expect(lines[1]).toBe(`${D2},Campaign c1,"US, ""Static""",s1,12.50,1000,20,0.63`);
+  expect(lines[2]).toBe("Total,,,,12.50,1000,20,0.63");
 });
 
-test("a modeled report says so: title, filename, note, and a Modeled flag on the modeled day", async () => {
+test("a modeled report says so in its title, file name and note — and adds no column", async () => {
   const r = await composeEntityReport({
     level: "campaign",
     subject: "OneAgency",
@@ -223,10 +250,23 @@ test("a modeled report says so: title, filename, note, and a Modeled flag on the
   expect(m.filename).toBe("oneagency_x_modeled");
   expect(m.note).toStartWith("MODELED ESTIMATE, not actual delivery. 1 interrupted day");
   expect(m.note).toContain(`${D2} (actual spend $0 vs $100 median of 1 active days)`);
-  expect(m.columns.slice(0, 2).map((c) => c.label)).toEqual(["Date", "Modeled"]);
-  expect(m.rows.map((row) => [row[0], row[1]])).toEqual([
-    [D1, ""],
-    [D2, "yes"],
-  ]);
-  expect(m.totals?.slice(0, 2)).toEqual(["Total", ""]);
+  expect(m.columns).toEqual(r.columns);
+});
+
+test("the file carries exactly the picked columns, in the picked order", async () => {
+  const r = await composeEntityReport({
+    level: "adset",
+    subject: "OneAgency",
+    spec: spec(["spend", "clicks"], "1", D2, ["act_1"]),
+    rows: [{ accountId: "act_1", entityId: "s1", row: insight(D2, 10) }],
+    meta: new Map([["s1", meta("Broad", "c1")]]),
+    whitelist: null,
+    brandOf: new Map([["c1", "Slots.lv"]]),
+  });
+  // Metric first, an identity column after it, Account ID picked, Ad ID not fillable at ad-set level.
+  const p = projectColumns(r, ["clicks", "dim:adset", "dim:account_id", "dim:ad_id", "spend"]);
+  expect(p.columns.map((c) => c.label)).toEqual(["Clicks", "Ad set", "Account ID", "Spend"]);
+  expect(p.rows).toEqual([[20, "Broad", "act_1", 10]]);
+  // "Total" goes in the first text column kept, wherever it is.
+  expect(p.totals).toEqual([20, "Total", "", 10]);
 });

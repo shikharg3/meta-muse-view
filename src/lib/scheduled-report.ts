@@ -17,7 +17,10 @@ export interface ReportRecipe {
   brands: string[];
   /** Campaign whitelist inside the brand/client scope. Empty = every campaign in scope. */
   campaignIds: string[];
-  /** Report-catalog keys, in column order. */
+  /**
+   * Column keys, in column order: report-catalog metrics, and `dim:` identity columns
+   * (IDENTITY_COLUMNS). Every column of the file is one of these; nothing is added implicitly.
+   */
   columns: string[];
   breakdown: string;
   timeIncrement: TimeIncrement;
@@ -32,17 +35,129 @@ export interface ReportRecipe {
   modeled: boolean;
 }
 
+/**
+ * Identity columns a report can carry besides metrics. `payloadKey` is the engine's column key.
+ * Which apply depends on the breakdown and granularity (`identityColumnsFor`); a selected one that
+ * does not apply is simply absent from the file.
+ */
+export const IDENTITY_COLUMNS: { key: string; label: string; payloadKey: string }[] = [
+  { key: "dim:period", label: "Date / period", payloadKey: "_period" },
+  { key: "dim:value", label: "Breakdown value", payloadKey: "_dim" },
+  { key: "dim:brand", label: "Brand", payloadKey: "_brand" },
+  { key: "dim:account", label: "Account", payloadKey: "_account" },
+  { key: "dim:account_id", label: "Account ID", payloadKey: "_account_id" },
+  { key: "dim:campaign", label: "Campaign", payloadKey: "_campaign" },
+  { key: "dim:campaign_id", label: "Campaign ID", payloadKey: "_campaign_id" },
+  { key: "dim:adset", label: "Ad set", payloadKey: "_adset" },
+  { key: "dim:adset_id", label: "Ad set ID", payloadKey: "_adset_id" },
+  { key: "dim:ad", label: "Ad", payloadKey: "_ad" },
+  { key: "dim:ad_id", label: "Ad ID", payloadKey: "_ad_id" },
+];
+
+export const isIdentityColumn = (key: string): boolean => key.startsWith("dim:");
+
+const ENTITY_IDENTITY: Record<string, string[]> = {
+  campaign: ["dim:brand", "dim:account", "dim:account_id", "dim:campaign", "dim:campaign_id"],
+  adset: [
+    "dim:brand",
+    "dim:account",
+    "dim:account_id",
+    "dim:campaign",
+    "dim:campaign_id",
+    "dim:adset",
+    "dim:adset_id",
+  ],
+  ad: [
+    "dim:brand",
+    "dim:account",
+    "dim:account_id",
+    "dim:campaign",
+    "dim:campaign_id",
+    "dim:adset",
+    "dim:adset_id",
+    "dim:ad",
+    "dim:ad_id",
+  ],
+};
+
+/** The identity columns a breakdown and granularity can fill. */
+export function identityColumnsFor(breakdown: string, timeIncrement: TimeIncrement): string[] {
+  const period = timeIncrement === "all_days" ? [] : ["dim:period"];
+  if (breakdown === "none") return period;
+  return [...period, ...(ENTITY_IDENTITY[breakdown] ?? ["dim:value"])];
+}
+
+/** The identity columns a breakdown starts with: what names a row, without the Account columns. */
+export function defaultIdentityColumns(
+  breakdown: string,
+  timeIncrement: TimeIncrement,
+  multiBrand: boolean,
+): string[] {
+  const period = timeIncrement === "all_days" ? [] : ["dim:period"];
+  const brand = multiBrand ? ["dim:brand"] : [];
+  switch (breakdown) {
+    case "none":
+      return period;
+    case "campaign":
+      return [...period, ...brand, "dim:campaign", "dim:campaign_id"];
+    case "adset":
+      return [...period, ...brand, "dim:campaign", "dim:adset", "dim:adset_id"];
+    case "ad":
+      return [...period, ...brand, "dim:campaign", "dim:adset", "dim:ad", "dim:ad_id"];
+    default:
+      return [...period, "dim:value"];
+  }
+}
+
 /** The original OneAgency ad-set report, and the builder's starting point. */
 export const DEFAULT_RECIPE: Omit<ReportRecipe, "clientId"> = {
   brands: [],
   campaignIds: [],
-  columns: ["spend", "impressions", "clicks", "cpc", "cpm", "ctr", "registrations", "purchases"],
+  columns: [
+    ...defaultIdentityColumns("adset", "1", true),
+    "spend",
+    "impressions",
+    "clicks",
+    "cpc",
+    "cpm",
+    "ctr",
+    "registrations",
+    "purchases",
+  ],
   breakdown: "adset",
   timeIncrement: "1",
   markup: null,
   range: { preset: "yesterday" },
   modeled: false,
 };
+
+/** Placeholders a schedule's file name may use; each is replaced by a YYYY-MM-DD date. */
+export const FILENAME_TOKENS = ["{since}", "{until}", "{today}"];
+
+/**
+ * The file name a report is sent under, without extension. A schedule's own name wins over the
+ * engine's default; tokens are filled, characters a file system rejects are dropped, and a modeled
+ * report always says "modeled" — the file name is where that is read from.
+ */
+export function reportFilename(
+  custom: string | null,
+  fallback: string,
+  ctx: { since: string; until: string; today: string; modeled: boolean },
+): string {
+  const filled = [
+    ...(custom ?? "")
+      .replace(/\{since\}/g, ctx.since)
+      .replace(/\{until\}/g, ctx.until)
+      .replace(/\{today\}/g, ctx.today)
+      .replace(/\.csv$/i, "")
+      .replace(/[\\/:*?"<>|]/g, ""),
+  ]
+    .filter((ch) => ch >= " ") // control characters
+    .join("")
+    .trim();
+  const name = filled || fallback;
+  return ctx.modeled && !/modeled/i.test(name) ? `${name}_modeled` : name;
+}
 
 export type Cadence = "daily" | "weekdays" | "weekly" | "monthly";
 

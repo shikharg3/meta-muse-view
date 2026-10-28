@@ -14,38 +14,41 @@ not ops, on purpose: ops are also served on `/api/v1`, which would put them on t
 
 ## The builder
 
-| Control       | Notes                                                                                                                                 |
-| ------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| Template      | Seeds the builder from a Report Builder template (`report_templates`).                                                                |
-| Client        | Any client on the Notion board.                                                                                                       |
-| Brands        | The client's board-row titles. None picked = the whole client.                                                                        |
-| Campaigns     | Campaigns in the client/brand scope, searchable, each labelled with its brand. None picked = all.                                     |
-| Date range    | The Report Builder's 19 presets, or custom dates (preview and "Send once" only).                                                      |
-| Columns       | The full report catalog via the Report Builder's column picker; order is column order. Metrics with no data in the window are dimmed. |
-| Breakdown     | All 24 Report Builder dimensions.                                                                                                     |
-| Granularity   | Whole range, daily, weekly, 4-weekly, monthly.                                                                                        |
-| Markup        | Inflates spend and cost metrics, as in the Report Builder.                                                                            |
-| Data modeling | Replaces interrupted days with an estimate of uninterrupted delivery — see [Modeled reports](#modeled-reports).                       |
+| Control       | Notes                                                                                                                                                                                                                                                                                                                                                                                                        |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Template      | This page's own saved recipes (`telegram_report_templates`), separate from the Report Builder's: load, save, update, save as new, delete. A template holds the whole recipe, not the delivery.                                                                                                                                                                                                               |
+| Client        | Any client on the Notion board.                                                                                                                                                                                                                                                                                                                                                                              |
+| Brands        | The client's board-row titles. None picked = the whole client.                                                                                                                                                                                                                                                                                                                                               |
+| Campaigns     | Campaigns in the client/brand scope, searchable, each labelled with its brand. None picked = all.                                                                                                                                                                                                                                                                                                            |
+| Date range    | The Report Builder's 19 presets, or custom dates (preview and "Send once" only).                                                                                                                                                                                                                                                                                                                             |
+| Columns       | Every column of the file, in order: report columns (Date, Brand, Account, Account ID, Campaign, Campaign ID, Ad set, Ad set ID, Ad, Ad ID, or the breakdown value such as Country — whichever the breakdown can fill) and the full metric catalog. Metrics with no data in the window are dimmed. Changing the breakdown resets the report columns to its defaults; changing granularity adds or drops Date. |
+| Breakdown     | All 24 Report Builder dimensions.                                                                                                                                                                                                                                                                                                                                                                            |
+| Granularity   | Whole range, daily, weekly, 4-weekly, monthly.                                                                                                                                                                                                                                                                                                                                                               |
+| Markup        | Inflates spend and cost metrics, as in the Report Builder.                                                                                                                                                                                                                                                                                                                                                   |
+| Data modeling | Replaces interrupted days with an estimate of uninterrupted delivery — see [Modeled reports](#modeled-reports).                                                                                                                                                                                                                                                                                              |
 
 The preview is the CSV: sortable columns, totals row, CSV and PDF downloads in the on-screen order.
 "Send once now" sends the current builder to the chosen chat without saving it.
 
-Delivery: schedule name, Telegram chat (chats that messaged the bot, or any id), repeat (every day,
-weekdays, weekly on a weekday, monthly on day 1–28) and Berlin time. Choosing a repeat offers its
-natural range (daily → Yesterday, weekly → Last week, monthly → Last month). A schedule must use a
-relative range: it is resolved against the Berlin date of each send.
+Delivery: schedule name, file name, Telegram chat (chats that messaged the bot, or any id), repeat
+(every day, weekdays, weekly on a weekday, monthly on day 1–28) and Berlin time. Choosing a repeat
+offers its natural range (daily → Yesterday, weekly → Last week, monthly → Last month). A schedule
+must use a relative range: it is resolved against the Berlin date of each send.
+
+File name (`reportFilename`): `.csv` is added; `{since}`, `{until}` and `{today}` become dates;
+characters a file system rejects are dropped. Blank = generated from client, range and breakdown. A
+modeled report gets `_modeled` appended unless its name already says "modeled".
 
 ## What the CSV contains
 
 Metrics resolve through the report engine (`buildReport`), so figures match the Report Builder. Two
 differences, both because the result is a file worked with in a spreadsheet:
 
-- **Campaign, ad set and ad breakdowns are keyed by ID, not name**, with Account / Campaign /
-  Ad set context columns and the ID. The Report Builder groups these by name, which folds
-  OneAgency's 31 ad sets called "Georgia - Static" into one row. Rows run in date order, biggest
-  spend first.
-- **A client with several brands gets a Brand column** on those breakdowns, unless one brand is
-  picked.
+- **Campaign, ad set and ad breakdowns are keyed by ID, not name.** The Report Builder groups these
+  by name, which folds OneAgency's 31 ad sets called "Georgia - Static" into one row. Rows run in
+  date order, biggest spend first.
+- **The file has exactly the picked columns.** Nothing is added implicitly; the defaults for an ad
+  set breakdown are Date, Brand (for a client with several brands), Campaign, Ad set, Ad set ID.
 
 UTF-8 with a BOM so Excel reads non-ASCII names. Up to 20,000 rows (`FILE_MAX_ROWS`); a cut is stated
 in the report's note. A window with no delivery sends a one-line message instead of an empty file.
@@ -87,9 +90,9 @@ bot must be in the group; saving and "Send once" check this with `getChat`.
 
 For estimating how a campaign would have performed had delivery not been interrupted. Actual
 figures reach clients through DOT Analytics; a modeled report is an estimate and is labelled as
-one: "(modeled)" in the title and file name, a note — also in the Telegram caption — listing every
-modeled day with its actual spend and the median it was judged against, and on daily rows a
-Modeled column (`yes` on modeled days).
+one: "modeled" in the title and file name (kept even in a custom file name), and a note — also in
+the Telegram caption — listing every modeled day with its actual spend and the median it was judged
+against.
 
 Rules (`src/server/modeling.ts`, defaults in `MODELING_DEFAULTS`):
 
@@ -110,6 +113,7 @@ Rules (`src/server/modeling.ts`, defaults in `MODELING_DEFAULTS`):
 
 ## Schema
 
-`telegram_report_schedules`, one row per schedule, holding the recipe and the delivery. DDL, applied
-by hand in order: `deploy/ddl/2026-10-28-adset-reports.sql`,
-`deploy/ddl/2026-10-28-scheduled-reports.sql`, `deploy/ddl/2026-10-28-report-modeling.sql`.
+`telegram_report_schedules`, one row per schedule, holding the recipe, the delivery and the file
+name; `telegram_report_templates`, this page's saved recipes. DDL, applied by hand in order:
+`deploy/ddl/2026-10-28-adset-reports.sql`, `deploy/ddl/2026-10-28-scheduled-reports.sql`,
+`deploy/ddl/2026-10-28-report-modeling.sql`, `deploy/ddl/2026-10-28-report-templates.sql`.

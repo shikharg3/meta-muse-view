@@ -924,6 +924,8 @@ export const telegramReportSchedules = pgTable("telegram_report_schedules", {
   rangePreset: text("range_preset").notNull().default("yesterday"), // a DATE_PRESETS key
   markup: doublePrecision("markup"),
   modeled: boolean("modeled").notNull().default(false), // interrupted days replaced by an estimate
+  // The sent file's name without extension; {since}, {until}, {today} are filled. Null = generated.
+  filename: text("filename"),
   chatId: text("chat_id").notNull(), // Telegram ids exceed 32-bit, hence text
   cadence: text("cadence").notNull().default("daily"), // daily | weekdays | weekly | monthly
   weekday: integer("weekday"), // 1 = Monday, for weekly
@@ -935,6 +937,22 @@ export const telegramReportSchedules = pgTable("telegram_report_schedules", {
   sentAt: timestamp("sent_at", { withTimezone: true }),
   attempts: integer("attempts").notNull().default(0),
   lastError: text("last_error"),
+  createdBy: text("created_by"),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * Saved recipes of the scheduled-reports page, independent of the Report Builder's
+ * `report_templates`: this module's recipes carry brands, identity columns and modeling, which that
+ * table cannot hold, and editing one must never change the other. `recipe` is a `ReportRecipe`,
+ * validated on save (`src/server/fns/scheduled-reports.ts`).
+ * DDL: deploy/ddl/2026-10-28-report-templates.sql.
+ */
+export const telegramReportTemplates = pgTable("telegram_report_templates", {
+  id: text("id").primaryKey(), // crypto.randomUUID()
+  name: text("name").notNull(),
+  recipe: jsonb("recipe").notNull(),
   createdBy: text("created_by"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

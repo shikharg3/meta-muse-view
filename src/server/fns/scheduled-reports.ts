@@ -8,8 +8,8 @@ import { DATE_PRESETS } from "@/lib/date-presets";
 import { env } from "@/lib/env";
 import { isImportHost } from "@/lib/import-host";
 import { metric } from "@/lib/report-catalog";
-import { CHAT_ID_PATTERN, type ReportRecipe } from "@/lib/scheduled-report";
-import { isTimeIncrement, resolveTimeIncrement, type TimeIncrement } from "@/lib/time-increment";
+import { CHAT_ID_PATTERN, IDENTITY_COLUMNS, type ReportRecipe } from "@/lib/scheduled-report";
+import { isTimeIncrement, resolveTimeIncrement } from "@/lib/time-increment";
 import { REPORT_DIMS, type ReportPayload } from "@/server/agent/report";
 import { loadClientScope } from "@/server/report-scope";
 import { buildRecipeReport, FILE_MAX_ROWS } from "@/server/scheduled-report";
@@ -42,18 +42,15 @@ export interface ScheduleView {
   sentAt: string | null;
   attempts: number;
   lastError: string | null;
+  /** The schedule's own file name, or null for the generated one. */
+  filename: string | null;
 }
 
+/** One of this page's saved recipes — separate from the Report Builder's templates. */
 export interface TemplateOption {
   id: string;
   name: string;
-  clientId: string | null;
-  columns: string[];
-  breakdown: string;
-  timeIncrement: TimeIncrement;
-  markup: number | null;
-  rangePreset: string | null;
-  campaignIds: string[];
+  recipe: ReportRecipe;
 }
 
 export interface ScheduledReportsPageData {
@@ -101,7 +98,10 @@ export async function fetchScheduledReportsPage(): Promise<ScheduledReportsPageD
       .where(isNull(schema.clients.removedAt))
       .orderBy(asc(schema.clients.name)),
     db.select().from(schema.telegramChats).orderBy(desc(schema.telegramChats.lastSeenAt)),
-    db.select().from(schema.reportTemplates).orderBy(asc(schema.reportTemplates.name)),
+    db
+      .select()
+      .from(schema.telegramReportTemplates)
+      .orderBy(asc(schema.telegramReportTemplates.name)),
     telegram(),
   ]);
   const chatOptions = chats.map((c) => ({
@@ -117,6 +117,7 @@ export async function fetchScheduledReportsPage(): Promise<ScheduledReportsPageD
       name: r.name,
       clientName,
       recipe: scheduleRecipe(r),
+      filename: r.filename,
       chatId: r.chatId,
       chatLabel: labelOf.get(r.chatId) ?? r.chatId,
       cadence: r.cadence,
@@ -132,17 +133,19 @@ export async function fetchScheduledReportsPage(): Promise<ScheduledReportsPageD
     })),
     clients: clients.map((c) => ({ ...c, accountCount: Number(c.accountCount) })),
     chats: chatOptions,
-    templates: templates.map((t) => ({
-      id: t.id,
-      name: t.name,
-      clientId: t.clientId,
-      columns: strings(t.columns),
-      breakdown: t.breakdown,
-      timeIncrement: resolveTimeIncrement(t.timeIncrement),
-      markup: t.markup,
-      rangePreset: t.rangePreset,
-      campaignIds: strings(t.campaignIds),
-    })),
+    templates: templates.flatMap((t) => {
+      // A template saved under an older recipe shape is skipped rather than loaded half-broken.
+      const r = recipeSchema.safeParse(t.recipe);
+      return r.success
+        ? [
+            {
+              id: t.id,
+              name: t.name,
+              recipe: { ...r.data, timeIncrement: resolveTimeIncrement(r.data.timeIncrement) },
+            },
+          ]
+        : [];
+    }),
     today: today(),
     botConfigured: tg !== null,
   };
@@ -178,9 +181,16 @@ const recipeSchema = z.object({
   brands: z.array(z.string().max(300)).max(100),
   campaignIds: z.array(z.string().max(40)).max(2000),
   columns: z
-    .array(z.string().refine((k) => metric(k) !== undefined, "Unknown column."))
-    .min(1, "Pick at least one column.")
-    .max(150),
+    .array(
+      z
+        .string()
+        .refine(
+          (k) => metric(k) !== undefined || IDENTITY_COLUMNS.some((c) => c.key === k),
+          "Unknown column.",
+        ),
+    )
+    .max(150)
+    .refine((ks) => ks.some((k) => metric(k) !== undefined), "Pick at least one metric column."),
   breakdown: z.string().refine((b) => b === "none" || b in REPORT_DIMS, "Unknown breakdown."),
   timeIncrement: z.string().refine(isTimeIncrement, "Unknown granularity."),
   markup: z.number().min(0).max(5).nullable(),
@@ -198,10 +208,21 @@ const parseRecipe = (v: unknown): ReportRecipe => {
   return { ...r, timeIncrement: resolveTimeIncrement(r.timeIncrement) };
 };
 
+/** A file name as typed: blank = generated. Tokens and sanitising are `reportFilename`'s. */
+const filenameInput = z
+  .string()
+  .trim()
+  .max(200)
+  .nullish()
+  .transform((s) => s || null);
+
+const previewInput = z.object({ recipe: z.unknown(), filename: filenameInput });
+
 /** Run the builder's recipe as of today (Berlin), for the preview and the CSV/PDF downloads. */
 export async function previewRecipe(input: unknown): Promise<ReportPayload> {
   await guard();
-  const r = await buildRecipeReport(parseRecipe(input), today(), FILE_MAX_ROWS);
+  const v = previewInput.parse(input);
+  const r = await buildRecipeReport(parseRecipe(v.recipe), today(), FILE_MAX_ROWS, v.filename);
   if ("error" in r) throw new Error(r.error);
   return r;
 }
@@ -223,6 +244,7 @@ const saveInput = z
     hour: z.number().int().min(0).max(23),
     minute: z.number().int().min(0).max(59),
     active: z.boolean(),
+    filename: filenameInput,
   })
   .refine((v) => v.cadence !== "weekly" || v.weekday !== null, "Pick the weekday.")
   .refine((v) => v.cadence !== "monthly" || v.monthDay !== null, "Pick the day of the month.");
@@ -262,6 +284,7 @@ export async function saveScheduledReport(input: unknown): Promise<{ id: string 
     rangePreset: recipe.range.preset,
     markup: recipe.markup,
     modeled: recipe.modeled,
+    filename: v.filename,
     chatId: v.chatId,
     cadence: v.cadence,
     weekday: v.cadence === "weekly" ? v.weekday : null,
@@ -326,7 +349,7 @@ export async function sendScheduledReportNow(input: unknown): Promise<{ rows: nu
   const t = schema.telegramReportSchedules;
   const [s] = await db.select().from(t).where(eq(t.id, id));
   if (!s) throw new Error("That schedule no longer exists.");
-  const r = await deliverReport(s.name, scheduleRecipe(s), s.chatId, today());
+  const r = await deliverReport(s.name, scheduleRecipe(s), s.chatId, today(), s.filename);
   if (!r.ok) throw new Error(r.error);
   await audit("telegram_report.send", `"${s.name}" → chat ${s.chatId} [${id}]`);
   return { rows: r.rows };
@@ -336,6 +359,7 @@ const draftInput = z.object({
   name: z.string().trim().min(1).max(120),
   recipe: z.unknown(),
   chatId,
+  filename: filenameInput,
 });
 
 /** Send the builder's current recipe once, without saving it — custom dates allowed. */
@@ -344,11 +368,48 @@ export async function sendDraftReport(input: unknown): Promise<{ rows: number }>
   const v = draftInput.parse(input);
   const recipe = parseRecipe(v.recipe);
   await checkChat(v.chatId);
-  const r = await deliverReport(v.name, recipe, v.chatId, today());
+  const r = await deliverReport(v.name, recipe, v.chatId, today(), v.filename);
   if (!r.ok) throw new Error(r.error);
   await audit(
     "telegram_report.send",
     `"${v.name}" (unsaved) ${recipe.clientId} → chat ${v.chatId}`,
   );
   return { rows: r.rows };
+}
+
+const templateInput = z.object({
+  id: z.string().uuid().nullish(),
+  name: z.string().trim().min(1, "Name the template.").max(120),
+  recipe: z.unknown(),
+});
+
+/** Create or update one of this page's own templates (never the Report Builder's). */
+export async function saveReportTemplate(input: unknown): Promise<{ id: string }> {
+  const me = await guard();
+  const v = templateInput.parse(input);
+  const recipe = parseRecipe(v.recipe);
+  const t = schema.telegramReportTemplates;
+  let id = v.id ?? null;
+  if (id) {
+    const updated = await db
+      .update(t)
+      .set({ name: v.name, recipe, updatedAt: new Date() })
+      .where(eq(t.id, id))
+      .returning({ id: t.id });
+    if (updated.length === 0) throw new Error("That template no longer exists.");
+  } else {
+    id = randomUUID();
+    await db.insert(t).values({ id, name: v.name, recipe, createdBy: me.email });
+  }
+  await audit("telegram_report.template_save", `"${v.name}" [${id}]`);
+  return { id };
+}
+
+export async function deleteReportTemplate(input: unknown): Promise<{ ok: true }> {
+  await guard();
+  const { id } = idInput.parse(input);
+  const t = schema.telegramReportTemplates;
+  const [gone] = await db.delete(t).where(eq(t.id, id)).returning({ name: t.name });
+  if (gone) await audit("telegram_report.template_delete", `"${gone.name}" [${id}]`);
+  return { ok: true };
 }

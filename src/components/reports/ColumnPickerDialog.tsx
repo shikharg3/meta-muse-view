@@ -24,6 +24,11 @@ interface ColumnPickerDialogProps {
   onChange: (keys: string[]) => void;
   /** Keys with data for this client and range. `null` = unknown; show everything, no count. */
   availableKeys: string[] | null;
+  /**
+   * Non-metric columns the caller's report can carry (e.g. Date, Campaign, Ad set ID), shown as the
+   * first group. Their keys share `selected` with metrics, so they are ordered the same way.
+   */
+  extraColumns?: { label: string; columns: { key: string; label: string }[] };
 }
 
 /** The catalog partitioned in GROUP_LABELS order. Static, so it is built once at module load. */
@@ -41,6 +46,7 @@ export function ColumnPickerDialog({
   selected,
   onChange,
   availableKeys,
+  extraColumns,
 }: ColumnPickerDialogProps) {
   const [query, setQuery] = useState("");
   const [showAll, setShowAll] = useState(false);
@@ -66,18 +72,27 @@ export function ColumnPickerDialog({
   // have data and offers `Show all` as the escape hatch.
   const groups = useMemo(() => {
     const gate = availableSet && !showAll ? availableSet : null;
-    return GROUPS.map((g) => ({
-      group: g.group,
-      label: g.label,
-      shown: g.metrics.filter(
-        (m) =>
-          (gate === null || gate.has(m.key)) &&
-          (needle === "" ||
-            m.label.toLowerCase().includes(needle) ||
-            m.key.toLowerCase().includes(needle)),
-      ),
-    })).filter((g) => g.shown.length > 0);
-  }, [availableSet, showAll, needle]);
+    const matches = (m: { key: string; label: string }) =>
+      needle === "" ||
+      m.label.toLowerCase().includes(needle) ||
+      m.key.toLowerCase().includes(needle);
+    // Non-metric columns lead and are never gated: they always have a value.
+    const extra = extraColumns
+      ? [{ group: "extra", label: extraColumns.label, shown: extraColumns.columns.filter(matches) }]
+      : [];
+    return [
+      ...extra,
+      ...GROUPS.map((g) => ({
+        group: g.group as string,
+        label: g.label,
+        shown: g.metrics.filter((m) => (gate === null || gate.has(m.key)) && matches(m)),
+      })),
+    ].filter((g) => g.shown.length > 0);
+  }, [availableSet, showAll, needle, extraColumns]);
+  const extraLabel = useMemo(
+    () => new Map((extraColumns?.columns ?? []).map((c) => [c.key, c.label])),
+    [extraColumns],
+  );
 
   /** Select appends, deselect splices out. Never re-sorts — user order is the deliverable. */
   const toggle = (key: string) => {
@@ -258,7 +273,9 @@ export function ColumnPickerDialog({
                     {/* A saved template can name a key the catalog has since dropped, and an
                         unavailable one is filtered out of the left pane — either way this row is
                         the only handle on it, so fall back to the raw key rather than blank. */}
-                    <span className="flex-1 truncate text-xs">{metric(key)?.label ?? key}</span>
+                    <span className="flex-1 truncate text-xs">
+                      {extraLabel.get(key) ?? metric(key)?.label ?? key}
+                    </span>
                     <IconButton label="Move up" disabled={i === 0} onClick={() => move(i, -1)}>
                       <ChevronUp className="size-3.5" />
                     </IconButton>

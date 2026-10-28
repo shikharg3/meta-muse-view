@@ -1,6 +1,11 @@
 import { expect, test } from "bun:test";
 import { MAX_ATTEMPTS } from "./daily-report";
-import { isScheduleDue, type ScheduleState } from "./scheduled-report";
+import {
+  defaultIdentityColumns,
+  isScheduleDue,
+  reportFilename,
+  type ScheduleState,
+} from "./scheduled-report";
 
 // 2026-10-28 is a Wednesday; 2026-11-01 a Sunday.
 const at = (date: string, hour: number, minute = 0) => ({ date, hour, minute });
@@ -54,4 +59,36 @@ test("cadences pick their days: weekdays skip weekends, weekly its weekday, mont
 
 test("a paused schedule is never due", () => {
   expect(isScheduleDue(schedule({ active: false }), at(WED, 12))).toBe(false);
+});
+
+const ctx = { since: "2026-10-27", until: "2026-10-27", today: "2026-10-28", modeled: false };
+
+test("a schedule's file name fills its date tokens and drops characters a file system rejects", () => {
+  expect(reportFilename("OneAgency {since}..{until} / sent {today}.csv", "gen", ctx)).toBe(
+    "OneAgency 2026-10-27..2026-10-27  sent 2026-10-28",
+  );
+  expect(reportFilename("  ", "oneagency_2026-10-27_by_adset", ctx)).toBe(
+    "oneagency_2026-10-27_by_adset",
+  );
+  expect(reportFilename(null, "gen", ctx)).toBe("gen");
+});
+
+test("a modeled report's file name always says modeled, but never twice", () => {
+  const modeled = { ...ctx, modeled: true };
+  expect(reportFilename("OneAgency daily", "gen", modeled)).toBe("OneAgency daily_modeled");
+  expect(reportFilename("OneAgency MODELED estimate", "gen", modeled)).toBe(
+    "OneAgency MODELED estimate",
+  );
+  expect(reportFilename(null, "gen_modeled", modeled)).toBe("gen_modeled");
+});
+
+test("default report columns name the row without the Account columns", () => {
+  expect(defaultIdentityColumns("adset", "1", true)).toEqual([
+    "dim:period",
+    "dim:brand",
+    "dim:campaign",
+    "dim:adset",
+    "dim:adset_id",
+  ]);
+  expect(defaultIdentityColumns("country", "all_days", true)).toEqual(["dim:value"]);
 });

@@ -1,10 +1,12 @@
 import { createServerFn } from "@tanstack/react-start";
 import type { ReportRecipe } from "@/lib/scheduled-report";
 import {
+  deleteReportTemplate as deleteTemplateImpl,
   deleteScheduledReport as deleteImpl,
   fetchReportScope,
   fetchScheduledReportsPage,
   previewRecipe,
+  saveReportTemplate as saveTemplateImpl,
   saveScheduledReport as saveImpl,
   sendDraftReport as sendDraftImpl,
   sendScheduledReportNow as sendNowImpl,
@@ -21,7 +23,7 @@ export const getReportScope = createServerFn({ method: "POST" })
   .handler(({ data }) => fetchReportScope(data));
 
 export const previewReportRecipe = createServerFn({ method: "POST" })
-  .inputValidator((d: ReportRecipe) => d)
+  .inputValidator((d: { recipe: ReportRecipe; filename: string | null }) => d)
   .handler(({ data }) => previewRecipe(data));
 
 export interface ScheduleInput {
@@ -35,6 +37,7 @@ export interface ScheduleInput {
   hour: number;
   minute: number;
   active: boolean;
+  filename: string | null;
 }
 
 export const saveScheduledReport = createServerFn({ method: "POST" })
@@ -54,5 +57,15 @@ export const sendScheduledReportNow = createServerFn({ method: "POST" })
   .handler(({ data }) => sendNowImpl(data));
 
 export const sendDraftReport = createServerFn({ method: "POST" })
-  .inputValidator((d: { name: string; recipe: ReportRecipe; chatId: string }) => d)
+  .inputValidator(
+    (d: { name: string; recipe: ReportRecipe; chatId: string; filename: string | null }) => d,
+  )
   .handler(({ data }) => sendDraftImpl(data));
+
+export const saveReportTemplate = createServerFn({ method: "POST" })
+  .inputValidator((d: { id: string | null; name: string; recipe: ReportRecipe }) => d)
+  .handler(({ data }) => saveTemplateImpl(data));
+
+export const deleteReportTemplate = createServerFn({ method: "POST" })
+  .inputValidator((d: { id: string }) => d)
+  .handler(({ data }) => deleteTemplateImpl(data));

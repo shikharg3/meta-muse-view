@@ -35,10 +35,12 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { getReportCatalog } from "@/lib/api/report-catalog";
 import {
+  deleteReportTemplate,
   deleteScheduledReport,
   getReportScope,
   getScheduledReportsPage,
   previewReportRecipe,
+  saveReportTemplate,
   saveScheduledReport,
   sendDraftReport,
   sendScheduledReportNow,
@@ -55,6 +57,11 @@ import {
   cadenceLabel,
   DEFAULT_RECIPE,
   DEFAULT_SEND_AT,
+  defaultIdentityColumns,
+  FILENAME_TOKENS,
+  IDENTITY_COLUMNS,
+  identityColumnsFor,
+  isIdentityColumn,
   WEEKDAYS,
   type Cadence,
   type ReportRecipe,
@@ -109,6 +116,8 @@ interface Delivery {
   monthDay: number;
   time: string;
   active: boolean;
+  /** Blank = the generated name. */
+  filename: string;
 }
 
 type Msg = { tone: "ok" | "bad"; text: string } | null;
@@ -130,6 +139,7 @@ function ScheduledReportsPage() {
     monthDay: 1,
     time: hhmm(DEFAULT_SEND_AT.hour, DEFAULT_SEND_AT.minute),
     active: true,
+    filename: "",
   };
 
   const [recipe, setRecipe] = useState<ReportRecipe>(blankRecipe);
@@ -141,6 +151,11 @@ function ScheduledReportsPage() {
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [msg, setMsg] = useState<Msg>(null);
+  /** The template the builder was loaded from (or last saved as); its name is editable. */
+  const [template, setTemplate] = useState<{ id: string | null; name: string }>({
+    id: null,
+    name: "",
+  });
   const patch = (p: Partial<ReportRecipe>) => setRecipe((r) => ({ ...r, ...p }));
   const clientName = data.clients.find((c) => c.id === recipe.clientId)?.name ?? "";
 
@@ -198,7 +213,9 @@ function ScheduledReportsPage() {
     setPreviewing(true);
     setPreviewError(null);
     try {
-      setReport(await previewReportRecipe({ data: recipe }));
+      setReport(
+        await previewReportRecipe({ data: { recipe, filename: delivery.filename.trim() || null } }),
+      );
     } catch (e) {
       setReport(null);
       setPreviewError(errorText(e));
@@ -226,6 +243,7 @@ function ScheduledReportsPage() {
       hour,
       minute,
       active: delivery.active,
+      filename: delivery.filename.trim() || null,
     };
   };
 
@@ -240,7 +258,12 @@ function ScheduledReportsPage() {
     run("draft", async () => {
       const input = scheduleInput();
       const r = await sendDraftReport({
-        data: { name: input.name, recipe: input.recipe, chatId: input.chatId },
+        data: {
+          name: input.name,
+          recipe: input.recipe,
+          chatId: input.chatId,
+          filename: input.filename,
+        },
       });
       return `Sent once to Telegram (${r.rows} rows).`;
     });
@@ -256,6 +279,7 @@ function ScheduledReportsPage() {
       monthDay: s.monthDay ?? 1,
       time: hhmm(s.hour, s.minute),
       active: s.active,
+      filename: s.filename ?? "",
     });
     setReport(null);
     setMsg(null);
@@ -268,6 +292,7 @@ function ScheduledReportsPage() {
   const startNew = () => {
     setRecipe(blankRecipe);
     setDelivery(blankDelivery);
+    setTemplate({ id: null, name: "" });
     setReport(null);
     setMsg(null);
   };
@@ -275,18 +300,60 @@ function ScheduledReportsPage() {
   const loadTemplate = (id: string) => {
     const t = data.templates.find((x) => x.id === id);
     if (!t) return;
-    setRecipe((r) => ({
-      ...r,
-      clientId: t.clientId ?? r.clientId,
-      campaignIds: t.clientId ? t.campaignIds : [],
-      brands: t.clientId && t.clientId !== r.clientId ? [] : r.brands,
-      columns: t.columns.length ? t.columns : r.columns,
-      breakdown: t.breakdown,
-      timeIncrement: t.timeIncrement,
-      markup: t.markup,
-      range: t.rangePreset ? { preset: t.rangePreset } : r.range,
-    }));
+    setRecipe(t.recipe);
+    setTemplate({ id: t.id, name: t.name });
+    setReport(null);
   };
+
+  const saveTemplate = (asNew: boolean) =>
+    run("template", async () => {
+      const name = template.name.trim();
+      const { id } = await saveReportTemplate({
+        data: { id: asNew ? null : template.id, name, recipe },
+      });
+      setTemplate({ id, name });
+      return asNew || !template.id ? `Template "${name}" saved.` : `Template "${name}" updated.`;
+    });
+
+  const removeTemplate = () => {
+    if (!template.id || !window.confirm(`Delete the template "${template.name}"?`)) return;
+    void run("template", async () => {
+      await deleteReportTemplate({ data: { id: template.id! } });
+      setTemplate({ id: null, name: "" });
+      return "Template deleted.";
+    });
+  };
+
+  const multiBrand = !!scope && scope.brands.length > 1 && recipe.brands.length !== 1;
+  /** A new breakdown gets its own identity columns; the metrics are kept as ordered. */
+  const setBreakdown = (breakdown: string) =>
+    patch({
+      breakdown,
+      columns: [
+        ...defaultIdentityColumns(breakdown, recipe.timeIncrement, multiBrand),
+        ...recipe.columns.filter((k) => !isIdentityColumn(k)),
+      ],
+    });
+  /** A time axis brings its Date column; dropping the axis drops it. */
+  const setGranularity = (timeIncrement: TimeIncrement) => {
+    const rest = recipe.columns.filter((k) => k !== "dim:period");
+    patch({
+      timeIncrement,
+      columns:
+        timeIncrement === "all_days"
+          ? rest
+          : ["dim:period", ...rest.filter((k) => k !== "dim:period")],
+    });
+  };
+  const identityOptions = identityColumnsFor(recipe.breakdown, recipe.timeIncrement).map((key) => ({
+    key,
+    label:
+      key === "dim:value"
+        ? breakdownLabel(recipe.breakdown)
+            .replace(/^By /, "")
+            .replace(/^./, (c) => c.toUpperCase())
+        : (IDENTITY_COLUMNS.find((c) => c.key === key)?.label ?? key),
+  }));
 
   return (
     <div className="min-h-screen bg-background">
@@ -351,18 +418,66 @@ function ScheduledReportsPage() {
               )}
             </div>
 
-            {data.templates.length > 0 && (
-              <Field label="Start from a saved template">
-                <select value="" onChange={(e) => loadTemplate(e.target.value)} className={control}>
-                  <option value="">Choose a template…</option>
-                  {data.templates.map((t) => (
-                    <option key={t.id} value={t.id}>
-                      {t.name}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-            )}
+            <Field label="Template">
+              <select
+                value={template.id ?? ""}
+                onChange={(e) =>
+                  e.target.value
+                    ? loadTemplate(e.target.value)
+                    : setTemplate({ id: null, name: "" })
+                }
+                className={control}
+              >
+                <option value="">
+                  {data.templates.length ? "Load a saved template…" : "No templates saved yet"}
+                </option>
+                {data.templates.map((t) => (
+                  <option key={t.id} value={t.id}>
+                    {t.name}
+                  </option>
+                ))}
+              </select>
+              <div className="mt-1.5 flex gap-1.5">
+                <input
+                  value={template.name}
+                  placeholder="Template name"
+                  onChange={(e) => setTemplate({ ...template, name: e.target.value })}
+                  className={cn(control, "h-8")}
+                />
+                <button
+                  onClick={() => void saveTemplate(false)}
+                  disabled={busy !== null || !template.name.trim()}
+                  className={smallButton}
+                  title={
+                    template.id ? "Overwrite the loaded template" : "Save the builder as a template"
+                  }
+                >
+                  {template.id ? "Update" : "Save"}
+                </button>
+                {template.id && (
+                  <>
+                    <button
+                      onClick={() => void saveTemplate(true)}
+                      disabled={busy !== null || !template.name.trim()}
+                      className={smallButton}
+                    >
+                      Save as new
+                    </button>
+                    <button
+                      onClick={removeTemplate}
+                      disabled={busy !== null}
+                      className={cn(smallButton, "text-destructive hover:bg-destructive/10")}
+                      title="Delete template"
+                    >
+                      <Trash2 className="size-3.5" />
+                    </button>
+                  </>
+                )}
+              </div>
+              <p className="mt-1 text-[11px] text-muted-foreground">
+                Templates here are this page&apos;s own — separate from the Report Builder&apos;s.
+              </p>
+            </Field>
 
             <Field label="Client">
               <ClientPicker
@@ -428,37 +543,34 @@ function ScheduledReportsPage() {
               <RangePicker value={recipe.range} onChange={(range) => patch({ range })} />
             </Field>
 
-            <ColumnsField
-              columns={recipe.columns}
-              availableKeys={availableKeys}
-              onChange={(columns) => patch({ columns })}
-            />
-
             <Field label="Breakdown">
-              <BreakdownPicker
-                breakdown={recipe.breakdown}
-                onBreakdownChange={(breakdown) => patch({ breakdown })}
-              />
+              <BreakdownPicker breakdown={recipe.breakdown} onBreakdownChange={setBreakdown} />
               {["campaign", "adset", "ad"].includes(recipe.breakdown) && (
                 <p className="mt-1 text-[11px] text-muted-foreground">
                   One row per {breakdownLabel(recipe.breakdown).replace(/^By /, "").toLowerCase()}{" "}
-                  ID, with account and campaign columns
-                  {scope && scope.brands.length > 1 && recipe.brands.length !== 1
-                    ? " and a Brand column"
-                    : ""}
-                  .
+                  ID. Changing the breakdown resets the report columns (Date, Campaign, …) to its
+                  defaults; add Account, IDs or Brand under Columns.
                 </p>
               )}
             </Field>
 
+            <ColumnsField
+              columns={recipe.columns}
+              availableKeys={availableKeys}
+              identity={identityOptions}
+              onChange={(columns) => patch({ columns })}
+            />
+
             <Field label="Granularity">
               <TimeIncrementPicker
                 value={recipe.timeIncrement}
-                onChange={(timeIncrement: TimeIncrement) => patch({ timeIncrement })}
+                onChange={setGranularity}
                 withheld={
                   recipe.timeIncrement === "1"
                     ? []
-                    : recipe.columns.filter((k) => !isAdditive(k)).map((k) => metric(k)?.label ?? k)
+                    : recipe.columns
+                        .filter((k) => metric(k) !== undefined && !isAdditive(k))
+                        .map((k) => metric(k)?.label ?? k)
                 }
               />
             </Field>
@@ -494,9 +606,9 @@ function ScheduledReportsPage() {
               <p className="mt-1 text-[11px] text-muted-foreground">
                 A day with no spend, or under 25% of the median of its active days within ±5 days
                 (the previous 7 when nothing later has data, e.g. yesterday), is replaced by the
-                mean of those days, ±15% per metric. The report is titled “(modeled)”, the note and
-                Telegram caption list every modeled day, and daily rows carry a Modeled column. For
-                estimates only — actual figures go out without this.
+                mean of those days, ±15% per metric. The file name and title say “modeled”, and the
+                note and Telegram caption list every modeled day. For estimates only — actual
+                figures go out without this.
               </p>
             </Field>
 
@@ -519,6 +631,20 @@ function ScheduledReportsPage() {
                   onChange={(e) => setDelivery({ ...delivery, name: e.target.value })}
                   className={control}
                 />
+              </Field>
+              <Field label="File name">
+                <input
+                  value={delivery.filename}
+                  placeholder={report?.filename ?? "generated from client, range and breakdown"}
+                  onChange={(e) => setDelivery({ ...delivery, filename: e.target.value })}
+                  className={cn(control, "font-mono")}
+                />
+                <p className="mt-1 text-[11px] text-muted-foreground">
+                  .csv is added. {FILENAME_TOKENS.join(", ")} become dates, e.g.{" "}
+                  <span className="font-mono">OneAgency_adsets_{"{since}"}</span>. Blank =
+                  generated.
+                  {recipe.modeled && " A modeled report gets “_modeled” unless the name says it."}
+                </p>
               </Field>
               <Field label="Telegram chat">
                 <select
@@ -733,6 +859,7 @@ function Schedules({
                         modeled
                       </span>
                     )}
+                    {s.filename && <div className="font-mono">{s.filename}.csv</div>}
                   </td>
                   <td className="py-2 pr-3">
                     <div className="font-mono">{cadenceLabel(s)}</div>
@@ -899,13 +1026,17 @@ function CampaignPicker({
 function ColumnsField({
   columns,
   availableKeys,
+  identity,
   onChange,
 }: {
   columns: string[];
   availableKeys: string[] | null;
+  /** The identity columns this breakdown and granularity can fill, with their labels. */
+  identity: { key: string; label: string }[];
   onChange: (keys: string[]) => void;
 }) {
   const [open, setOpen] = useState(false);
+  const identityLabel = new Map(identity.map((c) => [c.key, c.label]));
   return (
     <Field label="Columns">
       <button
@@ -920,14 +1051,28 @@ function ColumnsField({
         <span className="text-muted-foreground">Edit</span>
       </button>
       <div className="mt-1.5 flex flex-wrap gap-1">
-        {columns.map((k) => (
-          <span
-            key={k}
-            className="rounded border border-border bg-muted/30 px-1.5 py-0.5 text-[10px] text-muted-foreground"
-          >
-            {metric(k)?.label ?? k}
-          </span>
-        ))}
+        {columns.map((k) => {
+          // An identity column the current breakdown cannot fill is kept but left out of the file.
+          const unused = isIdentityColumn(k) && !identityLabel.has(k);
+          return (
+            <span
+              key={k}
+              title={unused ? "Not available for this breakdown — left out of the file" : undefined}
+              className={cn(
+                "rounded border border-border px-1.5 py-0.5 text-[10px]",
+                isIdentityColumn(k)
+                  ? "bg-primary/10 text-primary"
+                  : "bg-muted/30 text-muted-foreground",
+                unused && "line-through opacity-50",
+              )}
+            >
+              {identityLabel.get(k) ??
+                IDENTITY_COLUMNS.find((c) => c.key === k)?.label ??
+                metric(k)?.label ??
+                k}
+            </span>
+          );
+        })}
       </div>
       <ColumnPickerDialog
         open={open}
@@ -935,6 +1080,7 @@ function ColumnsField({
         selected={columns}
         onChange={onChange}
         availableKeys={availableKeys}
+        extraColumns={{ label: "Report columns", columns: identity }}
       />
     </Field>
   );

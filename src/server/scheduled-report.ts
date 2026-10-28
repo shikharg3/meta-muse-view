@@ -20,7 +20,8 @@ import { resolvePreset } from "@/lib/date-presets";
 import { addDays } from "@/lib/range";
 import { csvText } from "@/lib/download";
 import { reportCsvRows } from "@/lib/report-export";
-import type { ReportRecipe } from "@/lib/scheduled-report";
+import { metric } from "@/lib/report-catalog";
+import { IDENTITY_COLUMNS, reportFilename, type ReportRecipe } from "@/lib/scheduled-report";
 import type { InsightRow } from "@/meta/types";
 import {
   buildReport,
@@ -54,6 +55,7 @@ export interface EntityMeta {
   accountName: string;
   campaignId: string;
   campaignName: string;
+  adSetId?: string;
   adSetName?: string;
 }
 
@@ -66,32 +68,40 @@ export interface EntityDayRow {
 
 const text = (key: string, label: string): ReportColumn => ({ key, label, kind: "text" });
 
+/** Every identity column a level can fill, in default order; the recipe picks and orders them. */
 const CONTEXT: Record<EntityLevel, ReportColumn[]> = {
   campaign: [
     text("_account", "Account"),
+    text("_account_id", "Account ID"),
     text("_campaign", "Campaign"),
-    text("_id", "Campaign ID"),
+    text("_campaign_id", "Campaign ID"),
   ],
   adset: [
     text("_account", "Account"),
+    text("_account_id", "Account ID"),
     text("_campaign", "Campaign"),
+    text("_campaign_id", "Campaign ID"),
     text("_adset", "Ad set"),
-    text("_id", "Ad set ID"),
+    text("_adset_id", "Ad set ID"),
   ],
   ad: [
     text("_account", "Account"),
+    text("_account_id", "Account ID"),
     text("_campaign", "Campaign"),
+    text("_campaign_id", "Campaign ID"),
     text("_adset", "Ad set"),
+    text("_adset_id", "Ad set ID"),
     text("_ad", "Ad"),
-    text("_id", "Ad ID"),
+    text("_ad_id", "Ad ID"),
   ],
 };
 
 function contextCells(level: EntityLevel, id: string, m: EntityMeta | undefined): string[] {
-  const head = [m?.accountName ?? "", m?.campaignName ?? ""];
-  if (level === "campaign") return [head[0], m?.name ?? id, id];
-  if (level === "adset") return [...head, m?.name ?? id, id];
-  return [...head, m?.adSetName ?? "", m?.name ?? id, id];
+  const account = [m?.accountName ?? "", m?.accountId ?? ""];
+  if (level === "campaign") return [...account, m?.name ?? id, id];
+  const campaign = [m?.campaignName ?? "", m?.campaignId ?? ""];
+  if (level === "adset") return [...account, ...campaign, m?.name ?? id, id];
+  return [...account, ...campaign, m?.adSetName ?? "", m?.adSetId ?? "", m?.name ?? id, id];
 }
 
 /** Report-file rows cap: far beyond a screen, well inside Telegram's 50 MB upload limit. */
@@ -102,7 +112,8 @@ export const FILE_MAX_ROWS = 20_000;
  * scoping and the context columns are testable without a database.
  *
  * `whitelist` is the campaign scope (null = every campaign); a row whose campaign is unknown is
- * dropped under a whitelist, as the Report Builder does. `brandOf` adds a Brand column.
+ * dropped under a whitelist, as the Report Builder does. `brandOf` adds a Brand column. Every
+ * identity column the level can fill is emitted; `projectColumns` keeps the ones a recipe picked.
  */
 export async function composeEntityReport(input: {
   level: EntityLevel;
@@ -228,6 +239,7 @@ async function loadEntityMeta(
     const set = setById.get(a.adSetId);
     out.set(a.id, {
       name: a.name,
+      adSetId: a.adSetId,
       adSetName: set?.name ?? a.adSetId,
       ...place(a.accountId, set?.campaignId ?? ""),
     });
@@ -241,26 +253,58 @@ const slug = (s: string): string =>
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "") || "report";
 
+/** The window a recipe covers when run on `today` (Berlin), or null when it is not a valid range. */
+export function recipeRange(
+  recipe: Pick<ReportRecipe, "range">,
+  today: string,
+): { since: string; until: string } | null {
+  if ("preset" in recipe.range) return resolvePreset(recipe.range.preset, today);
+  const { since, until } = recipe.range;
+  return since && until && since <= until ? { since, until } : null;
+}
+
+/**
+ * Keep exactly the recipe's columns, in its order. Identity keys (`dim:…`) map to the engine's
+ * column keys; a key the breakdown cannot fill is skipped. The totals row is labelled in the first
+ * text column kept.
+ */
+export function projectColumns(p: ReportPayload, keys: string[]): ReportPayload {
+  const payloadKey = new Map(IDENTITY_COLUMNS.map((c) => [c.key, c.payloadKey]));
+  const at = new Map(p.columns.map((c, i) => [c.key, i]));
+  const idx = keys
+    .map((k) => at.get(payloadKey.get(k) ?? k))
+    .filter((i): i is number => i !== undefined);
+  const columns = idx.map((i) => p.columns[i]);
+  const firstText = columns.findIndex((c) => c.kind === "text");
+  return {
+    ...p,
+    columns,
+    rows: p.rows.map((r) => idx.map((i) => r[i])),
+    totals: p.totals
+      ? idx.map((i, j) =>
+          columns[j].kind !== "text" ? p.totals![i] : j === firstText ? "Total" : "",
+        )
+      : null,
+  };
+}
+
 /**
  * Run a recipe. `today` is the date presets resolve against (the Berlin date of the send, or of the
  * preview). An empty result is a payload with no rows, not an error; the caller says so.
  *
  * With `recipe.modeled`, interrupted days are replaced by an estimate (`modeling.ts`) and the report
- * says so everywhere it can: title, filename, note and — on daily rows — a Modeled column.
+ * says so in its title, file name and note.
  */
 export async function buildRecipeReport(
   recipe: ReportRecipe,
   today: string,
   maxRows: number,
+  /** A schedule's own file name (tokens allowed); null = generated. See `reportFilename`. */
+  filename: string | null = null,
 ): Promise<ReportPayload | { error: string }> {
   const client = await getClientRow(recipe.clientId);
   if (!client) return { error: `Unknown client "${recipe.clientId}".` };
-  const range =
-    "preset" in recipe.range
-      ? resolvePreset(recipe.range.preset, today)
-      : recipe.range.since && recipe.range.until && recipe.range.since <= recipe.range.until
-        ? recipe.range
-        : null;
+  const range = recipeRange(recipe, today);
   if (!range) return { error: "Pick a valid date range." };
   const breakdown = recipe.breakdown as Breakdown;
   if (breakdown !== "none" && !(breakdown in REPORT_DIMS))
@@ -277,7 +321,7 @@ export async function buildRecipeReport(
     accountIds: n.accountIds,
     since: range.since,
     until: range.until,
-    columns: recipe.columns,
+    columns: recipe.columns.filter((k) => metric(k) !== undefined),
     timeIncrement: recipe.timeIncrement,
     objectiveByCampaign,
     eventByCampaign,
@@ -313,7 +357,18 @@ export async function buildRecipeReport(
           : `${n.subject} — by ${REPORT_DIMS[breakdown].label.toLowerCase()}`,
       filename: `${slug(n.subject)}_${range.since}_${range.until}_by_${breakdown}`,
     };
-    return modeling.result ? annotateModeled(named, modeling.result) : named;
+    const labelled = modeling.result ? annotateModeled(named, modeling.result) : named;
+    return projectColumns(
+      {
+        ...labelled,
+        filename: reportFilename(filename, labelled.filename, {
+          ...range,
+          today,
+          modeled: recipe.modeled,
+        }),
+      },
+      recipe.columns,
+    );
   };
 
   const def = breakdown === "none" ? null : REPORT_DIMS[breakdown];
@@ -345,7 +400,7 @@ export async function buildRecipeReport(
         })
         .map((r) => ({ accountId: r.accountId, key: r.entityId, row: insightRowFrom(r) })),
     );
-    const multiBrand = scope.brands.length > 1 && recipe.brands.length !== 1;
+    // Brand is offered as a column for every client; one with a single brand just repeats it.
     return finish(
       await composeEntityReport({
         level,
@@ -354,7 +409,7 @@ export async function buildRecipeReport(
         rows: keyed.map((r) => ({ accountId: r.accountId, entityId: r.key, row: r.row })),
         meta,
         whitelist,
-        brandOf: multiBrand ? n.brandOf : null,
+        brandOf: n.brandOf,
       }),
     );
   }
@@ -387,8 +442,8 @@ export async function buildRecipeReport(
 }
 
 /**
- * Mark a report as a modeled estimate: "(modeled)" in the title and filename, the modeled days and
- * their basis first in the note, and on daily rows a Modeled column after the date.
+ * Mark a report as a modeled estimate: "(modeled)" in the title and file name, and the modeled days
+ * with their basis first in the note (which the Telegram caption carries).
  */
 export function annotateModeled(p: ReportPayload, m: ModelingResult): ReportPayload {
   const money = (x: number) => `$${Math.round(x).toLocaleString("en-US")}`;
@@ -409,30 +464,11 @@ export function annotateModeled(p: ReportPayload, m: ModelingResult): ReportPayl
   const skipped = m.skipped.length
     ? ` Left actual: ${m.skipped.map((s) => `${s.date} (${s.reason})`).join("; ")}.`
     : "";
-  const modeledDates = new Set(m.modeled.map((d) => d.date));
-  const daily =
-    p.columns[0]?.key === "_period" &&
-    p.rows.every((r) => /^\d{4}-\d{2}-\d{2}$/.test(String(r[0])));
   return {
     ...p,
     title: `${p.title} (modeled)`,
     filename: `${p.filename}_modeled`,
     note: [head + skipped, p.note].filter(Boolean).join(" "),
-    ...(daily
-      ? {
-          columns: [
-            p.columns[0],
-            { key: "_modeled", label: "Modeled", kind: "text" },
-            ...p.columns.slice(1),
-          ],
-          rows: p.rows.map((r) => [
-            r[0],
-            modeledDates.has(String(r[0])) ? "yes" : "",
-            ...r.slice(1),
-          ]),
-          totals: p.totals ? [p.totals[0], "", ...p.totals.slice(1)] : null,
-        }
-      : {}),
   };
 }
 
