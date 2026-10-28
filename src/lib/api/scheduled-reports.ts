@@ -23,7 +23,9 @@ export const getReportScope = createServerFn({ method: "POST" })
   .handler(({ data }) => fetchReportScope(data));
 
 export const previewReportRecipe = createServerFn({ method: "POST" })
-  .inputValidator((d: { recipe: ReportRecipe; filename: string | null }) => d)
+  .inputValidator(
+    (d: { recipe: ReportRecipe; filename: string | null; filenameModeled: boolean }) => d,
+  )
   .handler(({ data }) => previewRecipe(data));
 
 export interface ScheduleInput {
@@ -38,6 +40,7 @@ export interface ScheduleInput {
   minute: number;
   active: boolean;
   filename: string | null;
+  filenameModeled: boolean;
 }
 
 export const saveScheduledReport = createServerFn({ method: "POST" })
@@ -58,7 +61,13 @@ export const sendScheduledReportNow = createServerFn({ method: "POST" })
 
 export const sendDraftReport = createServerFn({ method: "POST" })
   .inputValidator(
-    (d: { name: string; recipe: ReportRecipe; chatId: string; filename: string | null }) => d,
+    (d: {
+      name: string;
+      recipe: ReportRecipe;
+      chatId: string;
+      filename: string | null;
+      filenameModeled: boolean;
+    }) => d,
   )
   .handler(({ data }) => sendDraftImpl(data));
 

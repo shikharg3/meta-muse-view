@@ -38,8 +38,9 @@ offers its natural range (daily → Yesterday, weekly → Last week, monthly →
 must use a relative range: it is resolved against the Berlin date of each send.
 
 File name (`reportFilename`): `.csv` is added; `{since}`, `{until}` and `{today}` become dates;
-characters a file system rejects are dropped. Blank = generated from client, range and breakdown. A
-modeled report gets `_modeled` appended unless its name already says "modeled".
+characters a file system rejects are dropped. Blank = generated from client, range and breakdown.
+On a modeled report, "Add “\_modeled” to the file name" (`filename_modeled`, off by default)
+appends `_modeled` unless the name already says "modeled".
 
 ## What the CSV contains
 
@@ -107,10 +108,10 @@ bot must be in the group; saving and "Send once" check this with `getChat`.
 ## Modeled reports
 
 For estimating how a campaign would have performed had delivery not been interrupted. Actual
-figures reach clients through DOT Analytics; a modeled report is an estimate and is labelled as
-one: "modeled" in the title and file name (kept even in a custom file name), and a note — also in
-the Telegram caption — listing every modeled day with its actual spend and the median it was judged
-against.
+figures reach clients through DOT Analytics; a modeled report is an estimate and says so in its
+title ("(modeled)") and in a note — also in the Telegram caption — listing every modeled day with
+its actual spend and the median it was judged against. The file name says "modeled" only when the
+schedule ticks "Add “\_modeled” to the file name".
 
 Rules (`src/server/modeling.ts`, defaults in `MODELING_DEFAULTS`):
 

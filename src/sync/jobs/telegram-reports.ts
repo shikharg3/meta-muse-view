@@ -7,7 +7,12 @@ import { and, eq, lt, isNull, ne, or, sql } from "drizzle-orm";
 import { db, schema } from "@/db/client";
 import { berlinNow } from "@/lib/berlin-time";
 import { MAX_ATTEMPTS } from "@/lib/daily-report";
-import { adjustmentsFrom, isScheduleDue, type ReportRecipe } from "@/lib/scheduled-report";
+import {
+  adjustmentsFrom,
+  isScheduleDue,
+  type FileNaming,
+  type ReportRecipe,
+} from "@/lib/scheduled-report";
 import { showCell } from "@/lib/report-export";
 import { resolveTimeIncrement } from "@/lib/time-increment";
 import { buildRecipeReport, FILE_MAX_ROWS, reportCsv } from "@/server/scheduled-report";
@@ -37,21 +42,26 @@ export function scheduleRecipe(s: ScheduleRow): ReportRecipe {
 
 export type DeliveryResult = { ok: true; rows: number } | { ok: false; error: string };
 
+/** How a stored schedule names its file. */
+export function scheduleFileNaming(s: ScheduleRow): FileNaming {
+  return { name: s.filename, markModeled: s.filenameModeled };
+}
+
 /**
- * Run `recipe` as of `today` (Berlin) and send it to `chatId`: the CSV — named by `filename` when
- * given, see `reportFilename` — captioned with its scope, window and headline totals; or a plain
- * message when nothing matched (an empty file reads as a fault).
+ * Run `recipe` as of `today` (Berlin) and send it to `chatId`: the CSV — named per `file`, see
+ * `reportFilename` — captioned with its scope, window and headline totals; or a plain message when
+ * nothing matched (an empty file reads as a fault).
  */
 export async function deliverReport(
   name: string,
   recipe: ReportRecipe,
   chatId: string,
   today: string,
-  filename: string | null,
+  file: FileNaming,
 ): Promise<DeliveryResult> {
   const tg = await telegram();
   if (!tg) return { ok: false, error: "Telegram is not configured (TELEGRAM_BOT_TOKEN)." };
-  const report = await buildRecipeReport(recipe, today, FILE_MAX_ROWS, filename);
+  const report = await buildRecipeReport(recipe, today, FILE_MAX_ROWS, file);
   if ("error" in report) return { ok: false, error: report.error };
 
   const head = `${name}\n${report.title} · ${report.subtitle}`;
@@ -142,7 +152,7 @@ export async function runDueReports(now: Date): Promise<ReportRun[]> {
       scheduleRecipe(s),
       s.chatId,
       local.date,
-      s.filename,
+      scheduleFileNaming(s),
     ).catch(
       (e): DeliveryResult => ({ ok: false, error: e instanceof Error ? e.message : String(e) }),
     );

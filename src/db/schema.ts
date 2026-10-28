@@ -928,6 +928,7 @@ export const telegramReportSchedules = pgTable("telegram_report_schedules", {
   adjustments: jsonb("adjustments").notNull().default({}),
   // The sent file's name without extension; {since}, {until}, {today} are filled. Null = generated.
   filename: text("filename"),
+  filenameModeled: boolean("filename_modeled").notNull().default(false), // append "_modeled"
   chatId: text("chat_id").notNull(), // Telegram ids exceed 32-bit, hence text
   cadence: text("cadence").notNull().default("daily"), // daily | weekdays | weekly | monthly
   weekday: integer("weekday"), // 1 = Monday, for weekly

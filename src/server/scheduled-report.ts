@@ -11,8 +11,8 @@
  * - Scope can be narrowed to brands (`report-scope.ts`), and a client with several brands gets a
  *   Brand column on those breakdowns.
  *
- * A recipe may also ask for interrupted days to be modeled (`modeling.ts`); such a report is marked
- * as an estimate throughout (`annotateModeled`).
+ * A recipe may also ask for interrupted days to be modeled (`modeling.ts`); such a report says so in
+ * its title and note (`annotateModeled`), and in its file name when the schedule asks.
  */
 import { and, gte, inArray, lte, eq } from "drizzle-orm";
 import { db, schema } from "@/db/client";
@@ -24,7 +24,9 @@ import { metric } from "@/lib/report-catalog";
 import {
   DECIMAL_METRICS,
   IDENTITY_COLUMNS,
+  GENERATED_FILENAME,
   reportFilename,
+  type FileNaming,
   SPLITTABLE_BREAKDOWNS,
   type ReportAdjustments,
   type ReportRecipe,
@@ -381,14 +383,13 @@ export function wholeNumbers(p: ReportPayload): ReportPayload {
  * preview). An empty result is a payload with no rows, not an error; the caller says so.
  *
  * With `recipe.modeled`, interrupted days are replaced by an estimate (`modeling.ts`) and the report
- * says so in its title, file name and note.
+ * says so in its title and note; the file name says so only when `file.markModeled` asks.
  */
 export async function buildRecipeReport(
   recipe: ReportRecipe,
   today: string,
   maxRows: number,
-  /** A schedule's own file name (tokens allowed); null = generated. See `reportFilename`. */
-  filename: string | null = null,
+  file: FileNaming = GENERATED_FILENAME,
 ): Promise<ReportPayload | { error: string }> {
   const client = await getClientRow(recipe.clientId);
   if (!client) return { error: `Unknown client "${recipe.clientId}".` };
@@ -465,10 +466,10 @@ export async function buildRecipeReport(
         renameEntities(
           {
             ...noted,
-            filename: reportFilename(filename, noted.filename, {
+            filename: reportFilename(file.name, noted.filename, {
               ...range,
               today,
-              modeled: recipe.modeled,
+              appendModeled: recipe.modeled && file.markModeled,
             }),
           },
           recipe.adjustments,
@@ -551,8 +552,9 @@ export async function buildRecipeReport(
 }
 
 /**
- * Mark a report as a modeled estimate: "(modeled)" in the title and file name, and the modeled days
- * with their basis first in the note (which the Telegram caption carries).
+ * Mark a report as a modeled estimate: "(modeled)" in the title, and the modeled days with their
+ * basis first in the note (which the Telegram caption carries). The file name is the schedule's to
+ * choose (`FileNaming.markModeled`).
  */
 export function annotateModeled(p: ReportPayload, m: ModelingResult): ReportPayload {
   const money = (x: number) => `$${Math.round(x).toLocaleString("en-US")}`;
@@ -576,7 +578,6 @@ export function annotateModeled(p: ReportPayload, m: ModelingResult): ReportPayl
   return {
     ...p,
     title: `${p.title} (modeled)`,
-    filename: `${p.filename}_modeled`,
     note: [head + skipped, p.note].filter(Boolean).join(" "),
   };
 }

@@ -120,6 +120,8 @@ interface Delivery {
   active: boolean;
   /** Blank = the generated name. */
   filename: string;
+  /** Append "_modeled" to a modeled report's file name. */
+  filenameModeled: boolean;
 }
 
 type Msg = { tone: "ok" | "bad"; text: string } | null;
@@ -142,6 +144,7 @@ function ScheduledReportsPage() {
     time: hhmm(DEFAULT_SEND_AT.hour, DEFAULT_SEND_AT.minute),
     active: true,
     filename: "",
+    filenameModeled: false,
   };
 
   const [recipe, setRecipe] = useState<ReportRecipe>(blankRecipe);
@@ -216,7 +219,13 @@ function ScheduledReportsPage() {
     setPreviewError(null);
     try {
       setReport(
-        await previewReportRecipe({ data: { recipe, filename: delivery.filename.trim() || null } }),
+        await previewReportRecipe({
+          data: {
+            recipe,
+            filename: delivery.filename.trim() || null,
+            filenameModeled: delivery.filenameModeled,
+          },
+        }),
       );
     } catch (e) {
       setReport(null);
@@ -246,6 +255,7 @@ function ScheduledReportsPage() {
       minute,
       active: delivery.active,
       filename: delivery.filename.trim() || null,
+      filenameModeled: delivery.filenameModeled,
     };
   };
 
@@ -265,6 +275,7 @@ function ScheduledReportsPage() {
           recipe: input.recipe,
           chatId: input.chatId,
           filename: input.filename,
+          filenameModeled: input.filenameModeled,
         },
       });
       return `Sent once to Telegram (${r.rows} rows).`;
@@ -282,6 +293,7 @@ function ScheduledReportsPage() {
       time: hhmm(s.hour, s.minute),
       active: s.active,
       filename: s.filename ?? "",
+      filenameModeled: s.filenameModeled,
     });
     setReport(null);
     setMsg(null);
@@ -644,9 +656,9 @@ function ScheduledReportsPage() {
               <p className="mt-1 text-[11px] text-muted-foreground">
                 A day with no spend, or under 25% of the median of its active days within ±5 days
                 (the previous 7 when nothing later has data, e.g. yesterday), is replaced by the
-                mean of those days, ±15% per metric. The file name and title say “modeled”, and the
-                note and Telegram caption list every modeled day. For estimates only — actual
-                figures go out without this.
+                mean of those days, ±15% per metric. The title says “modeled” and the note and
+                Telegram caption list every modeled day; adding “_modeled” to the file name is an
+                option under Delivery. For estimates only — actual figures go out without this.
               </p>
             </Field>
 
@@ -739,8 +751,19 @@ function ScheduledReportsPage() {
                   .csv is added. {FILENAME_TOKENS.join(", ")} become dates, e.g.{" "}
                   <span className="font-mono">OneAgency_adsets_{"{since}"}</span>. Blank =
                   generated.
-                  {recipe.modeled && " A modeled report gets “_modeled” unless the name says it."}
                 </p>
+                {recipe.modeled && (
+                  <label className="mt-1.5 flex items-center gap-2 text-xs cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={delivery.filenameModeled}
+                      onChange={(e) =>
+                        setDelivery({ ...delivery, filenameModeled: e.target.checked })
+                      }
+                    />
+                    Add “_modeled” to the file name
+                  </label>
+                )}
               </Field>
               <Field label="Telegram chat">
                 <select
@@ -959,6 +982,9 @@ function Schedules({
                       </span>
                     )}
                     {s.filename && <div className="font-mono">{s.filename}.csv</div>}
+                    {s.recipe.modeled && s.filenameModeled && (
+                      <div className="font-mono">+ _modeled</div>
+                    )}
                   </td>
                   <td className="py-2 pr-3">
                     <div className="font-mono">{cadenceLabel(s)}</div>

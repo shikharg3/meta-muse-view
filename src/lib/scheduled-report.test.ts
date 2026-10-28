@@ -61,7 +61,12 @@ test("a paused schedule is never due", () => {
   expect(isScheduleDue(schedule({ active: false }), at(WED, 12))).toBe(false);
 });
 
-const ctx = { since: "2026-10-27", until: "2026-10-27", today: "2026-10-28", modeled: false };
+const ctx = {
+  since: "2026-10-27",
+  until: "2026-10-27",
+  today: "2026-10-28",
+  appendModeled: false,
+};
 
 test("a schedule's file name fills its date tokens and drops characters a file system rejects", () => {
   expect(reportFilename("OneAgency {since}..{until} / sent {today}.csv", "gen", ctx)).toBe(
@@ -73,13 +78,14 @@ test("a schedule's file name fills its date tokens and drops characters a file s
   expect(reportFilename(null, "gen", ctx)).toBe("gen");
 });
 
-test("a modeled report's file name always says modeled, but never twice", () => {
-  const modeled = { ...ctx, modeled: true };
-  expect(reportFilename("OneAgency daily", "gen", modeled)).toBe("OneAgency daily_modeled");
-  expect(reportFilename("OneAgency MODELED estimate", "gen", modeled)).toBe(
+test("_modeled is added only when asked for, and never twice", () => {
+  expect(reportFilename("OneAgency daily", "gen", ctx)).toBe("OneAgency daily");
+  const asked = { ...ctx, appendModeled: true };
+  expect(reportFilename("OneAgency daily", "gen", asked)).toBe("OneAgency daily_modeled");
+  expect(reportFilename(null, "gen", asked)).toBe("gen_modeled");
+  expect(reportFilename("OneAgency MODELED estimate", "gen", asked)).toBe(
     "OneAgency MODELED estimate",
   );
-  expect(reportFilename(null, "gen_modeled", modeled)).toBe("gen_modeled");
 });
 
 test("default report columns name the row without the Account columns", () => {

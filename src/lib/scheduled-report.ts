@@ -195,15 +195,25 @@ export const DEFAULT_RECIPE: Omit<ReportRecipe, "clientId"> = {
 /** Placeholders a schedule's file name may use; each is replaced by a YYYY-MM-DD date. */
 export const FILENAME_TOKENS = ["{since}", "{until}", "{today}"];
 
+/** How a schedule names its file. */
+export interface FileNaming {
+  /** The schedule's own name (tokens allowed); null = generated. */
+  name: string | null;
+  /** Append "_modeled" when the report is modeled. Off unless chosen. */
+  markModeled: boolean;
+}
+
+export const GENERATED_FILENAME: FileNaming = { name: null, markModeled: false };
+
 /**
  * The file name a report is sent under, without extension. A schedule's own name wins over the
- * engine's default; tokens are filled, characters a file system rejects are dropped, and a modeled
- * report always says "modeled" — the file name is where that is read from.
+ * engine's default; tokens are filled and characters a file system rejects are dropped.
+ * `appendModeled` adds "_modeled" unless the name already says it.
  */
 export function reportFilename(
   custom: string | null,
   fallback: string,
-  ctx: { since: string; until: string; today: string; modeled: boolean },
+  ctx: { since: string; until: string; today: string; appendModeled: boolean },
 ): string {
   const filled = [
     ...(custom ?? "")
@@ -217,7 +227,7 @@ export function reportFilename(
     .join("")
     .trim();
   const name = filled || fallback;
-  return ctx.modeled && !/modeled/i.test(name) ? `${name}_modeled` : name;
+  return ctx.appendModeled && !/modeled/i.test(name) ? `${name}_modeled` : name;
 }
 
 export type Cadence = "daily" | "weekdays" | "weekly" | "monthly";

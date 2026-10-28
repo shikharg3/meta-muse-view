@@ -227,7 +227,7 @@ test("the CSV quotes names with commas and starts with a UTF-8 BOM for Excel", a
   expect(lines[2]).toBe("Total,,,,12.50,1000,20,0.63");
 });
 
-test("a modeled report says so in its title, file name and note — and adds no column", async () => {
+test("a modeled report says so in its title and note, without touching the file name or columns", async () => {
   const r = await composeEntityReport({
     level: "campaign",
     subject: "OneAgency",
@@ -249,7 +249,7 @@ test("a modeled report says so in its title, file name and note — and adds no 
     },
   );
   expect(m.title).toBe("OneAgency — by campaign (modeled)");
-  expect(m.filename).toBe("oneagency_x_modeled");
+  expect(m.filename).toBe("oneagency_x");
   expect(m.note).toStartWith("MODELED ESTIMATE, not actual delivery. 1 interrupted day");
   expect(m.note).toContain(`${D2} (actual spend $0 vs $100 median of 1 active days)`);
   expect(m.columns).toEqual(r.columns);

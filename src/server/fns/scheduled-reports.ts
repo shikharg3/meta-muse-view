@@ -21,7 +21,7 @@ import { loadClientScope } from "@/server/report-scope";
 import { buildRecipeReport, FILE_MAX_ROWS } from "@/server/scheduled-report";
 import { getClientRow } from "@/sync/jobs/clients";
 import { telegram } from "@/sync/jobs/checkin";
-import { deliverReport, scheduleRecipe } from "@/sync/jobs/telegram-reports";
+import { deliverReport, scheduleFileNaming, scheduleRecipe } from "@/sync/jobs/telegram-reports";
 import { audit, requireAdmin } from "./auth";
 
 /**
@@ -50,6 +50,8 @@ export interface ScheduleView {
   lastError: string | null;
   /** The schedule's own file name, or null for the generated one. */
   filename: string | null;
+  /** Append "_modeled" to a modeled report's file name. */
+  filenameModeled: boolean;
 }
 
 /** One of this page's saved recipes — separate from the Report Builder's templates. */
@@ -126,6 +128,7 @@ export async function fetchScheduledReportsPage(): Promise<ScheduledReportsPageD
       clientName,
       recipe: scheduleRecipe(r),
       filename: r.filename,
+      filenameModeled: r.filenameModeled,
       chatId: r.chatId,
       chatLabel: labelOf.get(r.chatId) ?? r.chatId,
       cadence: r.cadence,
@@ -255,13 +258,20 @@ const filenameInput = z
   .nullish()
   .transform((s) => s || null);
 
-const previewInput = z.object({ recipe: z.unknown(), filename: filenameInput });
+const previewInput = z.object({
+  recipe: z.unknown(),
+  filename: filenameInput,
+  filenameModeled: z.boolean().default(false),
+});
 
 /** Run the builder's recipe as of today (Berlin), for the preview and the CSV/PDF downloads. */
 export async function previewRecipe(input: unknown): Promise<ReportPayload> {
   await guard();
   const v = previewInput.parse(input);
-  const r = await buildRecipeReport(parseRecipe(v.recipe), today(), FILE_MAX_ROWS, v.filename);
+  const r = await buildRecipeReport(parseRecipe(v.recipe), today(), FILE_MAX_ROWS, {
+    name: v.filename,
+    markModeled: v.filenameModeled,
+  });
   if ("error" in r) throw new Error(r.error);
   return r;
 }
@@ -284,6 +294,7 @@ const saveInput = z
     minute: z.number().int().min(0).max(59),
     active: z.boolean(),
     filename: filenameInput,
+    filenameModeled: z.boolean().default(false),
   })
   .refine((v) => v.cadence !== "weekly" || v.weekday !== null, "Pick the weekday.")
   .refine((v) => v.cadence !== "monthly" || v.monthDay !== null, "Pick the day of the month.");
@@ -325,6 +336,7 @@ export async function saveScheduledReport(input: unknown): Promise<{ id: string 
     modeled: recipe.modeled,
     adjustments: recipe.adjustments,
     filename: v.filename,
+    filenameModeled: v.filenameModeled,
     chatId: v.chatId,
     cadence: v.cadence,
     weekday: v.cadence === "weekly" ? v.weekday : null,
@@ -389,7 +401,13 @@ export async function sendScheduledReportNow(input: unknown): Promise<{ rows: nu
   const t = schema.telegramReportSchedules;
   const [s] = await db.select().from(t).where(eq(t.id, id));
   if (!s) throw new Error("That schedule no longer exists.");
-  const r = await deliverReport(s.name, scheduleRecipe(s), s.chatId, today(), s.filename);
+  const r = await deliverReport(
+    s.name,
+    scheduleRecipe(s),
+    s.chatId,
+    today(),
+    scheduleFileNaming(s),
+  );
   if (!r.ok) throw new Error(r.error);
   await audit("telegram_report.send", `"${s.name}" → chat ${s.chatId} [${id}]`);
   return { rows: r.rows };
@@ -400,6 +418,7 @@ const draftInput = z.object({
   recipe: z.unknown(),
   chatId,
   filename: filenameInput,
+  filenameModeled: z.boolean().default(false),
 });
 
 /** Send the builder's current recipe once, without saving it — custom dates allowed. */
@@ -408,7 +427,10 @@ export async function sendDraftReport(input: unknown): Promise<{ rows: number }>
   const v = draftInput.parse(input);
   const recipe = parseRecipe(v.recipe);
   await checkChat(v.chatId);
-  const r = await deliverReport(v.name, recipe, v.chatId, today(), v.filename);
+  const r = await deliverReport(v.name, recipe, v.chatId, today(), {
+    name: v.filename,
+    markModeled: v.filenameModeled,
+  });
   if (!r.ok) throw new Error(r.error);
   await audit(
     "telegram_report.send",
