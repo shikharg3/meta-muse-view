@@ -51,7 +51,16 @@ test("Meta's action-array shape counts as present", () => {
     }),
   ]);
   expect(keys).toContain("video_p25_watched_actions");
-  expect(keys).toContain("hook_rate"); // derived from video_p25 + impressions
+  // Hook rate is 3-second plays (the `video_view` action) over impressions, not 25% views.
+  expect(keys).not.toContain("hook_rate");
+});
+
+test("hook rate follows the 3-second play action, not the 25% view field", () => {
+  const keys = classifyAvailable([
+    row({ spend: "10", impressions: "100" }, [{ action_type: "video_view", value: "40" }]),
+  ]);
+  expect(keys).toContain("event_video_views");
+  expect(keys).toContain("hook_rate");
 });
 
 test("an empty action array is not presence", () => {

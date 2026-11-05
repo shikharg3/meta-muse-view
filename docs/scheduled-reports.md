@@ -54,6 +54,13 @@ differences, both because the result is a file worked with in a spreadsheet:
   set breakdown are Date, Brand (for a client with several brands), Campaign, Ad set, Ad set ID.
 - **Only spend, CTR, CPC and CPM have decimals** (`DECIMAL_METRICS`). Every other figure — counts,
   cost per result, ROAS, conversion value — is a whole number.
+- **Rates follow Ads Manager's definitions.** Unique CTR, Unique link CTR and Unique outbound CTR
+  are over reach; Hook rate is 3-second plays (`video_view`) over impressions; Hold rate is
+  ThruPlays over 3-second plays; Video completion rate is 100% plays over video plays; Landing page
+  view rate is landing page views over link clicks; Engagement rate is post engagements over
+  impressions; Purchase conv. rate (LPV) and Checkout completion rate are purchases over landing
+  page views and over checkouts initiated. Post reactions, comments, shares, saves, photo views,
+  Page engagement and Page likes are event families (`EVENT_FAMILIES`), each with a cost-per.
 
 Renames (`renameEntities`) and headers (`projectColumns`) change only what the file shows; the
 data underneath, and the IDs, are untouched.

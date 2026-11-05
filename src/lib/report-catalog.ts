@@ -179,6 +179,7 @@ const STORED: [key: string, label: string, group: MetricGroup, kind: ReportColum
   ["social_spend", "Social Spend", "delivery", "money"],
   // clicks & traffic
   ["unique_inline_link_clicks", "Unique Link Clicks", "traffic", "int"],
+  ["outbound_clicks", "Outbound Clicks", "traffic", "int"],
   ["unique_outbound_clicks", "Unique Outbound Clicks", "traffic", "int"],
   ["shop_clicks", "Shop Clicks", "traffic", "int"],
   // engagement
@@ -217,10 +218,53 @@ const STORED: [key: string, label: string, group: MetricGroup, kind: ReportColum
 /** Ratios and costs, always computed so the client markup on spend is inherited. */
 const DERIVED: ReportMetric[] = [
   def("cpp", "Cost / 1k Reached", "delivery", "money", ratio("spend", "reach", 1000)),
-  def("unique_ctr", "Unique CTR", "traffic", "pct", ratio("unique_clicks", "impressions", 100)),
+  // Over reach, not impressions: Meta's unique rates are people who clicked over people reached.
+  def("unique_ctr", "Unique CTR", "traffic", "pct", ratio("unique_clicks", "reach", 100)),
   def("link_ctr", "Link CTR", "traffic", "pct", ratio("link_clicks", "impressions", 100)),
+  def(
+    "unique_link_ctr",
+    "Unique Link CTR",
+    "traffic",
+    "pct",
+    ratio("unique_inline_link_clicks", "reach", 100),
+  ),
+  def(
+    "outbound_ctr",
+    "Outbound CTR",
+    "traffic",
+    "pct",
+    ratio("outbound_clicks", "impressions", 100),
+  ),
+  def(
+    "unique_outbound_ctr",
+    "Unique Outbound CTR",
+    "traffic",
+    "pct",
+    ratio("unique_outbound_clicks", "reach", 100),
+  ),
+  def(
+    "landing_page_view_rate",
+    "Landing Page View Rate",
+    "traffic",
+    "pct",
+    ratio("landing_page_views", "link_clicks", 100),
+  ),
   def("cost_per_link_click", "Cost / Link Click", "cost", "money", costPer("link_clicks")),
   def("cost_per_unique_click", "Cost / Unique Click", "cost", "money", costPer("unique_clicks")),
+  def(
+    "cost_per_unique_link_click",
+    "Cost / Unique Link Click",
+    "cost",
+    "money",
+    costPer("unique_inline_link_clicks"),
+  ),
+  def(
+    "cost_per_outbound_click",
+    "Cost / Outbound Click",
+    "cost",
+    "money",
+    costPer("outbound_clicks"),
+  ),
   def(
     "cost_per_post_engagement",
     "Cost / Post Engagement",
@@ -243,27 +287,56 @@ const DERIVED: ReportMetric[] = [
     costPer("video_thruplay_watched_actions"),
   ),
   def(
+    "cost_per_2s_continuous_view",
+    "Cost / 2s Continuous View",
+    "cost",
+    "money",
+    costPer("video_continuous_2_sec_watched_actions"),
+  ),
+  def(
+    "engagement_rate",
+    "Engagement Rate",
+    "engagement",
+    "pct",
+    ratio("event_post_engagements", "impressions", 100),
+  ),
+  def(
     "avg_order_value",
     "Avg. Order Value",
     "value",
     "money",
     ratio("conversion_value", "purchases"),
   ),
-  // Hook and hold rate: what share of impressions reached 25% and 100% of the video. Standard
-  // creative-diagnostic pair for media buyers, and neither is stored by Meta.
   def(
-    "hook_rate",
-    "Hook Rate",
-    "video",
+    "purchase_conversion_rate",
+    "Purchase Conv. Rate (LPV)",
+    "conversions",
     "pct",
-    ratio("video_p25_watched_actions", "impressions", 100),
+    ratio("purchases", "landing_page_views", 100),
   ),
+  def(
+    "checkout_completion_rate",
+    "Checkout Completion Rate",
+    "conversions",
+    "pct",
+    ratio("purchases", "initiate_checkout", 100),
+  ),
+  // Hook rate: impressions that became a 3-second play (Meta's `video_view`, the "Video views"
+  // family). Hold rate: 3-second plays that went on to a ThruPlay. Neither is stored by Meta.
+  def("hook_rate", "Hook Rate", "video", "pct", ratio("event_video_views", "impressions", 100)),
   def(
     "hold_rate",
     "Hold Rate",
     "video",
     "pct",
-    ratio("video_p100_watched_actions", "impressions", 100),
+    ratio("video_thruplay_watched_actions", "event_video_views", 100),
+  ),
+  def(
+    "video_completion_rate",
+    "Video Completion Rate",
+    "video",
+    "pct",
+    ratio("video_p100_watched_actions", "video_play_actions", 100),
   ),
   def(
     "message_read_rate",
@@ -313,6 +386,13 @@ export const EVENT_FAMILY_LABELS = [
   "Link clicks",
   "Post engagements",
   "Video views",
+  "Post reactions",
+  "Post comments",
+  "Post shares",
+  "Post saves",
+  "Photo views",
+  "Page engagement",
+  "Page likes",
 ] as const;
 
 /** Families whose count and cost columns predate the catalog and must keep their keys. */

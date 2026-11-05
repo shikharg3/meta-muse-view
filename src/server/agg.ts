@@ -148,6 +148,14 @@ const EVENT_FAMILIES: { label: string; types: string[] }[] = [
   { label: "Link clicks", types: ["link_click"] },
   { label: "Post engagements", types: ["post_engagement"] },
   { label: "Video views", types: ["video_view"] },
+  // Engagement on the ad's post and Page, each a single action_type in production.
+  { label: "Post reactions", types: ["post_reaction"] },
+  { label: "Post comments", types: ["comment"] },
+  { label: "Post shares", types: ["post"] },
+  { label: "Post saves", types: ["onsite_conversion.post_save"] },
+  { label: "Photo views", types: ["photo_view"] },
+  { label: "Page engagement", types: ["page_engagement"] },
+  { label: "Page likes", types: ["like"] },
 ];
 
 /**
