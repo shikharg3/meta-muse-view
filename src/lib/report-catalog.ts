@@ -179,7 +179,6 @@ const STORED: [key: string, label: string, group: MetricGroup, kind: ReportColum
   ["social_spend", "Social Spend", "delivery", "money"],
   // clicks & traffic
   ["unique_inline_link_clicks", "Unique Link Clicks", "traffic", "int"],
-  ["outbound_clicks", "Outbound Clicks", "traffic", "int"],
   ["unique_outbound_clicks", "Unique Outbound Clicks", "traffic", "int"],
   ["shop_clicks", "Shop Clicks", "traffic", "int"],
   // engagement
@@ -229,13 +228,6 @@ const DERIVED: ReportMetric[] = [
     ratio("unique_inline_link_clicks", "reach", 100),
   ),
   def(
-    "outbound_ctr",
-    "Outbound CTR",
-    "traffic",
-    "pct",
-    ratio("outbound_clicks", "impressions", 100),
-  ),
-  def(
     "unique_outbound_ctr",
     "Unique Outbound CTR",
     "traffic",
@@ -257,13 +249,6 @@ const DERIVED: ReportMetric[] = [
     "cost",
     "money",
     costPer("unique_inline_link_clicks"),
-  ),
-  def(
-    "cost_per_outbound_click",
-    "Cost / Outbound Click",
-    "cost",
-    "money",
-    costPer("outbound_clicks"),
   ),
   def(
     "cost_per_post_engagement",

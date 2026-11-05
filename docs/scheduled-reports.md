@@ -107,6 +107,12 @@ schedule sends immediately without touching the claim.
 Meta-dimension breakdowns (country, placement, age, …) refresh on the daily full sync, so a 10:00
 send for yesterday can find no rows yet; the message says so.
 
+The hourly sync refreshes only the CORE metrics (spend, impressions, reach, clicks, link clicks,
+actions); everything else — unique clicks, unique link and outbound clicks, video plays and the
+like — comes from the daily full sync that starts at 00:00 UTC. The hourly pass replaces only the
+fields it fetched (`storedUpdate` in `src/sync/jobs/insights.ts`), so those metrics keep the full
+sync's values and can trail the CORE figures by a few hours on a morning send.
+
 ## Telegram
 
 Uses the alert bot (`TELEGRAM_BOT_TOKEN`). The target chat must have sent `/start` to the bot, or the

@@ -156,3 +156,69 @@ test("undamaged rows cost no extra request and are stored as Meta sent them", as
   expect(lead?.actions).toEqual([{ action_type: "lead", value: "1" }]);
   expect(rows.find((r) => r.entityId === "c3")?.impressions).toBe(3);
 });
+
+// The hourly refresh asks for CORE only; before this, its upsert replaced `raw` wholesale and wiped
+// the wider metrics the daily full pass had stored — every scheduled report read them as zero.
+const WIDE = ["unique_clicks", "video_play_actions"];
+const fullPass = fake(async (_id, params) => {
+  const fields = params.fields as string[];
+  if (fields.includes("spend")) return [{ ...correct, inline_link_clicks: "40" }];
+  return [
+    {
+      date_start: day,
+      date_stop: day,
+      campaign_id: "c1",
+      unique_clicks: "44",
+      video_play_actions: [{ action_type: "video_view", value: "9" }],
+    },
+  ] as InsightRow[];
+});
+
+test("a CORE-only pass keeps the wider metrics a full pass stored", async () => {
+  await syncInsightsRange(fullPass, "act_1", "campaign", day, day, false, false, [
+    CORE_METRICS,
+    WIDE,
+  ]);
+  const hourly = fake(async () => [{ ...correct, spend: "250", inline_link_clicks: "41" }]);
+  await syncInsightsRange(hourly, "act_1", "campaign", day, day, false, false, [CORE_METRICS]);
+
+  const [row] = await db.select().from(schema.insightsDaily);
+  const raw = row.raw as Record<string, unknown>;
+  expect(row.spend).toBeCloseTo(250); // CORE is fresh
+  expect(raw.spend).toBe("250");
+  expect(row.uniqueClicks).toBe(44); // the wide metrics survive, raw and promoted alike
+  expect(raw.unique_clicks).toBe("44");
+  expect(raw.video_play_actions).toEqual([{ action_type: "video_view", value: "9" }]);
+});
+
+test("a failed group keeps what is stored; an answered group that omits a field drops it", async () => {
+  await syncInsightsRange(fullPass, "act_1", "campaign", day, day, false, false, [
+    CORE_METRICS,
+    WIDE,
+  ]);
+  // The wide group fails outright: nothing came back, so nothing stored is erased.
+  const failing = fake(async (_id, params) => {
+    if ((params.fields as string[]).includes("spend")) return [correct];
+    throw new Error("Meta error 2: Service temporarily unavailable");
+  });
+  await syncInsightsRange(failing, "act_1", "campaign", day, day, false, false, [
+    CORE_METRICS,
+    WIDE,
+  ]);
+  let [row] = await db.select().from(schema.insightsDaily);
+  expect((row.raw as Record<string, unknown>).unique_clicks).toBe("44");
+
+  // The wide group answers without video plays (Meta omits an empty metric): that one is dropped.
+  const answered = fake(async (_id, params) => {
+    if ((params.fields as string[]).includes("spend")) return [correct];
+    return [{ date_start: day, date_stop: day, campaign_id: "c1", unique_clicks: "45" }];
+  });
+  await syncInsightsRange(answered, "act_1", "campaign", day, day, false, false, [
+    CORE_METRICS,
+    WIDE,
+  ]);
+  [row] = await db.select().from(schema.insightsDaily);
+  const raw = row.raw as Record<string, unknown>;
+  expect(raw.unique_clicks).toBe("45");
+  expect(raw.video_play_actions).toBeUndefined();
+});

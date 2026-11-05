@@ -1,6 +1,7 @@
+import { sql } from "drizzle-orm";
 import { db, schema } from "@/db/client";
 import type { InsightRow, InsightsClient } from "@/meta/types";
-import { isZeroedInsightRow, normalizeInsightRow } from "@/meta/insights";
+import { isZeroedInsightRow, normalizeInsightRow, PROMOTED_FIELD } from "@/meta/insights";
 import {
   ATTRIBUTION_WINDOWS,
   CORE_METRICS,
@@ -87,6 +88,10 @@ export async function syncInsightsRange(
     // Request every metric in compatible groups, merged by (entity, date) so each daily row carries
     // the full metric set. The merged row is stored in `raw`; high-value metrics are promoted.
     const byKey = new Map<string, InsightRow>();
+    // Fields this pass actually got an answer for: every field of each group that did not fail.
+    // Only these replace what is stored, so the hourly CORE pass and a group Meta rejects never
+    // erase the wider metrics an earlier full pass wrote for the same (entity, date).
+    const answered = new Set<string>();
     const keyOf = (r: InsightRow): string =>
       `${level === "account" ? accountId : String(r[ID_FIELD[level]] ?? accountId)}:${String(r.date_start)}`;
     const request = (fields: string[]): Promise<InsightRow[]> => {
@@ -109,7 +114,9 @@ export async function syncInsightsRange(
     const groupRows = await Promise.all(
       groups.map(async (group) => {
         try {
-          return await request(group);
+          const rows = await request(group);
+          for (const f of group) answered.add(f);
+          return rows;
         } catch (e) {
           // A dead token, or Meta failing every call, must abort — not be logged as a skipped group
           // and retried across every remaining account.
@@ -229,12 +236,29 @@ export async function syncInsightsRange(
             schema.insightsDaily.entityId,
             schema.insightsDaily.date,
           ],
-          set: { ...values, syncedAt: new Date() },
+          set: storedUpdate(values, answered),
         });
       written++;
     }
   }
   return written;
+}
+
+/**
+ * The ON CONFLICT update for one row: the fields this pass got back replace the stored ones, the
+ * rest stay. In `raw`, the answered keys are removed from the stored object before the new one is
+ * laid over it, so a field Meta omitted because it is now empty is dropped rather than kept stale.
+ */
+function storedUpdate(values: object, answered: Set<string>) {
+  const set: Record<string, unknown> = { ...values, syncedAt: new Date() };
+  for (const [column, field] of Object.entries(PROMOTED_FIELD))
+    if (!answered.has(field)) delete set[column];
+  const keys = sql.join(
+    [...answered].map((f) => sql`${f}`),
+    sql`, `,
+  );
+  set.raw = sql`(coalesce(${schema.insightsDaily.raw}, '{}'::jsonb) - array[${keys}]::text[]) || excluded.raw`;
+  return set;
 }
 
 /** Sync the trailing `days` window (used for the recurring refresh). */

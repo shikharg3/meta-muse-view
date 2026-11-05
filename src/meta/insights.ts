@@ -90,6 +90,37 @@ export function normalizeInsightRow(
 }
 
 /**
+ * The Meta field each promoted metric column is read from. A pass that did not get a field back —
+ * the hourly refresh asks for CORE only, and a group Meta rejects returns nothing — must leave that
+ * column as stored instead of nulling it (`syncInsightsRange`).
+ */
+export const PROMOTED_FIELD = {
+  spend: "spend",
+  impressions: "impressions",
+  reach: "reach",
+  clicks: "clicks",
+  inlineLinkClicks: "inline_link_clicks",
+  ctr: "ctr",
+  cpc: "cpc",
+  cpm: "cpm",
+  conversions: "actions",
+  conversionValues: "action_values",
+  purchaseRoas: "purchase_roas",
+  actions: "actions",
+  actionValues: "action_values",
+  frequency: "frequency",
+  qualityRanking: "quality_ranking",
+  engagementRateRanking: "engagement_rate_ranking",
+  conversionRateRanking: "conversion_rate_ranking",
+  estimatedAdRecallRate: "estimated_ad_recall_rate",
+  uniqueClicks: "unique_clicks",
+  uniqueCtr: "unique_ctr",
+  inlinePostEngagement: "inline_post_engagement",
+  fullViewImpressions: "full_view_impressions",
+  fullViewReach: "full_view_reach",
+} as const satisfies Partial<Record<keyof NormalizedInsight, string>>;
+
+/**
  * A row Meta zeroed (`SPEND_CORRUPTING_METRICS`): no spend and no impressions, yet a CPM, CPC or CTR
  * that can only have been computed from spend, impressions and clicks that were there. A day an ad did
  * not deliver (a late lead credited to it, say) carries no ratios, and a sub-cent day Meta rounds to
