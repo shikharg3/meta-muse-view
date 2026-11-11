@@ -4,6 +4,9 @@ import { downloadReportCsv, downloadReportPdf, showCell } from "@/lib/report-exp
 import { stampReportExport } from "@/lib/api/reports";
 import type { ReportPayload } from "@/server/agent/report";
 
+/** Rows drawn on screen. A run carries up to FILE_MAX_ROWS for its exports; the DOM needs no more than this. */
+const SCREEN_ROWS = 500;
+
 export function ReportBlock({ report, runId }: { report: ReportPayload; runId?: string }) {
   // Fire-and-forget: a failed stamp must never block or undo a download the user already has.
   const stamp = (format: "csv" | "pdf") => {
@@ -14,12 +17,13 @@ export function ReportBlock({ report, runId }: { report: ReportPayload; runId?: 
   // metric columns scroll horizontally. Any other first column is just another metric and scrolls
   // with the rest.
   const stickyDim = report.columns[0]?.key === "_period" || report.columns[0]?.key === "_dim";
-  // Deliberately NO row virtualization: MAX_ROWS = 500 in src/server/agent/report.ts:520 already
-  // caps output, and 500x30 cells is unremarkable for the DOM. Do not add a windowing dependency.
+  // Deliberately NO row virtualization: the table draws at most SCREEN_ROWS, and 500x30 cells is
+  // unremarkable for the DOM. The CSV and PDF read `report.rows` whole, so the cap never reaches a file.
   // This card is internal: it renders on the chat, the client page and /reports/*, all behind
   // `requireAdmin`. The markup chip below is the only place the commission rate is shown, and it
   // cannot reach an export — `downloadReportCsv`/`downloadReportPdf` take a `ReportDoc`, which has
   // no markup field.
+  const shown = report.rows.length > SCREEN_ROWS ? report.rows.slice(0, SCREEN_ROWS) : report.rows;
   return (
     <div className="rounded-lg border border-border bg-card overflow-hidden">
       <div className="flex items-center gap-3 px-4 py-3 border-b border-border">
@@ -83,7 +87,7 @@ export function ReportBlock({ report, runId }: { report: ReportPayload; runId?: 
             </tr>
           </thead>
           <tbody>
-            {report.rows.map((row, ri) => (
+            {shown.map((row, ri) => (
               <tr key={ri} className="border-b border-border/50">
                 {row.map((v, ci) => (
                   <td
@@ -121,6 +125,12 @@ export function ReportBlock({ report, runId }: { report: ReportPayload; runId?: 
           )}
         </table>
       </div>
+      {shown.length < report.rows.length && (
+        <div className="px-4 py-2 text-[11px] text-muted-foreground border-t border-border">
+          Showing the first {shown.length.toLocaleString()} of {report.rows.length.toLocaleString()} rows — the
+          CSV and PDF include every row.
+        </div>
+      )}
     </div>
   );
 }

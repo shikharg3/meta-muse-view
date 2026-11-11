@@ -10,6 +10,7 @@ import {
   type ClientReportInput,
   type ReportPayload,
 } from "@/server/agent/report";
+import { FILE_MAX_ROWS } from "@/server/scheduled-report";
 import { audit, requireAdmin } from "./auth";
 
 // Idempotent prod migration (run once on the droplet before deploying):
@@ -365,7 +366,9 @@ export async function createReportRun(
   const range = resolveRange(params);
   if (!range) return { ok: false, error: "Pick a valid date range." };
 
-  const payload = await reportForClient(params);
+  // A run is the source of its CSV and PDF exports, so it carries every row up to the file cap;
+  // the 500-row default suits an on-screen card and silently cut exports at 500.
+  const payload = await reportForClient(params, FILE_MAX_ROWS);
   if ("error" in payload) return { ok: false, error: payload.error };
 
   const runId = randomUUID();

@@ -845,6 +845,8 @@ export interface ReportArgs {
   timeIncrement: TimeIncrement;
   markup?: number;
   campaignIds?: string[];
+  /** Row cap passed to the engine; omitted = MAX_ROWS, the on-screen card's cap. */
+  maxRows?: number;
 }
 
 /** Load campaign_id → objective for the given accounts (for objective-aware results). */
@@ -904,6 +906,7 @@ export async function runReport(args: ReportArgs): Promise<ReportPayload | { err
     eventByCampaign: await customEventMap(args.accountIds),
     markup: args.markup,
     campaignIds: args.campaignIds,
+    maxRows: args.maxRows,
   };
   const payload = await buildReport(dbRowSource(spec), spec, args.name);
   if (payload.rowCount === 0) {
@@ -993,6 +996,7 @@ export interface ClientReportInput {
  */
 export async function reportForClient(
   input: ClientReportInput,
+  maxRows?: number,
 ): Promise<ReportPayload | { error: string }> {
   const row = await getClientRow(input.clientId);
   if (!row) return { error: "Unknown client." };
@@ -1024,5 +1028,6 @@ export async function reportForClient(
     timeIncrement: bd.timeIncrement,
     markup: input.markup,
     campaignIds,
+    maxRows,
   });
 }
